@@ -38,15 +38,13 @@
       },
       "sensors": {
         "title": "Door & Window Sensors",
-        "description": "Select individual door/window sensors or binary sensor groups to monitor. When a door or window is left open, Climate Advisor will pause your HVAC to avoid wasting energy.\n\nYou can create a binary sensor group in Home Assistant to bundle multiple sensors together, then select that group here instead of picking each sensor individually.\n\nThe polarity toggle controls how sensor states are interpreted. Most sensors use the Home Assistant standard where 'on' means open (unsafe). If your sensors report the opposite, enable the invert toggle.",
+        "description": "Select binary sensors that Climate Advisor should monitor. When a sensor indicates a door or window is open, HVAC will be paused to avoid wasting energy.\n\nYou can select individual sensors or a binary sensor group entity that bundles multiple sensors together.\n\nThe polarity toggle controls how sensor states are interpreted. Most sensors use the Home Assistant standard where 'on' means open (unsafe). If your sensors report the opposite, enable the invert toggle.",
         "data": {
-          "door_window_sensors": "Individual Door/Window Sensors",
-          "door_window_groups": "Binary Sensor Groups",
+          "door_window_sensors": "Door/Window Sensors",
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)"
         },
         "data_description": {
-          "door_window_sensors": "Select individual binary sensors with door, window, or opening device classes.",
-          "door_window_groups": "Select pre-configured binary sensor groups. All member sensors in the group will be monitored.",
+          "door_window_sensors": "Select any binary sensor entities to monitor, including binary sensor groups that bundle multiple sensors together.",
           "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard."
         }
       },
@@ -74,8 +72,7 @@
           "outdoor_temp_entity": "Outdoor Temperature Entity",
           "indoor_temp_source": "Indoor Temperature Source",
           "indoor_temp_entity": "Indoor Temperature Entity",
-          "door_window_sensors": "Individual Door/Window Sensors",
-          "door_window_groups": "Binary Sensor Groups",
+          "door_window_sensors": "Door/Window Sensors",
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)"
         }
       }

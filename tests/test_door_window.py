@@ -32,25 +32,15 @@ from custom_components.climate_advisor.const import (
 # ---------------------------------------------------------------------------
 
 def _resolve_monitored_sensors(
-    hass_states_get,
     door_window_sensors: list[str],
-    door_window_groups: list[str],
 ) -> list[str]:
-    """Resolve all monitored sensor entity IDs, expanding groups.
+    """Resolve all monitored sensor entity IDs.
 
     This mirrors ClimateAdvisorCoordinator._resolve_monitored_sensors().
+    Binary sensor groups are themselves binary_sensor entities, so no
+    expansion is needed — they are monitored directly.
     """
-    individual = list(door_window_sensors)
-
-    for group_id in door_window_groups:
-        state = hass_states_get(group_id)
-        if state:
-            members = state.attributes.get("entity_id", [])
-            for member in members:
-                if member not in individual:
-                    individual.append(member)
-
-    return individual
+    return list(door_window_sensors)
 
 
 def _is_sensor_open(
@@ -88,82 +78,36 @@ def _states_getter(state_map: dict[str, MagicMock]):
 # ---------------------------------------------------------------------------
 
 class TestResolveMonitoredSensors:
-    """Tests for group resolution logic."""
+    """Tests for sensor resolution logic.
 
-    def test_individual_sensors_only(self):
-        get = _states_getter({})
+    Binary sensor groups in HA are themselves binary_sensor entities, so they
+    appear in the single door_window_sensors list alongside individual sensors.
+    """
+
+    def test_returns_configured_sensors(self):
         result = _resolve_monitored_sensors(
-            get,
             ["binary_sensor.front_door", "binary_sensor.back_door"],
-            [],
         )
         assert result == ["binary_sensor.front_door", "binary_sensor.back_door"]
 
-    def test_group_expands_members(self):
-        get = _states_getter({
-            "group.windows": _make_state(
-                "on",
-                {"entity_id": ["binary_sensor.window_1", "binary_sensor.window_2"]},
-            ),
-        })
-        result = _resolve_monitored_sensors(get, [], ["group.windows"])
-        assert "binary_sensor.window_1" in result
-        assert "binary_sensor.window_2" in result
-
-    def test_deduplication(self):
-        get = _states_getter({
-            "group.all_openings": _make_state(
-                "on",
-                {"entity_id": ["binary_sensor.front_door", "binary_sensor.window_1"]},
-            ),
-        })
-        result = _resolve_monitored_sensors(
-            get,
-            ["binary_sensor.front_door"],
-            ["group.all_openings"],
-        )
-        assert result.count("binary_sensor.front_door") == 1
-        assert "binary_sensor.window_1" in result
-
-    def test_unavailable_group_skipped(self):
-        get = _states_getter({})
-        result = _resolve_monitored_sensors(get, [], ["group.missing"])
-        assert result == []
-
     def test_empty_config(self):
-        get = _states_getter({})
-        result = _resolve_monitored_sensors(get, [], [])
+        result = _resolve_monitored_sensors([])
         assert result == []
 
-    def test_mixed_individual_and_groups(self):
-        get = _states_getter({
-            "group.bedroom_windows": _make_state(
-                "on",
-                {"entity_id": ["binary_sensor.window_3"]},
-            ),
-        })
+    def test_includes_group_entities(self):
+        """Binary sensor groups are binary_sensor entities and included directly."""
         result = _resolve_monitored_sensors(
-            get,
-            ["binary_sensor.back_door"],
-            ["group.bedroom_windows"],
+            ["binary_sensor.front_door", "binary_sensor.all_windows"],
         )
-        assert "binary_sensor.back_door" in result
-        assert "binary_sensor.window_3" in result
+        assert "binary_sensor.all_windows" in result
+        assert "binary_sensor.front_door" in result
 
-    def test_multiple_groups(self):
-        get = _states_getter({
-            "group.g1": _make_state("on", {"entity_id": ["binary_sensor.a"]}),
-            "group.g2": _make_state("on", {"entity_id": ["binary_sensor.b"]}),
-        })
-        result = _resolve_monitored_sensors(get, [], ["group.g1", "group.g2"])
-        assert set(result) == {"binary_sensor.a", "binary_sensor.b"}
-
-    def test_group_with_no_entity_id_attribute(self):
-        get = _states_getter({
-            "group.empty": _make_state("on", {}),
-        })
-        result = _resolve_monitored_sensors(get, [], ["group.empty"])
-        assert result == []
+    def test_returns_copy_not_original(self):
+        """Returned list should be a copy, not the original."""
+        original = ["binary_sensor.a"]
+        result = _resolve_monitored_sensors(original)
+        result.append("binary_sensor.b")
+        assert len(original) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -249,29 +193,37 @@ class TestAllClosedCheck:
 class TestConfigMigration:
     """Tests for v2->v3 config migration defaults."""
 
-    def test_v2_config_gets_new_defaults(self):
+    def test_v2_config_gets_polarity_default(self):
         v2_data = {
             "door_window_sensors": ["binary_sensor.front_door"],
             "wake_time": "06:30",
         }
         new_data = {**v2_data}
-        new_data.setdefault("door_window_groups", [])
+        new_data.pop("door_window_groups", None)
         new_data.setdefault(CONF_SENSOR_POLARITY_INVERTED, False)
 
-        assert new_data["door_window_groups"] == []
+        assert "door_window_groups" not in new_data
         assert new_data[CONF_SENSOR_POLARITY_INVERTED] is False
         assert new_data["door_window_sensors"] == ["binary_sensor.front_door"]
 
-    def test_v2_config_preserves_existing_keys(self):
+    def test_v2_migration_removes_legacy_groups_key(self):
         v2_data = {
-            "door_window_groups": ["group.custom"],
+            "door_window_sensors": ["binary_sensor.front_door"],
+            "door_window_groups": ["group.old_group"],
+        }
+        new_data = {**v2_data}
+        new_data.pop("door_window_groups", None)
+        new_data.setdefault(CONF_SENSOR_POLARITY_INVERTED, False)
+
+        assert "door_window_groups" not in new_data
+
+    def test_v2_config_preserves_polarity_if_set(self):
+        v2_data = {
             CONF_SENSOR_POLARITY_INVERTED: True,
         }
         new_data = {**v2_data}
-        new_data.setdefault("door_window_groups", [])
         new_data.setdefault(CONF_SENSOR_POLARITY_INVERTED, False)
 
-        assert new_data["door_window_groups"] == ["group.custom"]
         assert new_data[CONF_SENSOR_POLARITY_INVERTED] is True
 
 

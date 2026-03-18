@@ -203,13 +203,6 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional("door_window_sensors", default=[]): selector.EntitySelector(
                         selector.EntitySelectorConfig(
                             domain=["binary_sensor"],
-                            device_class=["door", "window", "opening"],
-                            multiple=True,
-                        )
-                    ),
-                    vol.Optional("door_window_groups", default=[]): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["group"],
                             multiple=True,
                         )
                     ),
@@ -362,16 +355,6 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(
                             domain=["binary_sensor"],
-                            device_class=["door", "window", "opening"],
-                            multiple=True,
-                        )
-                    ),
-                    vol.Optional(
-                        "door_window_groups",
-                        default=current.get("door_window_groups", []),
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["group"],
                             multiple=True,
                         )
                     ),

@@ -150,25 +150,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Climate Advisor coordinator setup complete")
 
     def _resolve_monitored_sensors(self) -> list[str]:
-        """Resolve all monitored sensor entity IDs, expanding groups."""
-        individual = list(self.config.get("door_window_sensors", []))
-        groups = self.config.get("door_window_groups", [])
+        """Resolve all monitored sensor entity IDs.
 
-        for group_id in groups:
-            state = self.hass.states.get(group_id)
-            if state:
-                members = state.attributes.get("entity_id", [])
-                for member in members:
-                    if member not in individual:
-                        individual.append(member)
-            else:
-                _LOGGER.warning(
-                    "Door/window group %s is unavailable; "
-                    "its members will not be monitored until next refresh",
-                    group_id,
-                )
-
-        return individual
+        Returns the configured door_window_sensors list directly. Binary sensor
+        groups in HA are themselves binary_sensor entities, so they can be
+        monitored without expansion — their state reflects member states.
+        """
+        return list(self.config.get("door_window_sensors", []))
 
     def _subscribe_door_window_listeners(self) -> None:
         """Subscribe to state changes for all resolved door/window sensors."""

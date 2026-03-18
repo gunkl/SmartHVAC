@@ -74,7 +74,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     if config_entry.version == 2:
         _LOGGER.info("Migrating Climate Advisor config entry from version 2 to 3")
         new_data = {**config_entry.data}
-        new_data.setdefault("door_window_groups", [])
+        new_data.pop("door_window_groups", None)  # removed: groups are binary_sensor entities
         new_data.setdefault(CONF_SENSOR_POLARITY_INVERTED, False)
         hass.config_entries.async_update_entry(
             config_entry, data=new_data, version=3
