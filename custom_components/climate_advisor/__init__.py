@@ -165,7 +165,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(PANEL_URL, str(frontend_path), cache_headers=True)]
     )
-    hass.components.frontend.async_register_built_in_panel(
+    from homeassistant.components.frontend import async_register_built_in_panel
+    async_register_built_in_panel(
+        hass,
         "iframe",
         sidebar_title="Climate Advisor",
         sidebar_icon="mdi:thermostat",
