@@ -239,9 +239,13 @@
   </div>
 
   <div class="card">
-    <h2>Today's Strategy</h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin-bottom:0">Today's Strategy</h2>
+      <button class="btn secondary" style="padding:5px 12px;font-size:0.75rem" onclick="doAction('send_briefing')">Regenerate</button>
+    </div>
     <div id="briefing-loading" class="loading">Loading...</div>
     <div id="briefing-text" class="briefing-text" style="display:none"></div>
+    <div id="briefing-action-result" class="action-result"></div>
   </div>
 
   <div class="card">
@@ -314,6 +318,7 @@
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      if (btn.dataset.tab === 'status') loadChart();
     });
   });
 
@@ -553,11 +558,13 @@
       const data = await apiPost(action);
       el.textContent = data.message || 'Done';
       el.className = 'action-result show ok';
+      el.style.display = '';
       // Refresh status after action
       setTimeout(() => { loadStatus(); loadBriefing(); loadChart(); }, 1000);
     } catch (e) {
       el.textContent = 'Error: ' + e.message;
       el.className = 'action-result show err';
+      el.style.display = '';
     }
   };
 
