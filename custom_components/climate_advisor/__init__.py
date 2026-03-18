@@ -191,7 +191,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_shutdown()
 
     # Remove the dashboard panel
-    hass.components.frontend.async_remove_panel(PANEL_FRONTEND_PATH)
+    from homeassistant.components.frontend import async_remove_panel
+    async_remove_panel(hass, PANEL_FRONTEND_PATH)
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return unload_ok
