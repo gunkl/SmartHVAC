@@ -99,6 +99,8 @@
         "title": "Climate Advisor Options",
         "description": "Adjust your Climate Advisor settings. Changes take effect at the next update cycle.",
         "data": {
+          "weather_entity": "Weather Service",
+          "climate_entity": "Thermostat",
           "comfort_heat": "Comfortable Heating Temperature (\u00b0F)",
           "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
           "learning_enabled": "Enable Learning & Suggestions",
@@ -116,6 +118,8 @@
           "automation_grace_notify": "Notify on automation actions"
         },
         "data_description": {
+          "weather_entity": "The weather integration Climate Advisor uses for forecasts and outdoor conditions.",
+          "climate_entity": "The thermostat Climate Advisor will monitor and control.",
           "comfort_heat": "Target temperature when heating and someone is home.",
           "comfort_cool": "Target temperature when cooling and someone is home.",
           "learning_enabled": "When enabled, Climate Advisor learns from your manual adjustments and suggests improvements over time.",

@@ -286,7 +286,14 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                data={**self.config_entry.data, **user_input},
+            )
+            await self.hass.config_entries.async_reload(
+                self.config_entry.entry_id
+            )
+            return self.async_create_entry(title="", data={})
 
         current = self.config_entry.data
 
@@ -294,6 +301,18 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
+                    vol.Required(
+                        "weather_entity",
+                        default=current.get("weather_entity"),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="weather")
+                    ),
+                    vol.Required(
+                        "climate_entity",
+                        default=current.get("climate_entity"),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="climate")
+                    ),
                     vol.Required("comfort_heat", default=current.get("comfort_heat", DEFAULT_COMFORT_HEAT)): selector.NumberSelector(
                         selector.NumberSelectorConfig(min=55, max=80, step=1, unit_of_measurement="°F", mode="slider")
                     ),

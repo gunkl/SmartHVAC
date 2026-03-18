@@ -217,6 +217,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 self._indoor_temp_history.append(
                     (now_str, forecast.current_indoor_temp)
                 )
+        else:
+            # Weather entity not ready yet (common at startup) — retry sooner
+            # than the normal 30-min interval
+            _LOGGER.debug("Scheduling retry in 60s for weather entity")
+            async_call_later(
+                self.hass, 60, lambda _: self.async_request_refresh()
+            )
 
         # Build the data dict that sensors will read
         c = self._current_classification
@@ -322,7 +329,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         """Pull forecast data from the weather entity."""
         weather_state = self.hass.states.get(self.config["weather_entity"])
         if not weather_state:
-            _LOGGER.warning("Weather entity %s not available", self.config["weather_entity"])
+            _LOGGER.warning(
+                "Weather entity %s not found in Home Assistant. "
+                "Check that the entity ID is correct in the integration options.",
+                self.config["weather_entity"],
+            )
             return None
 
         attrs = weather_state.attributes
