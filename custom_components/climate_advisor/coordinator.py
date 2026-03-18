@@ -379,7 +379,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
             # Reset startup retry state on success
             if self._startup_retries_remaining < 5:
-                _LOGGER.debug("Weather entity available; startup retry cleared")
+                _LOGGER.info(
+                    "Weather entity now available; classified as %s day",
+                    self._current_classification.day_type,
+                )
                 self._startup_retries_remaining = 5
                 self._startup_retry_delay = 30
 
@@ -413,7 +416,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 delay = self._startup_retry_delay
                 self._startup_retries_remaining -= 1
                 self._startup_retry_delay = min(delay * 2, 480)
-                _LOGGER.debug(
+                _LOGGER.warning(
                     "Weather entity not ready; retry %d remaining in %ds",
                     self._startup_retries_remaining + 1,
                     delay,
@@ -529,12 +532,22 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
     async def _get_forecast(self) -> ForecastSnapshot | None:
         """Pull forecast data from the weather entity."""
-        weather_state = self.hass.states.get(self.config["weather_entity"])
+        weather_entity = self.config["weather_entity"]
+        weather_state = self.hass.states.get(weather_entity)
         if not weather_state:
             _LOGGER.warning(
                 "Weather entity %s not found in Home Assistant. "
                 "Check that the entity ID is correct in the integration options.",
-                self.config["weather_entity"],
+                weather_entity,
+            )
+            return None
+
+        # Entity exists but isn't reporting data yet (common after restart)
+        if weather_state.state in ("unavailable", "unknown"):
+            _LOGGER.debug(
+                "Weather entity %s is %s — treating as not ready",
+                weather_entity,
+                weather_state.state,
             )
             return None
 

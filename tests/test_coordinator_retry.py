@@ -17,6 +17,16 @@ def _make_state(state_value: str, attributes: dict | None = None) -> MagicMock:
     return mock
 
 
+def _should_retry(states: dict, weather_entity: str) -> bool:
+    """Replicate the _get_forecast guard logic from coordinator.py."""
+    weather_state = states.get(weather_entity)
+    if weather_state is None:
+        return True
+    if weather_state.state in ("unavailable", "unknown"):
+        return True
+    return False
+
+
 class TestGetForecastRetry:
     """Test the retry-on-missing-weather-entity logic in _async_update_data.
 
@@ -27,25 +37,39 @@ class TestGetForecastRetry:
     def test_weather_entity_missing_triggers_retry(self):
         """When hass.states.get returns None, a retry should be scheduled."""
         states = {}
-        weather_entity = "weather.forecast_home"
-
-        # Replicate _get_forecast check
-        weather_state = states.get(weather_entity)
-        should_retry = weather_state is None
-
-        assert should_retry is True
+        assert _should_retry(states, "weather.forecast_home") is True
 
     def test_weather_entity_present_no_retry(self):
-        """When the weather entity exists, no retry is needed."""
+        """When the weather entity exists and is reporting, no retry needed."""
         weather_entity = "weather.home"
         states = {
             weather_entity: _make_state("sunny", {"temperature": 65}),
         }
+        assert _should_retry(states, weather_entity) is False
 
-        weather_state = states.get(weather_entity)
-        should_retry = weather_state is None
+    def test_weather_entity_unavailable_triggers_retry(self):
+        """Entity registered but 'unavailable' after restart should retry."""
+        weather_entity = "weather.forecast_home"
+        states = {
+            weather_entity: _make_state("unavailable"),
+        }
+        assert _should_retry(states, weather_entity) is True
 
-        assert should_retry is False
+    def test_weather_entity_unknown_triggers_retry(self):
+        """Entity with 'unknown' state should also trigger retry."""
+        weather_entity = "weather.forecast_home"
+        states = {
+            weather_entity: _make_state("unknown"),
+        }
+        assert _should_retry(states, weather_entity) is True
+
+    def test_weather_entity_cloudy_no_retry(self):
+        """Any real weather state (cloudy, rainy, etc.) should not retry."""
+        weather_entity = "weather.home"
+        states = {
+            weather_entity: _make_state("cloudy", {"temperature": 72}),
+        }
+        assert _should_retry(states, weather_entity) is False
 
     def test_retry_uses_correct_entity_after_reconfigure(self):
         """After reconfiguring weather_entity, the new ID is used."""
@@ -56,11 +80,11 @@ class TestGetForecastRetry:
             "weather.home": _make_state("sunny", {"temperature": 65}),
         }
 
-        # Old config: entity missing
-        assert states.get(old_config["weather_entity"]) is None
+        # Old config: entity missing → retry
+        assert _should_retry(states, old_config["weather_entity"]) is True
 
-        # New config: entity found
-        assert states.get(new_config["weather_entity"]) is not None
+        # New config: entity found → no retry
+        assert _should_retry(states, new_config["weather_entity"]) is False
 
 
 class TestStartupRetryBackoff:
