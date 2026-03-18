@@ -212,10 +212,28 @@ def prune_backups(config: dict[str, str]) -> None:
     ok("Old backups pruned")
 
 
+def ensure_logo_files() -> None:
+    """Copy icon files to logo files if logos are missing.
+
+    Home Assistant uses icon.png for installed integrations but logo.png
+    for the 'Add Integration' picker dialog.
+    """
+    for suffix in ("", "@2x"):
+        icon = COMPONENT_DIR / f"icon{suffix}.png"
+        logo = COMPONENT_DIR / f"logo{suffix}.png"
+        if icon.exists() and not logo.exists():
+            import shutil
+            shutil.copy2(icon, logo)
+            ok(f"Created {logo.name} from {icon.name}")
+
+
 def deploy_files(config: dict[str, str]) -> bool:
     step("Deploying files to HA server")
     rpath = remote_path(config)
     target = ssh_target(config)
+
+    # Ensure logo files exist for HA's Add Integration dialog
+    ensure_logo_files()
 
     # Ensure remote directory exists
     run_ssh(config, f"mkdir -p '{rpath}'")

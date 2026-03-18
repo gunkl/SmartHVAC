@@ -1,0 +1,21 @@
+respond_to_suggestion:
+  name: Respond to suggestion
+  description: Accept or dismiss a learning suggestion from Climate Advisor.
+  fields:
+    action:
+      name: Action
+      description: Whether to accept or dismiss the suggestion.
+      required: true
+      example: "accept"
+      selector:
+        select:
+          options:
+            - "accept"
+            - "dismiss"
+    suggestion_key:
+      name: Suggestion key
+      description: The key identifying the suggestion to respond to.
+      required: true
+      example: "bedtime_setback_override"
+      selector:
+        text:

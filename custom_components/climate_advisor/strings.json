@@ -41,11 +41,21 @@
         "description": "Select binary sensors that Climate Advisor should monitor. When a sensor indicates a door or window is open, HVAC will be paused to avoid wasting energy.\n\nYou can select individual sensors or a binary sensor group entity that bundles multiple sensors together.\n\nThe polarity toggle controls how sensor states are interpreted. Most sensors use the Home Assistant standard where 'on' means open (unsafe). If your sensors report the opposite, enable the invert toggle.",
         "data": {
           "door_window_sensors": "Door/Window Sensors",
-          "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)"
+          "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
+          "sensor_debounce_seconds": "Sensor debounce delay (seconds)",
+          "manual_grace_seconds": "Manual override grace period (seconds)",
+          "manual_grace_notify": "Notify on manual override",
+          "automation_grace_seconds": "Automation grace period (seconds)",
+          "automation_grace_notify": "Notify on automation actions"
         },
         "data_description": {
           "door_window_sensors": "Select any binary sensor entities to monitor, including binary sensor groups that bundle multiple sensors together.",
-          "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard."
+          "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard.",
+          "sensor_debounce_seconds": "How long a door/window must stay open before HVAC is paused.",
+          "manual_grace_seconds": "How long to wait after a manual thermostat change before resuming automation.",
+          "manual_grace_notify": "Send a notification when a manual override is detected.",
+          "automation_grace_seconds": "How long to wait after an automated action before allowing further changes.",
+          "automation_grace_notify": "Send a notification when an automated action is taken."
         }
       },
       "schedule": {
@@ -73,7 +83,12 @@
           "indoor_temp_source": "Indoor Temperature Source",
           "indoor_temp_entity": "Indoor Temperature Entity",
           "door_window_sensors": "Door/Window Sensors",
-          "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)"
+          "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
+          "sensor_debounce_seconds": "Sensor debounce delay (seconds)",
+          "manual_grace_seconds": "Manual override grace period (seconds)",
+          "manual_grace_notify": "Notify on manual override",
+          "automation_grace_seconds": "Automation grace period (seconds)",
+          "automation_grace_notify": "Notify on automation actions"
         }
       }
     }

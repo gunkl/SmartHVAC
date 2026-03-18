@@ -288,15 +288,11 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> ClimateAdvisorOptionsFlow:
         """Get the options flow handler."""
-        return ClimateAdvisorOptionsFlow(config_entry)
+        return ClimateAdvisorOptionsFlow()
 
 
 class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Climate Advisor."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
