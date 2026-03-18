@@ -5,7 +5,7 @@ should schedule a retry rather than waiting the full 30-minute interval.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _make_state(state_value: str, attributes: dict | None = None) -> MagicMock:

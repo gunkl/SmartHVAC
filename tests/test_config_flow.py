@@ -5,7 +5,7 @@ entity IDs without removing and re-adding the integration.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _make_config_entry(data: dict) -> MagicMock:

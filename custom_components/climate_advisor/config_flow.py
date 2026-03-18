@@ -281,19 +281,17 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Climate Advisor."""
 
+    def __init__(self) -> None:
+        """Initialize the options flow."""
+        self._updates: dict[str, Any] = {}
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Manage the options."""
+        """Step 1: Core entities and temperature setpoints."""
         if user_input is not None:
-            self.hass.config_entries.async_update_entry(
-                self.config_entry,
-                data={**self.config_entry.data, **user_input},
-            )
-            await self.hass.config_entries.async_reload(
-                self.config_entry.entry_id
-            )
-            return self.async_create_entry(title="", data={})
+            self._updates.update(user_input)
+            return await self.async_step_temperature_sources()
 
         current = self.config_entry.data
 
@@ -313,14 +311,64 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="climate")
                     ),
-                    vol.Required("comfort_heat", default=current.get("comfort_heat", DEFAULT_COMFORT_HEAT)): selector.NumberSelector(
-                        selector.NumberSelectorConfig(min=55, max=80, step=1, unit_of_measurement="°F", mode="slider")
+                    vol.Required(
+                        "comfort_heat",
+                        default=current.get("comfort_heat", DEFAULT_COMFORT_HEAT),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=55, max=80, step=1,
+                            unit_of_measurement="°F", mode="slider",
+                        )
                     ),
-                    vol.Required("comfort_cool", default=current.get("comfort_cool", DEFAULT_COMFORT_COOL)): selector.NumberSelector(
-                        selector.NumberSelectorConfig(min=68, max=85, step=1, unit_of_measurement="°F", mode="slider")
+                    vol.Required(
+                        "comfort_cool",
+                        default=current.get("comfort_cool", DEFAULT_COMFORT_COOL),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=68, max=85, step=1,
+                            unit_of_measurement="°F", mode="slider",
+                        )
                     ),
-                    vol.Required("learning_enabled", default=current.get("learning_enabled", True)): selector.BooleanSelector(),
-                    vol.Required("aggressive_savings", default=current.get("aggressive_savings", False)): selector.BooleanSelector(),
+                    vol.Required(
+                        "setback_heat",
+                        default=current.get("setback_heat", DEFAULT_SETBACK_HEAT),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=45, max=65, step=1,
+                            unit_of_measurement="°F", mode="slider",
+                        )
+                    ),
+                    vol.Required(
+                        "setback_cool",
+                        default=current.get("setback_cool", DEFAULT_SETBACK_COOL),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=75, max=90, step=1,
+                            unit_of_measurement="°F", mode="slider",
+                        )
+                    ),
+                    vol.Required(
+                        "notify_service",
+                        default=current.get("notify_service", "notify.notify"),
+                    ): selector.TextSelector(),
+                }
+            ),
+        )
+
+    async def async_step_temperature_sources(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Step 2: Temperature source selection."""
+        if user_input is not None:
+            self._updates.update(user_input)
+            return await self.async_step_sensors()
+
+        current = self.config_entry.data
+
+        return self.async_show_form(
+            step_id="temperature_sources",
+            data_schema=vol.Schema(
+                {
                     vol.Required(
                         "outdoor_temp_source",
                         default=current.get("outdoor_temp_source", TEMP_SOURCE_WEATHER_SERVICE),
@@ -351,6 +399,24 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=["sensor", "input_number"])
                     ),
+                }
+            ),
+        )
+
+    async def async_step_sensors(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Step 3: Door/window sensor configuration."""
+        if user_input is not None:
+            self._updates.update(user_input)
+            return await self.async_step_schedule()
+
+        current = self.config_entry.data
+
+        return self.async_show_form(
+            step_id="sensors",
+            data_schema=vol.Schema(
+                {
                     vol.Optional(
                         "door_window_sensors",
                         default=current.get("door_window_sensors", []),
@@ -401,6 +467,71 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_AUTOMATION_GRACE_NOTIFY,
                         default=current.get(CONF_AUTOMATION_GRACE_NOTIFY, True),
+                    ): selector.BooleanSelector(),
+                }
+            ),
+        )
+
+    async def async_step_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Step 4: Daily schedule configuration."""
+        if user_input is not None:
+            self._updates.update(user_input)
+            return await self.async_step_advanced()
+
+        current = self.config_entry.data
+        _time_selector = selector.TimeSelector()
+
+        return self.async_show_form(
+            step_id="schedule",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "wake_time",
+                        default=current.get("wake_time", "06:30:00"),
+                    ): _time_selector,
+                    vol.Required(
+                        "sleep_time",
+                        default=current.get("sleep_time", "22:30:00"),
+                    ): _time_selector,
+                    vol.Required(
+                        "briefing_time",
+                        default=current.get("briefing_time", "06:00:00"),
+                    ): _time_selector,
+                }
+            ),
+        )
+
+    async def async_step_advanced(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Step 5: Learning and behavior settings."""
+        if user_input is not None:
+            self._updates.update(user_input)
+            # Final step — merge all updates and save
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                data={**self.config_entry.data, **self._updates},
+            )
+            await self.hass.config_entries.async_reload(
+                self.config_entry.entry_id
+            )
+            return self.async_create_entry(title="", data={})
+
+        current = self.config_entry.data
+
+        return self.async_show_form(
+            step_id="advanced",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "learning_enabled",
+                        default=current.get("learning_enabled", True),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        "aggressive_savings",
+                        default=current.get("aggressive_savings", False),
                     ): selector.BooleanSelector(),
                 }
             ),
