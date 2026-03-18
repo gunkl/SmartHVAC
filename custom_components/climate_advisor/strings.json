@@ -5,13 +5,22 @@
         "title": "Climate Advisor Setup",
         "description": "Configure your Climate Advisor integration. Select the entities it should monitor and control.",
         "data": {
-          "weather_entity": "Weather Entity (for forecasts)",
-          "climate_entity": "Thermostat / Climate Entity",
-          "comfort_heat": "Heating Comfort Setpoint (\u00b0F)",
-          "comfort_cool": "Cooling Comfort Setpoint (\u00b0F)",
-          "setback_heat": "Heating Away/Sleep Setpoint (\u00b0F)",
-          "setback_cool": "Cooling Away/Sleep Setpoint (\u00b0F)",
-          "notify_service": "Notification Service (e.g. notify.mobile_app_phone)"
+          "weather_entity": "Weather Service",
+          "climate_entity": "Thermostat",
+          "comfort_heat": "Comfortable Heating Temperature (\u00b0F)",
+          "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
+          "setback_heat": "Away/Sleep Heating Temperature (\u00b0F)",
+          "setback_cool": "Away/Sleep Cooling Temperature (\u00b0F)",
+          "notify_service": "Notification Service"
+        },
+        "data_description": {
+          "weather_entity": "The weather integration Climate Advisor uses for forecasts and outdoor conditions.",
+          "climate_entity": "The thermostat Climate Advisor will monitor and control.",
+          "comfort_heat": "Target temperature when heating and someone is home.",
+          "comfort_cool": "Target temperature when cooling and someone is home.",
+          "setback_heat": "Lower temperature used when away or sleeping to save energy.",
+          "setback_cool": "Higher temperature used when away or sleeping to save energy.",
+          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone)."
         }
       },
       "temperature_sources": {
@@ -20,6 +29,10 @@
         "data": {
           "outdoor_temp_source": "Outdoor Temperature Source",
           "indoor_temp_source": "Indoor Temperature Source"
+        },
+        "data_description": {
+          "outdoor_temp_source": "Where to read outside temperature. 'Weather service' uses your weather integration; a dedicated sensor or input helper lets you use a specific entity.",
+          "indoor_temp_source": "Where to read inside temperature. 'Climate entity' uses your thermostat's built-in sensor; a dedicated sensor or input helper lets you use a separate entity."
         }
       },
       "outdoor_temp_entity": {
@@ -27,6 +40,9 @@
         "description": "Select the entity that provides outdoor temperature readings.",
         "data": {
           "outdoor_temp_entity": "Outdoor Temperature Entity"
+        },
+        "data_description": {
+          "outdoor_temp_entity": "Choose the sensor or input helper that reports outdoor temperature."
         }
       },
       "indoor_temp_entity": {
@@ -34,6 +50,9 @@
         "description": "Select the entity that provides indoor temperature readings.",
         "data": {
           "indoor_temp_entity": "Indoor Temperature Entity"
+        },
+        "data_description": {
+          "indoor_temp_entity": "Choose the sensor or input helper that reports indoor temperature."
         }
       },
       "sensors": {
@@ -42,20 +61,20 @@
         "data": {
           "door_window_sensors": "Door/Window Sensors",
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
-          "sensor_debounce_seconds": "Sensor debounce delay (seconds)",
-          "manual_grace_seconds": "Manual override grace period (seconds)",
+          "sensor_debounce_seconds": "Open delay before pausing HVAC (seconds)",
+          "manual_grace_seconds": "Pause after manual thermostat change (seconds)",
           "manual_grace_notify": "Notify on manual override",
-          "automation_grace_seconds": "Automation grace period (seconds)",
+          "automation_grace_seconds": "Cooldown after automated change (seconds)",
           "automation_grace_notify": "Notify on automation actions"
         },
         "data_description": {
           "door_window_sensors": "Select any binary sensor entities to monitor, including binary sensor groups that bundle multiple sensors together.",
           "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard.",
-          "sensor_debounce_seconds": "How long a door/window must stay open before HVAC is paused.",
-          "manual_grace_seconds": "How long to wait after a manual thermostat change before resuming automation.",
-          "manual_grace_notify": "Send a notification when a manual override is detected.",
-          "automation_grace_seconds": "How long to wait after an automated action before allowing further changes.",
-          "automation_grace_notify": "Send a notification when an automated action is taken."
+          "sensor_debounce_seconds": "How long a door/window must stay open before HVAC is paused. Prevents brief openings (like walking through a door) from triggering a pause.",
+          "manual_grace_seconds": "How long to wait after you manually adjust the thermostat before Climate Advisor resumes automation. Gives you time to enjoy your chosen temperature.",
+          "manual_grace_notify": "Send a notification when Climate Advisor detects that you manually changed the thermostat.",
+          "automation_grace_seconds": "How long to wait after Climate Advisor makes an automated change before allowing another one. Prevents rapid back-to-back adjustments.",
+          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat."
         }
       },
       "schedule": {
@@ -65,6 +84,11 @@
           "wake_time": "Wake-up Time",
           "sleep_time": "Bedtime",
           "briefing_time": "Daily Briefing Time"
+        },
+        "data_description": {
+          "wake_time": "When your household typically wakes up. Climate Advisor starts warming or cooling to your comfort temperature before this time.",
+          "sleep_time": "When your household typically goes to bed. Climate Advisor switches to your away/sleep temperature at this time.",
+          "briefing_time": "When to deliver the daily climate briefing notification with the day's forecast and HVAC plan."
         }
       }
     }
@@ -73,9 +97,10 @@
     "step": {
       "init": {
         "title": "Climate Advisor Options",
+        "description": "Adjust your Climate Advisor settings. Changes take effect at the next update cycle.",
         "data": {
-          "comfort_heat": "Heating Comfort Setpoint (\u00b0F)",
-          "comfort_cool": "Cooling Comfort Setpoint (\u00b0F)",
+          "comfort_heat": "Comfortable Heating Temperature (\u00b0F)",
+          "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
           "learning_enabled": "Enable Learning & Suggestions",
           "aggressive_savings": "Prefer savings over comfort",
           "outdoor_temp_source": "Outdoor Temperature Source",
@@ -84,11 +109,28 @@
           "indoor_temp_entity": "Indoor Temperature Entity",
           "door_window_sensors": "Door/Window Sensors",
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
-          "sensor_debounce_seconds": "Sensor debounce delay (seconds)",
-          "manual_grace_seconds": "Manual override grace period (seconds)",
+          "sensor_debounce_seconds": "Open delay before pausing HVAC (seconds)",
+          "manual_grace_seconds": "Pause after manual thermostat change (seconds)",
           "manual_grace_notify": "Notify on manual override",
-          "automation_grace_seconds": "Automation grace period (seconds)",
+          "automation_grace_seconds": "Cooldown after automated change (seconds)",
           "automation_grace_notify": "Notify on automation actions"
+        },
+        "data_description": {
+          "comfort_heat": "Target temperature when heating and someone is home.",
+          "comfort_cool": "Target temperature when cooling and someone is home.",
+          "learning_enabled": "When enabled, Climate Advisor learns from your manual adjustments and suggests improvements over time.",
+          "aggressive_savings": "When enabled, Climate Advisor favors energy savings over comfort — for example, using wider temperature swings and earlier setbacks.",
+          "outdoor_temp_source": "Where to read outside temperature. 'Weather service' uses your weather integration; a dedicated sensor or input helper lets you use a specific entity.",
+          "outdoor_temp_entity": "Choose the sensor or input helper that reports outdoor temperature. Only needed if you selected 'Dedicated sensor' or 'Input helper' above.",
+          "indoor_temp_source": "Where to read inside temperature. 'Climate entity' uses your thermostat's built-in sensor; a dedicated sensor or input helper lets you use a separate entity.",
+          "indoor_temp_entity": "Choose the sensor or input helper that reports indoor temperature. Only needed if you selected 'Dedicated sensor' or 'Input helper' above.",
+          "door_window_sensors": "Select any binary sensor entities to monitor, including binary sensor groups that bundle multiple sensors together.",
+          "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard.",
+          "sensor_debounce_seconds": "How long a door/window must stay open before HVAC is paused. Prevents brief openings from triggering a pause.",
+          "manual_grace_seconds": "How long to wait after you manually adjust the thermostat before Climate Advisor resumes automation.",
+          "manual_grace_notify": "Send a notification when Climate Advisor detects that you manually changed the thermostat.",
+          "automation_grace_seconds": "How long to wait after Climate Advisor makes an automated change before allowing another one.",
+          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat."
         }
       }
     }

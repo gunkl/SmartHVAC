@@ -352,6 +352,24 @@ class AutomationEngine:
 
         _LOGGER.info("Morning wake-up — restoring comfort setpoint")
 
+    def get_serializable_state(self) -> dict[str, Any]:
+        """Return a JSON-serializable snapshot of the engine's internal state."""
+        return {
+            "paused_by_door": self._paused_by_door,
+            "pre_pause_mode": self._pre_pause_mode,
+            "grace_active": self._grace_active,
+            "last_resume_source": self._last_resume_source,
+            "current_classification": (
+                {
+                    "day_type": self._current_classification.day_type,
+                    "hvac_mode": self._current_classification.hvac_mode,
+                    "trend_direction": self._current_classification.trend_direction,
+                }
+                if self._current_classification
+                else None
+            ),
+        }
+
     def cleanup(self) -> None:
         """Remove all active listeners and cancel pending timers."""
         self._cancel_grace_timers()

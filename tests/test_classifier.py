@@ -458,3 +458,194 @@ def test_basic_forecast_fixture(basic_forecast):
     result = classify_day(basic_forecast)
     assert result.day_type == DAY_TYPE_MILD
     assert result.trend_direction == "stable"
+
+
+# ---------------------------------------------------------------------------
+# Trend modifier × day type combinations
+#
+# The classifier applies day-type defaults first, then trend modifiers
+# overwrite pre_condition / setback_modifier. These tests verify the
+# interaction across multiple day types × trend magnitudes.
+# ---------------------------------------------------------------------------
+
+class TestTrendModifierDayTypeCombinations:
+    """Verify trend modifiers interact correctly with every day type."""
+
+    def _forecast_with_trend(self, today_high, avg_delta, today_low=50.0):
+        """Build a ForecastSnapshot where avg_delta == the supplied value."""
+        return ForecastSnapshot(
+            today_high=today_high,
+            today_low=today_low,
+            tomorrow_high=today_high + avg_delta,
+            tomorrow_low=today_low + avg_delta,
+            current_outdoor_temp=60.0,
+        )
+
+    # --- WARM day + significant warming ---
+
+    def test_warm_day_significant_warming(self):
+        result = classify_day(self._forecast_with_trend(80, 10))
+        assert result.day_type == DAY_TYPE_WARM
+        assert result.hvac_mode == "off"
+        assert result.setback_modifier == pytest.approx(-3.0)
+        # Warming does not enable pre_condition
+        assert result.pre_condition is False
+
+    # --- WARM day + significant cooling ---
+
+    def test_warm_day_significant_cooling(self):
+        result = classify_day(self._forecast_with_trend(80, -10))
+        assert result.day_type == DAY_TYPE_WARM
+        assert result.pre_condition is True
+        assert result.pre_condition_target == pytest.approx(3.0)
+        assert result.setback_modifier == pytest.approx(3.0)
+
+    # --- MILD day + moderate warming ---
+
+    def test_mild_day_moderate_warming(self):
+        result = classify_day(self._forecast_with_trend(67, 5))
+        assert result.day_type == DAY_TYPE_MILD
+        assert result.setback_modifier == pytest.approx(-2.0)
+        assert result.pre_condition is False
+
+    # --- MILD day + moderate cooling ---
+
+    def test_mild_day_moderate_cooling(self):
+        result = classify_day(self._forecast_with_trend(67, -5))
+        assert result.day_type == DAY_TYPE_MILD
+        assert result.pre_condition is True
+        assert result.pre_condition_target == pytest.approx(2.0)
+        assert result.setback_modifier == pytest.approx(2.0)
+
+    # --- COOL day + significant warming ---
+
+    def test_cool_day_significant_warming(self):
+        result = classify_day(self._forecast_with_trend(52, 10))
+        assert result.day_type == DAY_TYPE_COOL
+        assert result.hvac_mode == "heat"
+        assert result.setback_modifier == pytest.approx(-3.0)
+        assert result.pre_condition is False
+
+    # --- COOL day + significant cooling ---
+
+    def test_cool_day_significant_cooling(self):
+        result = classify_day(self._forecast_with_trend(52, -10))
+        assert result.day_type == DAY_TYPE_COOL
+        assert result.hvac_mode == "heat"
+        assert result.pre_condition is True
+        assert result.pre_condition_target == pytest.approx(3.0)
+        assert result.setback_modifier == pytest.approx(3.0)
+
+    # --- HOT day + significant cooling overrides pre_condition_target ---
+
+    def test_hot_day_significant_cooling(self):
+        result = classify_day(self._forecast_with_trend(90, -10))
+        assert result.day_type == DAY_TYPE_HOT
+        # Significant cooling overrides the hot-day default of -2.0
+        assert result.pre_condition_target == pytest.approx(3.0)
+        assert result.setback_modifier == pytest.approx(3.0)
+
+    # --- COLD day + significant warming ---
+
+    def test_cold_day_significant_warming(self):
+        result = classify_day(self._forecast_with_trend(30, 10))
+        assert result.day_type == DAY_TYPE_COLD
+        assert result.hvac_mode == "heat"
+        assert result.setback_modifier == pytest.approx(-3.0)
+        assert result.pre_condition is False
+
+
+# ---------------------------------------------------------------------------
+# Trend magnitude boundary tests
+#
+# avg_delta thresholds:
+#   |avg_delta| <= 2  → stable (deadband)
+#   |avg_delta| > 2   → warming / cooling
+#   |avg_delta| >= 5  → moderate modifier
+#   |avg_delta| >= 10 → significant modifier
+# ---------------------------------------------------------------------------
+
+class TestTrendMagnitudeBoundaries:
+    """Exact boundary values for trend magnitude thresholds."""
+
+    TODAY_HIGH = 67.0
+    TODAY_LOW = 50.0
+
+    def _forecast(self, avg_delta):
+        """Build a forecast with symmetric delta (same for high and low)."""
+        return ForecastSnapshot(
+            today_high=self.TODAY_HIGH,
+            today_low=self.TODAY_LOW,
+            tomorrow_high=self.TODAY_HIGH + avg_delta,
+            tomorrow_low=self.TODAY_LOW + avg_delta,
+            current_outdoor_temp=60.0,
+        )
+
+    # --- Deadband boundaries ---
+
+    def test_deadband_boundary_positive(self):
+        """avg_delta = +2.0 → stable (not > 2)."""
+        result = classify_day(self._forecast(2.0))
+        assert result.trend_direction == "stable"
+
+    def test_deadband_boundary_negative(self):
+        """avg_delta = -2.0 → stable (not < -2)."""
+        result = classify_day(self._forecast(-2.0))
+        assert result.trend_direction == "stable"
+
+    def test_just_above_deadband(self):
+        """avg_delta = +2.1 → warming."""
+        result = classify_day(self._forecast(2.1))
+        assert result.trend_direction == "warming"
+
+    def test_just_below_deadband(self):
+        """avg_delta = -2.1 → cooling."""
+        result = classify_day(self._forecast(-2.1))
+        assert result.trend_direction == "cooling"
+
+    # --- Moderate threshold boundaries ---
+
+    def test_exactly_moderate_threshold(self):
+        """avg_delta = +5.0 → warming, moderate modifier applied."""
+        result = classify_day(self._forecast(5.0))
+        assert result.trend_direction == "warming"
+        assert result.trend_magnitude == pytest.approx(5.0)
+        assert result.setback_modifier == pytest.approx(-2.0)
+
+    def test_just_below_moderate(self):
+        """avg_delta = +4.9 → warming, but no modifier (below moderate)."""
+        result = classify_day(self._forecast(4.9))
+        assert result.trend_direction == "warming"
+        assert result.setback_modifier == pytest.approx(0.0)
+
+    def test_exactly_negative_moderate(self):
+        """avg_delta = -5.0 → cooling, moderate modifier applied."""
+        result = classify_day(self._forecast(-5.0))
+        assert result.trend_direction == "cooling"
+        assert result.trend_magnitude == pytest.approx(5.0)
+        assert result.setback_modifier == pytest.approx(2.0)
+        assert result.pre_condition is True
+
+    # --- Significant threshold boundaries ---
+
+    def test_exactly_significant_threshold(self):
+        """avg_delta = +10.0 → warming, significant modifier applied."""
+        result = classify_day(self._forecast(10.0))
+        assert result.trend_direction == "warming"
+        assert result.trend_magnitude == pytest.approx(10.0)
+        assert result.setback_modifier == pytest.approx(-3.0)
+
+    def test_just_below_significant(self):
+        """avg_delta = +9.9 → warming, moderate modifier (not significant)."""
+        result = classify_day(self._forecast(9.9))
+        assert result.trend_direction == "warming"
+        assert result.setback_modifier == pytest.approx(-2.0)
+
+    def test_exactly_negative_significant(self):
+        """avg_delta = -10.0 → cooling, significant modifier applied."""
+        result = classify_day(self._forecast(-10.0))
+        assert result.trend_direction == "cooling"
+        assert result.trend_magnitude == pytest.approx(10.0)
+        assert result.setback_modifier == pytest.approx(3.0)
+        assert result.pre_condition is True
+        assert result.pre_condition_target == pytest.approx(3.0)

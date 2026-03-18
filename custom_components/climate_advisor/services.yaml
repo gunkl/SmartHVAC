@@ -19,3 +19,11 @@ respond_to_suggestion:
       example: "bedtime_setback_override"
       selector:
         text:
+
+force_reclassify:
+  name: Force reclassify
+  description: Force Climate Advisor to re-fetch forecast data and reclassify the day. Useful for debugging.
+
+resend_briefing:
+  name: Resend briefing
+  description: Re-generate and resend the daily briefing notification, even if it was already sent today.

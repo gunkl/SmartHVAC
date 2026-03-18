@@ -212,19 +212,28 @@ def prune_backups(config: dict[str, str]) -> None:
     ok("Old backups pruned")
 
 
-def ensure_logo_files() -> None:
-    """Copy icon files to logo files if logos are missing.
+def ensure_brand_dir() -> None:
+    """Populate the brand/ subdirectory with icon and logo files.
 
-    Home Assistant uses icon.png for installed integrations but logo.png
-    for the 'Add Integration' picker dialog.
+    HA 2026.3+ serves custom-integration brand images from a brand/
+    subdirectory inside the integration folder.  icon.png is square
+    (256/512px); logo.png can be the same image if no landscape
+    variant is provided.
     """
+    import shutil
+
+    brand_dir = COMPONENT_DIR / "brand"
+    brand_dir.mkdir(exist_ok=True)
+
     for suffix in ("", "@2x"):
         icon = COMPONENT_DIR / f"icon{suffix}.png"
-        logo = COMPONENT_DIR / f"logo{suffix}.png"
-        if icon.exists() and not logo.exists():
-            import shutil
-            shutil.copy2(icon, logo)
-            ok(f"Created {logo.name} from {icon.name}")
+        if not icon.exists():
+            continue
+        for name in (f"icon{suffix}.png", f"logo{suffix}.png"):
+            dest = brand_dir / name
+            if not dest.exists():
+                shutil.copy2(icon, dest)
+                ok(f"Created brand/{name} from {icon.name}")
 
 
 def deploy_files(config: dict[str, str]) -> bool:
@@ -232,17 +241,18 @@ def deploy_files(config: dict[str, str]) -> bool:
     rpath = remote_path(config)
     target = ssh_target(config)
 
-    # Ensure logo files exist for HA's Add Integration dialog
-    ensure_logo_files()
+    # Ensure brand/ dir has icon + logo for HA's Add Integration dialog
+    ensure_brand_dir()
 
     # Ensure remote directory exists
     run_ssh(config, f"mkdir -p '{rpath}'")
 
-    # Copy files
-    local_files = [str(f) for f in COMPONENT_DIR.iterdir() if f.is_file()]
-    local_count = len(local_files)
+    # Copy files and subdirectories (e.g. brand/), excluding __pycache__
+    local_items = [str(f) for f in COMPONENT_DIR.iterdir()
+                   if (f.is_file() or f.is_dir()) and f.name != "__pycache__"]
+    local_count = len(local_items)
 
-    cmd = scp_args(config) + local_files + [f"{target}:{rpath}/"]
+    cmd = scp_args(config) + local_items + [f"{target}:{rpath}/"]
     _log.debug("SCP cmd: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
     _log.debug("SCP rc=%d stdout=%r stderr=%r", result.returncode,
@@ -279,8 +289,7 @@ def restart_ha(config: dict[str, str], skip: bool = False) -> None:
 
 def check_logs(config: dict[str, str]) -> None:
     step("Checking HA logs for errors")
-    log_path = f"{config['HA_CONFIG_PATH']}/home-assistant.log"
-    rc, output = run_ssh(config, f"grep -i 'climate_advisor' '{log_path}' 2>/dev/null | tail -30")
+    rc, output = run_ssh(config, "ha core logs 2>/dev/null | grep -i 'climate_advisor' | tail -30")
 
     if not output:
         info("No log entries found for climate_advisor yet.")
@@ -378,13 +387,14 @@ def main() -> None:
         sys.exit(1)
 
     if args.dry_run:
+        ensure_brand_dir()
         print(f"\n{Color.CYAN}============================================{Color.RESET}")
         print(f"{Color.YELLOW}  DRY RUN complete. No changes made.{Color.RESET}")
         print(f"{Color.CYAN}============================================{Color.RESET}")
         print("\nFiles that would be deployed:")
-        for f in sorted(COMPONENT_DIR.iterdir()):
-            if f.is_file():
-                gray(f.name)
+        for f in sorted(COMPONENT_DIR.rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts:
+                gray(str(f.relative_to(COMPONENT_DIR)))
         sys.exit(0)
 
     # Step 2: Test SSH

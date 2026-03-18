@@ -68,3 +68,18 @@ ATTR_AUTOMATION_STATUS = "automation_status"
 ATTR_LEARNING_SUGGESTIONS = "pending_suggestions"
 ATTR_COMPLIANCE_SCORE = "compliance_score"
 ATTR_ESTIMATED_SAVINGS = "estimated_savings"
+
+# API paths for dashboard panel
+API_BASE = "/api/climate_advisor"
+API_STATUS = f"{API_BASE}/status"
+API_BRIEFING = f"{API_BASE}/briefing"
+API_CHART_DATA = f"{API_BASE}/chart_data"
+API_AUTOMATION_STATE = f"{API_BASE}/automation_state"
+API_LEARNING = f"{API_BASE}/learning"
+API_FORCE_RECLASSIFY = f"{API_BASE}/force_reclassify"
+API_SEND_BRIEFING = f"{API_BASE}/send_briefing"
+API_RESPOND_SUGGESTION = f"{API_BASE}/respond_suggestion"
+
+# Panel
+PANEL_URL = "/climate_advisor/frontend"
+PANEL_FRONTEND_PATH = "climate-advisor"

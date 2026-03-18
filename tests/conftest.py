@@ -41,6 +41,9 @@ _HA_MODULES = [
     "homeassistant.exceptions",
     "homeassistant.util",
     "homeassistant.util.dt",
+    "homeassistant.components.http",
+    "aiohttp",
+    "aiohttp.web",
 ]
 
 for mod_name in _HA_MODULES:

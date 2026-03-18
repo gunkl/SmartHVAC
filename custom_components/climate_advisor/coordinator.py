@@ -7,6 +7,7 @@ data to the learning engine.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -80,7 +81,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._current_classification: DayClassification | None = None
         self._today_record: DailyRecord | None = None
         self._briefing_sent_today = False
+        self._last_briefing: str = ""
         self._door_open_timers: dict[str, Any] = {}
+
+        # Temperature history for dashboard chart (cleared at end of day)
+        self._outdoor_temp_history: list[tuple[str, float]] = []
+        self._indoor_temp_history: list[tuple[str, float]] = []
 
     async def async_setup(self) -> None:
         """Set up scheduled events and state listeners."""
@@ -202,6 +208,16 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             self._current_classification = classify_day(forecast)
             await self.automation_engine.apply_classification(self._current_classification)
 
+            # Record temperature history for dashboard chart
+            now_str = dt_util.now().isoformat()
+            self._outdoor_temp_history.append(
+                (now_str, forecast.current_outdoor_temp)
+            )
+            if forecast.current_indoor_temp is not None:
+                self._indoor_temp_history.append(
+                    (now_str, forecast.current_indoor_temp)
+                )
+
         # Build the data dict that sensors will read
         c = self._current_classification
         suggestions = self.learning.generate_suggestions()
@@ -211,7 +227,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_DAY_TYPE: c.day_type if c else "unknown",
             ATTR_TREND: c.trend_direction if c else "unknown",
             ATTR_TREND_MAGNITUDE: c.trend_magnitude if c else 0,
-            ATTR_BRIEFING: self._last_briefing if hasattr(self, "_last_briefing") else "",
+            ATTR_BRIEFING: self._last_briefing,
             ATTR_NEXT_ACTION: self._compute_next_action(c),
             ATTR_AUTOMATION_STATUS: "active",
             ATTR_LEARNING_SUGGESTIONS: suggestions,
@@ -426,6 +442,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         self._today_record = None
         self._briefing_sent_today = False
+        self._outdoor_temp_history.clear()
+        self._indoor_temp_history.clear()
 
     @callback
     async def _async_door_window_changed(self, event: Event) -> None:
@@ -533,6 +551,79 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         return "No action needed right now. Automation is handling it."
 
+    @property
+    def current_classification(self) -> DayClassification | None:
+        """Return the current day classification."""
+        return self._current_classification
+
+    @property
+    def today_record(self) -> DailyRecord | None:
+        """Return today's learning record."""
+        return self._today_record
+
+    def get_chart_data(self) -> dict[str, Any]:
+        """Build chart data for the dashboard panel.
+
+        Returns a dict with four series: predicted outdoor, predicted indoor,
+        actual outdoor, and actual indoor temperatures over a 24-hour period.
+        """
+        now = dt_util.now()
+        current_hour = now.hour + now.minute / 60.0
+
+        predicted_outdoor, predicted_indoor = compute_predicted_temps(
+            self._current_classification, self.config
+        )
+
+        return {
+            "predicted_outdoor": predicted_outdoor,
+            "predicted_indoor": predicted_indoor,
+            "actual_outdoor": [
+                {"time": ts, "temp": t} for ts, t in self._outdoor_temp_history
+            ],
+            "actual_indoor": [
+                {"time": ts, "temp": t} for ts, t in self._indoor_temp_history
+            ],
+            "current_hour": round(current_hour, 1),
+        }
+
+    def get_debug_state(self) -> dict[str, Any]:
+        """Return serializable debug state for the dashboard."""
+        ae = self.automation_engine
+        c = self._current_classification
+
+        # Door/window sensor states
+        sensor_states = {}
+        for sensor_id in self._resolved_sensors:
+            sensor_states[sensor_id] = {
+                "open": self._is_sensor_open(sensor_id),
+                "friendly_name": sensor_id.split(".")[-1].replace("_", " ").title(),
+            }
+
+        return {
+            "paused_by_door": ae.is_paused_by_door,
+            "pre_pause_mode": ae._pre_pause_mode,
+            "grace_active": ae._grace_active,
+            "last_resume_source": ae._last_resume_source,
+            "door_window_sensors": sensor_states,
+            "pending_debounce_timers": list(self._door_open_timers.keys()),
+            "classification": {
+                "day_type": c.day_type if c else None,
+                "trend_direction": c.trend_direction if c else None,
+                "trend_magnitude": c.trend_magnitude if c else None,
+                "hvac_mode": c.hvac_mode if c else None,
+                "windows_recommended": c.windows_recommended if c else None,
+                "window_open_time": (
+                    c.window_open_time.isoformat() if c and c.window_open_time else None
+                ),
+                "window_close_time": (
+                    c.window_close_time.isoformat() if c and c.window_close_time else None
+                ),
+                "pre_condition": c.pre_condition if c else None,
+                "pre_condition_target": c.pre_condition_target if c else None,
+                "setback_modifier": c.setback_modifier if c else None,
+            },
+        }
+
     async def async_shutdown(self) -> None:
         """Clean up on shutdown."""
         # Cancel any pending debounce timers
@@ -545,6 +636,96 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._unsub_listeners.clear()
         self._unsubscribe_door_window_listeners()
         self.automation_engine.cleanup()
+
+
+def compute_predicted_temps(
+    classification: DayClassification | None,
+    config: dict[str, Any],
+) -> tuple[list[dict], list[dict]]:
+    """Compute predicted outdoor and indoor hourly temperatures.
+
+    This is a standalone function so it can be tested without a coordinator.
+
+    Returns:
+        (predicted_outdoor, predicted_indoor) — each a list of 24 dicts
+        with 'hour' and 'temp' keys, or empty lists if no classification.
+    """
+    if not classification:
+        return [], []
+
+    c = classification
+
+    # --- Predicted outdoor temps (sinusoidal interpolation) ---
+    predicted_outdoor: list[dict] = []
+    high = c.today_high
+    low = c.today_low
+    mid = (high + low) / 2.0
+    amp = (high - low) / 2.0
+    for h in range(24):
+        # Peak at ~15:00 (3 PM), trough at ~5:00 (5 AM)
+        temp = mid + amp * math.cos(2 * math.pi * (h - 15) / 24)
+        predicted_outdoor.append({"hour": h, "temp": round(temp, 1)})
+
+    # --- Predicted indoor temps (from schedule + setpoints) ---
+    predicted_indoor: list[dict] = []
+    wake = _parse_time(config.get("wake_time", "06:30"))
+    sleep = _parse_time(config.get("sleep_time", "22:30"))
+    wake_h = wake.hour + wake.minute / 60.0
+    sleep_h = sleep.hour + sleep.minute / 60.0
+
+    comfort = (
+        config.get("comfort_heat", 70)
+        if c.hvac_mode == "heat"
+        else config.get("comfort_cool", 75)
+    )
+    setback = (
+        config.get("setback_heat", 60)
+        if c.hvac_mode == "heat"
+        else config.get("setback_cool", 80)
+    )
+    setback += c.setback_modifier
+
+    for h in range(24):
+        if h < wake_h:
+            temp = setback  # overnight setback
+        elif h < wake_h + 0.5:
+            # ramping from setback to comfort
+            frac = (h - wake_h) / 0.5
+            temp = setback + frac * (comfort - setback)
+        elif h < sleep_h:
+            if c.hvac_mode == "off" and predicted_outdoor:
+                # drift toward outdoor when HVAC off
+                outdoor_t = predicted_outdoor[h]["temp"]
+                drift_rate = 3.0 if (
+                    c.windows_recommended
+                    and c.window_open_time
+                    and c.window_close_time
+                    and c.window_open_time.hour <= h < c.window_close_time.hour
+                ) else 1.5
+                # Simple drift model: move toward outdoor at drift_rate °/hr
+                diff = outdoor_t - comfort
+                temp = comfort + min(abs(diff), drift_rate) * (1 if diff > 0 else -1)
+            else:
+                temp = comfort
+        elif h < sleep_h + 0.5:
+            # ramping from comfort to bedtime setback
+            bedtime_setback = (
+                comfort - 4 + c.setback_modifier
+                if c.hvac_mode == "heat"
+                else comfort + 3
+            )
+            frac = (h - sleep_h) / 0.5
+            temp = comfort + frac * (bedtime_setback - comfort)
+        else:
+            bedtime_setback = (
+                comfort - 4 + c.setback_modifier
+                if c.hvac_mode == "heat"
+                else comfort + 3
+            )
+            temp = bedtime_setback
+        predicted_indoor.append({"hour": h, "temp": round(temp, 1)})
+
+    return predicted_outdoor, predicted_indoor
 
 
 def _parse_time(time_str: str) -> time:

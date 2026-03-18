@@ -10,11 +10,15 @@ This integration provides:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+from .api import API_VIEWS
 from .const import (
+    PANEL_FRONTEND_PATH,
+    PANEL_URL,
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
     CONF_MANUAL_GRACE_NOTIFY,
@@ -136,6 +140,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_suggestion_response,
     )
 
+    # Register debug services
+    async def handle_force_reclassify(call):
+        """Force a coordinator refresh / reclassification."""
+        await coordinator.async_request_refresh()
+
+    async def handle_resend_briefing(call):
+        """Re-send the daily briefing."""
+        from homeassistant.util import dt as dt_util
+
+        coordinator._briefing_sent_today = False
+        await coordinator._async_send_briefing(dt_util.now())
+
+    hass.services.async_register(DOMAIN, "force_reclassify", handle_force_reclassify)
+    hass.services.async_register(DOMAIN, "resend_briefing", handle_resend_briefing)
+
+    # Register REST API views for the dashboard panel
+    for view_cls in API_VIEWS:
+        hass.http.register_view(view_cls())
+
+    # Register dashboard panel (iframe serving frontend/index.html)
+    frontend_path = Path(__file__).parent / "frontend"
+    hass.http.register_static_path(PANEL_URL, str(frontend_path), cache_headers=True)
+    hass.components.frontend.async_register_built_in_panel(
+        "iframe",
+        sidebar_title="Climate Advisor",
+        sidebar_icon="mdi:thermostat",
+        frontend_url_path=PANEL_FRONTEND_PATH,
+        require_admin=False,
+        config={"url": f"{PANEL_URL}/index.html"},
+    )
+
     _LOGGER.info("Climate Advisor integration loaded successfully")
     return True
 
@@ -144,6 +179,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a Climate Advisor config entry."""
     coordinator: ClimateAdvisorCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
     await coordinator.async_shutdown()
+
+    # Remove the dashboard panel
+    hass.components.frontend.async_remove_panel(PANEL_FRONTEND_PATH)
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return unload_ok
