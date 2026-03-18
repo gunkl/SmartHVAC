@@ -317,11 +317,44 @@
     });
   });
 
+  // --- Auth: extract HA token from parent window ---
+  let _authToken = null;
+
+  function getAuthToken() {
+    if (_authToken) return _authToken;
+    try {
+      // HA exposes the token on the parent document's hassConnection
+      const ha = document.querySelector('home-assistant')
+        || (window.parent && window.parent.document.querySelector('home-assistant'));
+      if (ha && ha.hass && ha.hass.auth && ha.hass.auth.data) {
+        _authToken = ha.hass.auth.data.access_token;
+      }
+    } catch (e) {
+      // Cross-origin or unavailable — fall through
+    }
+    return _authToken;
+  }
+
+  // Listen for auth token sent via postMessage from HA frontend
+  window.addEventListener('message', (ev) => {
+    if (ev.data && ev.data.type === 'auth' && ev.data.access_token) {
+      _authToken = ev.data.access_token;
+      // Re-load all data now that we have auth
+      loadAll();
+    }
+  });
+
   // --- API helpers ---
-  async function apiFetch(path, opts) {
+  async function apiFetch(path, opts = {}) {
+    const token = getAuthToken();
+    const headers = { ...(opts.headers || {}) };
+    if (token) {
+      headers['Authorization'] = 'Bearer ' + token;
+    }
     const resp = await fetch('/api/climate_advisor/' + path, {
       credentials: 'same-origin',
       ...opts,
+      headers,
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     return resp.json();
@@ -671,11 +704,14 @@
   }
 
   // --- Initial load ---
-  loadStatus();
-  loadBriefing();
-  loadChart();
-  loadAutomationState();
-  loadLearning();
+  function loadAll() {
+    loadStatus();
+    loadBriefing();
+    loadChart();
+    loadAutomationState();
+    loadLearning();
+  }
+  loadAll();
 
   // --- Auto-refresh ---
   setInterval(() => { loadStatus(); loadBriefing(); }, 60000);
