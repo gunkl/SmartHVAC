@@ -163,9 +163,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     frontend_path = Path(__file__).parent / "frontend"
     from homeassistant.components.http import StaticPathConfig
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(PANEL_URL, str(frontend_path), cache_headers=True)]
+        [StaticPathConfig(PANEL_URL, str(frontend_path), cache_headers=False)]
     )
     from homeassistant.components.frontend import async_register_built_in_panel
+    import hashlib
+    _panel_bytes = await hass.async_add_executor_job(
+        (frontend_path / "index.html").read_bytes
+    )
+    _panel_hash = hashlib.md5(_panel_bytes).hexdigest()[:8]
     async_register_built_in_panel(
         hass,
         "iframe",
@@ -173,7 +178,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         sidebar_icon="mdi:thermostat",
         frontend_url_path=PANEL_FRONTEND_PATH,
         require_admin=False,
-        config={"url": f"{PANEL_URL}/index.html"},
+        config={"url": f"{PANEL_URL}/index.html?v={_panel_hash}"},
     )
 
     _LOGGER.info("Climate Advisor integration loaded successfully")

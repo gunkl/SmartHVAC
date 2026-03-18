@@ -317,7 +317,7 @@
     });
   });
 
-  // --- Auth: extract HA token ---
+  // --- Auth: extract HA token from parent window ---
   function getAuthToken() {
     // Method 1: parent window's hass object (same-origin iframe)
     try {
@@ -327,7 +327,7 @@
       }
     } catch (e) { /* cross-origin or not ready */ }
 
-    // Method 2: localStorage (HA stores tokens here, same-origin accessible)
+    // Method 2: localStorage fallback (HA stores tokens here)
     try {
       const stored = localStorage.getItem('hassTokens');
       if (stored) {
