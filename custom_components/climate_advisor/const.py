@@ -27,6 +27,9 @@ TREND_THRESHOLD_MODERATE = 5
 
 # Timing
 DOOR_WINDOW_PAUSE_SECONDS = 180  # 3 minutes before pausing HVAC
+
+# Door/window sensor configuration
+CONF_SENSOR_POLARITY_INVERTED = "sensor_polarity_inverted"
 OCCUPANCY_SETBACK_MINUTES = 15
 MAX_CONTINUOUS_RUNTIME_HOURS = 3
 

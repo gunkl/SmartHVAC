@@ -13,6 +13,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     DOMAIN,
+    CONF_SENSOR_POLARITY_INVERTED,
     DEFAULT_COMFORT_HEAT,
     DEFAULT_COMFORT_COOL,
     DEFAULT_SETBACK_HEAT,
@@ -58,7 +59,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -198,6 +199,15 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             multiple=True,
                         )
                     ),
+                    vol.Optional("door_window_groups", default=[]): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["group"],
+                            multiple=True,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_SENSOR_POLARITY_INVERTED, default=False
+                    ): selector.BooleanSelector(),
                 }
             ),
         )
@@ -305,6 +315,29 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=["sensor", "input_number"])
                     ),
+                    vol.Optional(
+                        "door_window_sensors",
+                        default=current.get("door_window_sensors", []),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["binary_sensor"],
+                            device_class=["door", "window", "opening"],
+                            multiple=True,
+                        )
+                    ),
+                    vol.Optional(
+                        "door_window_groups",
+                        default=current.get("door_window_groups", []),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["group"],
+                            multiple=True,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_SENSOR_POLARITY_INVERTED,
+                        default=current.get(CONF_SENSOR_POLARITY_INVERTED, False),
+                    ): selector.BooleanSelector(),
                 }
             ),
         )

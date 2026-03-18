@@ -38,9 +38,16 @@
       },
       "sensors": {
         "title": "Door & Window Sensors",
-        "description": "Select any door or window contact sensors you'd like Climate Advisor to monitor. These will pause HVAC when left open.",
+        "description": "Select individual door/window sensors or binary sensor groups to monitor. When a door or window is left open, Climate Advisor will pause your HVAC to avoid wasting energy.\n\nYou can create a binary sensor group in Home Assistant to bundle multiple sensors together, then select that group here instead of picking each sensor individually.\n\nThe polarity toggle controls how sensor states are interpreted. Most sensors use the Home Assistant standard where 'on' means open (unsafe). If your sensors report the opposite, enable the invert toggle.",
         "data": {
-          "door_window_sensors": "Door/Window Sensors"
+          "door_window_sensors": "Individual Door/Window Sensors",
+          "door_window_groups": "Binary Sensor Groups",
+          "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)"
+        },
+        "data_description": {
+          "door_window_sensors": "Select individual binary sensors with door, window, or opening device classes.",
+          "door_window_groups": "Select pre-configured binary sensor groups. All member sensors in the group will be monitored.",
+          "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard."
         }
       },
       "schedule": {
@@ -66,7 +73,10 @@
           "outdoor_temp_source": "Outdoor Temperature Source",
           "outdoor_temp_entity": "Outdoor Temperature Entity",
           "indoor_temp_source": "Indoor Temperature Source",
-          "indoor_temp_entity": "Indoor Temperature Entity"
+          "indoor_temp_entity": "Indoor Temperature Entity",
+          "door_window_sensors": "Individual Door/Window Sensors",
+          "door_window_groups": "Binary Sensor Groups",
+          "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)"
         }
       }
     }

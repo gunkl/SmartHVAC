@@ -24,6 +24,7 @@ from .briefing import generate_briefing
 from .classifier import ForecastSnapshot, DayClassification, classify_day
 from .learning import LearningEngine, DailyRecord
 from .const import (
+    CONF_SENSOR_POLARITY_INVERTED,
     DOMAIN,
     DAY_TYPE_HOT,
     DAY_TYPE_COLD,
@@ -57,6 +58,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         )
         self.config = config
         self._unsub_listeners: list[Any] = []
+        self._unsub_dw_listeners: list[Any] = []
+        self._resolved_sensors: list[str] = []
 
         # Sub-components
         self.learning = LearningEngine(Path(hass.config.config_dir))
@@ -67,6 +70,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             door_window_sensors=config.get("door_window_sensors", []),
             notify_service=config["notify_service"],
             config=config,
+            sensor_polarity_inverted=config.get(CONF_SENSOR_POLARITY_INVERTED, False),
         )
 
         # State
@@ -127,15 +131,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             )
         )
 
-        # Listeners: door/window sensors
-        for sensor_id in self.config.get("door_window_sensors", []):
-            self._unsub_listeners.append(
-                async_track_state_change_event(
-                    self.hass,
-                    sensor_id,
-                    self._async_door_window_changed,
-                )
-            )
+        # Listeners: door/window sensors (resolve groups into individual sensors)
+        self._resolved_sensors = self._resolve_monitored_sensors()
+        self._subscribe_door_window_listeners()
 
         # Listeners: thermostat state (for tracking manual overrides and runtime)
         self._unsub_listeners.append(
@@ -148,8 +146,66 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info("Climate Advisor coordinator setup complete")
 
+    def _resolve_monitored_sensors(self) -> list[str]:
+        """Resolve all monitored sensor entity IDs, expanding groups."""
+        individual = list(self.config.get("door_window_sensors", []))
+        groups = self.config.get("door_window_groups", [])
+
+        for group_id in groups:
+            state = self.hass.states.get(group_id)
+            if state:
+                members = state.attributes.get("entity_id", [])
+                for member in members:
+                    if member not in individual:
+                        individual.append(member)
+            else:
+                _LOGGER.warning(
+                    "Door/window group %s is unavailable; "
+                    "its members will not be monitored until next refresh",
+                    group_id,
+                )
+
+        return individual
+
+    def _subscribe_door_window_listeners(self) -> None:
+        """Subscribe to state changes for all resolved door/window sensors."""
+        for sensor_id in self._resolved_sensors:
+            self._unsub_dw_listeners.append(
+                async_track_state_change_event(
+                    self.hass,
+                    sensor_id,
+                    self._async_door_window_changed,
+                )
+            )
+
+    def _unsubscribe_door_window_listeners(self) -> None:
+        """Unsubscribe all door/window sensor listeners."""
+        for unsub in self._unsub_dw_listeners:
+            unsub()
+        self._unsub_dw_listeners.clear()
+
+    def _is_sensor_open(self, entity_id: str) -> bool:
+        """Check if a door/window sensor is in the 'open' state, respecting polarity."""
+        inverted = self.config.get(CONF_SENSOR_POLARITY_INVERTED, False)
+        state = self.hass.states.get(entity_id)
+        if not state:
+            return False
+        if inverted:
+            return state.state == "off"
+        return state.state == "on"
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch forecast and update classification (runs every 30 min)."""
+        # Re-resolve group membership in case it changed
+        new_resolved = self._resolve_monitored_sensors()
+        if set(new_resolved) != set(self._resolved_sensors):
+            _LOGGER.info(
+                "Door/window sensor membership changed; updating listeners"
+            )
+            self._unsubscribe_door_window_listeners()
+            self._resolved_sensors = new_resolved
+            self._subscribe_door_window_listeners()
+
         forecast = await self._get_forecast()
         if forecast:
             self._current_classification = classify_day(forecast)
@@ -388,19 +444,16 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if not new_state:
             return
 
-        if new_state.state == "on":  # "on" typically means open for binary sensors
-            # Start a timer — if still open after threshold, pause HVAC
+        if self._is_sensor_open(entity_id):
+            # Sensor transitioned to open — start HVAC pause flow
             _LOGGER.debug("Door/window opened: %s — starting timer", entity_id)
-            # In a full implementation, use async_call_later for the debounce
-            # For now, signal the automation engine
             await self.automation_engine.handle_door_window_open(entity_id)
             if self._today_record:
                 self._today_record.door_window_pause_events += 1
         else:
-            # Check if ALL monitored sensors are closed
+            # Sensor transitioned to closed — check if ALL monitored sensors are closed
             all_closed = all(
-                self.hass.states.is_state(s, "off")
-                for s in self.config.get("door_window_sensors", [])
+                not self._is_sensor_open(s) for s in self._resolved_sensors
             )
             if all_closed:
                 await self.automation_engine.handle_all_doors_windows_closed()
@@ -448,6 +501,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         for unsub in self._unsub_listeners:
             unsub()
         self._unsub_listeners.clear()
+        self._unsubscribe_door_window_listeners()
         self.automation_engine.cleanup()
 
 

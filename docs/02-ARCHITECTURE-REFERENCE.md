@@ -94,6 +94,8 @@ setback_heat: 60 (°F)
 setback_cool: 80 (°F)
 notify_service: notify.mobile_app_phone
 door_window_sensors: [binary_sensor.back_door, ...]
+door_window_groups: [group.living_room_windows, ...]  # binary_sensor groups (members auto-resolved)
+sensor_polarity_inverted: false  # true if sensors report on=closed instead of on=open
 wake_time: "06:30"
 sleep_time: "22:30"
 briefing_time: "06:00"

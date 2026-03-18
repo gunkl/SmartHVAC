@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 
 from .classifier import DayClassification
 from .const import (
+    CONF_SENSOR_POLARITY_INVERTED,
     DOOR_WINDOW_PAUSE_SECONDS,
 )
 
@@ -29,6 +30,7 @@ class AutomationEngine:
         door_window_sensors: list[str],
         notify_service: str,
         config: dict[str, Any],
+        sensor_polarity_inverted: bool = False,
     ) -> None:
         """Initialize the automation engine."""
         self.hass = hass
@@ -37,6 +39,7 @@ class AutomationEngine:
         self.door_window_sensors = door_window_sensors
         self.notify_service = notify_service
         self.config = config
+        self.sensor_polarity_inverted = sensor_polarity_inverted
         self._active_listeners: list[Any] = []
         self._current_classification: DayClassification | None = None
         self._paused_by_door = False

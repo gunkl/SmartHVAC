@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    CONF_SENSOR_POLARITY_INVERTED,
     DOMAIN,
     TEMP_SOURCE_SENSOR,
     TEMP_SOURCE_INPUT_NUMBER,
@@ -60,7 +61,17 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             config_entry, data=new_data, version=2
         )
         _LOGGER.info("Migration to version 2 complete")
-        return True
+        # Fall through to v2→v3 migration
+
+    if config_entry.version == 2:
+        _LOGGER.info("Migrating Climate Advisor config entry from version 2 to 3")
+        new_data = {**config_entry.data}
+        new_data.setdefault("door_window_groups", [])
+        new_data.setdefault(CONF_SENSOR_POLARITY_INVERTED, False)
+        hass.config_entries.async_update_entry(
+            config_entry, data=new_data, version=3
+        )
+        _LOGGER.info("Migration to version 3 complete")
 
     return True
 
