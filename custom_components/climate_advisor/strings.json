@@ -11,7 +11,8 @@
           "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
           "setback_heat": "Away/Sleep Heating Temperature (\u00b0F)",
           "setback_cool": "Away/Sleep Cooling Temperature (\u00b0F)",
-          "notify_service": "Notification Service"
+          "notify_service": "Notification Service",
+          "email_notify": "Also send email notifications"
         },
         "data_description": {
           "weather_entity": "The weather integration Climate Advisor uses for forecasts and outdoor conditions.",
@@ -20,7 +21,8 @@
           "comfort_cool": "Target temperature when cooling and someone is home.",
           "setback_heat": "Lower temperature used when away or sleeping to save energy.",
           "setback_cool": "Higher temperature used when away or sleeping to save energy.",
-          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone)."
+          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone).",
+          "email_notify": "When enabled, Climate Advisor also sends all notifications via the send_email service."
         }
       },
       "temperature_sources": {
@@ -105,7 +107,8 @@
           "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
           "setback_heat": "Away/Sleep Heating Temperature (\u00b0F)",
           "setback_cool": "Away/Sleep Cooling Temperature (\u00b0F)",
-          "notify_service": "Notification Service"
+          "notify_service": "Notification Service",
+          "email_notify": "Also send email notifications"
         },
         "data_description": {
           "weather_entity": "The weather integration Climate Advisor uses for forecasts and outdoor conditions.",
@@ -114,7 +117,8 @@
           "comfort_cool": "Target temperature when cooling and someone is home.",
           "setback_heat": "Lower temperature used when away or sleeping to save energy.",
           "setback_cool": "Higher temperature used when away or sleeping to save energy.",
-          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone)."
+          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone).",
+          "email_notify": "When enabled, Climate Advisor also sends all notifications via the send_email service."
         }
       },
       "temperature_sources": {

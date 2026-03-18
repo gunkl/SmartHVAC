@@ -18,6 +18,7 @@ from .const import (
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
     CONF_AUTOMATION_GRACE_NOTIFY,
+    CONF_EMAIL_NOTIFY,
     DEFAULT_COMFORT_HEAT,
     DEFAULT_COMFORT_COOL,
     DEFAULT_SETBACK_HEAT,
@@ -66,7 +67,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 4
+    VERSION = 5
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -105,6 +106,7 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         selector.NumberSelectorConfig(min=75, max=90, step=1, unit_of_measurement="°F", mode="slider")
                     ),
                     vol.Required("notify_service", default="notify.notify"): selector.TextSelector(),
+                    vol.Optional(CONF_EMAIL_NOTIFY, default=True): selector.BooleanSelector(),
                 }
             ),
             errors=errors,
@@ -351,6 +353,10 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         "notify_service",
                         default=current.get("notify_service", "notify.notify"),
                     ): selector.TextSelector(),
+                    vol.Optional(
+                        CONF_EMAIL_NOTIFY,
+                        default=current.get(CONF_EMAIL_NOTIFY, True),
+                    ): selector.BooleanSelector(),
                 }
             ),
         )

@@ -37,6 +37,7 @@ CONF_MANUAL_GRACE_PERIOD = "manual_grace_seconds"
 CONF_MANUAL_GRACE_NOTIFY = "manual_grace_notify"
 CONF_AUTOMATION_GRACE_PERIOD = "automation_grace_seconds"
 CONF_AUTOMATION_GRACE_NOTIFY = "automation_grace_notify"
+CONF_EMAIL_NOTIFY = "email_notify"
 
 # Debounce and grace period defaults (seconds)
 DEFAULT_SENSOR_DEBOUNCE_SECONDS = 300  # 5 minutes

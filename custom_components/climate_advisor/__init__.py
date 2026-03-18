@@ -21,6 +21,7 @@ from .const import (
     PANEL_URL,
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
+    CONF_EMAIL_NOTIFY,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
     CONF_SENSOR_DEBOUNCE,
@@ -98,6 +99,15 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             config_entry, data=new_data, version=4
         )
         _LOGGER.info("Migration to version 4 complete")
+
+    if config_entry.version == 4:
+        _LOGGER.info("Migrating Climate Advisor config entry from version 4 to 5")
+        new_data = {**config_entry.data}
+        new_data.setdefault(CONF_EMAIL_NOTIFY, True)
+        hass.config_entries.async_update_entry(
+            config_entry, data=new_data, version=5
+        )
+        _LOGGER.info("Migration to version 5 complete")
 
     return True
 

@@ -42,6 +42,7 @@ from .const import (
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_WEATHER_SERVICE,
     TEMP_SOURCE_CLIMATE_FALLBACK,
+    CONF_EMAIL_NOTIFY,
     CONF_SENSOR_DEBOUNCE,
     CONF_MANUAL_GRACE_PERIOD,
     CONF_AUTOMATION_GRACE_PERIOD,
@@ -437,14 +438,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # Send notification
         _notify_svc = self.config["notify_service"]
         _notify_name = _notify_svc.split(".")[-1] if "." in _notify_svc else _notify_svc
+        _briefing_payload = {
+            "message": briefing,
+            "title": "🏠 Your Home Climate Plan for Today",
+        }
         await self.hass.services.async_call(
-            "notify",
-            _notify_name,
-            {
-                "message": briefing,
-                "title": "🏠 Your Home Climate Plan for Today",
-            },
+            "notify", _notify_name, _briefing_payload
         )
+        if self.config.get(CONF_EMAIL_NOTIFY, True):
+            await self.hass.services.async_call(
+                "notify", "send_email", _briefing_payload
+            )
 
         self._briefing_sent_today = True
         _LOGGER.info("Daily briefing sent — day type: %s", classification.day_type)

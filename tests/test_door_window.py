@@ -17,6 +17,7 @@ from custom_components.climate_advisor.automation import AutomationEngine
 from custom_components.climate_advisor.const import (
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
+    CONF_EMAIL_NOTIFY,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
     CONF_SENSOR_DEBOUNCE,
@@ -579,3 +580,129 @@ class TestConfigMigrationV3ToV4:
         assert new_data[CONF_MANUAL_GRACE_NOTIFY] is True
         assert new_data[CONF_AUTOMATION_GRACE_PERIOD] == 1800
         assert new_data[CONF_AUTOMATION_GRACE_NOTIFY] is False
+
+
+# ---------------------------------------------------------------------------
+# Email notification tests
+# ---------------------------------------------------------------------------
+
+class TestEmailNotifications:
+    """Tests for dual-channel notification (primary + email via _notify helper)."""
+
+    def test_notify_sends_both_when_email_enabled(self):
+        """_notify sends to primary service AND send_email when toggle is on."""
+        engine = _make_automation_engine({CONF_EMAIL_NOTIFY: True})
+        asyncio.run(engine._notify("Test message", "Test Title"))
+
+        calls = engine.hass.services.async_call.call_args_list
+        assert len(calls) == 2
+        # First call: primary service
+        assert calls[0][0] == ("notify", "notify", {"message": "Test message", "title": "Test Title"})
+        # Second call: email
+        assert calls[1][0] == ("notify", "send_email", {"message": "Test message", "title": "Test Title"})
+
+    def test_notify_skips_email_when_disabled(self):
+        """_notify only sends to primary service when email toggle is off."""
+        engine = _make_automation_engine({CONF_EMAIL_NOTIFY: False})
+        asyncio.run(engine._notify("Test message", "Test Title"))
+
+        calls = engine.hass.services.async_call.call_args_list
+        assert len(calls) == 1
+        assert calls[0][0] == ("notify", "notify", {"message": "Test message", "title": "Test Title"})
+
+    def test_notify_defaults_to_email_enabled(self):
+        """When email_notify is not in config, it defaults to True (sends email)."""
+        engine = _make_automation_engine()
+        # Ensure the key is not present
+        engine.config.pop(CONF_EMAIL_NOTIFY, None)
+        asyncio.run(engine._notify("Test message", "Test Title"))
+
+        calls = engine.hass.services.async_call.call_args_list
+        assert len(calls) == 2
+        assert calls[1][0][1] == "send_email"
+
+    def test_door_open_sends_email(self):
+        """handle_door_window_open sends email when toggle is on."""
+        engine = _make_automation_engine({CONF_EMAIL_NOTIFY: True})
+        engine.hass.states.get.return_value = _make_state("heat")
+
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        # Should have: set_hvac_mode("off") + primary notify + email notify = 3 calls
+        calls = engine.hass.services.async_call.call_args_list
+        notify_calls = [c for c in calls if c[0][0] == "notify"]
+        assert len(notify_calls) == 2
+        assert notify_calls[1][0][1] == "send_email"
+
+    def test_door_open_no_email_when_disabled(self):
+        """handle_door_window_open skips email when toggle is off."""
+        engine = _make_automation_engine({CONF_EMAIL_NOTIFY: False})
+        engine.hass.states.get.return_value = _make_state("heat")
+
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        calls = engine.hass.services.async_call.call_args_list
+        notify_calls = [c for c in calls if c[0][0] == "notify"]
+        assert len(notify_calls) == 1
+
+    def test_occupancy_home_sends_email(self):
+        """handle_occupancy_home sends email when toggle is on."""
+        engine = _make_automation_engine({CONF_EMAIL_NOTIFY: True})
+        # Need a classification for occupancy_home to proceed
+        from custom_components.climate_advisor.classifier import DayClassification
+        engine._current_classification = DayClassification(
+            day_type="mild",
+            today_high=72,
+            today_low=55,
+            tomorrow_high=70,
+            tomorrow_low=52,
+            hvac_mode="heat",
+            windows_recommended=False,
+            window_open_time=None,
+            window_close_time=None,
+            pre_condition=False,
+            pre_condition_target=None,
+            setback_modifier=0,
+            trend_direction="stable",
+            trend_magnitude=0,
+        )
+        asyncio.run(engine.handle_occupancy_home())
+
+        calls = engine.hass.services.async_call.call_args_list
+        notify_calls = [c for c in calls if c[0][0] == "notify"]
+        assert len(notify_calls) == 2
+        assert notify_calls[1][0][1] == "send_email"
+
+
+# ---------------------------------------------------------------------------
+# Config migration v4 → v5 tests
+# ---------------------------------------------------------------------------
+
+class TestConfigMigrationV4ToV5:
+    """Tests for v4->v5 config migration adding email_notify default."""
+
+    def test_v4_config_gets_email_notify_default(self):
+        v4_data = {
+            "notify_service": "notify.notify",
+            "door_window_sensors": ["binary_sensor.front_door"],
+        }
+        new_data = {**v4_data}
+        new_data.setdefault(CONF_EMAIL_NOTIFY, True)
+
+        assert new_data[CONF_EMAIL_NOTIFY] is True
+        assert new_data["notify_service"] == "notify.notify"
+
+    def test_v4_config_preserves_email_notify_if_set(self):
+        v4_data = {
+            CONF_EMAIL_NOTIFY: False,
+        }
+        new_data = {**v4_data}
+        new_data.setdefault(CONF_EMAIL_NOTIFY, True)
+
+        assert new_data[CONF_EMAIL_NOTIFY] is False

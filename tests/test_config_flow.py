@@ -54,6 +54,7 @@ FULL_CONFIG = {
     "manual_grace_notify": False,
     "automation_grace_seconds": 3600,
     "automation_grace_notify": True,
+    "email_notify": True,
     "wake_time": "06:30:00",
     "sleep_time": "22:30:00",
     "briefing_time": "06:00:00",
@@ -631,8 +632,8 @@ class TestMigrationViaRealFunction:
         data, _ = self._call_migrate(v1)
         assert data["indoor_temp_source"] == "input_number"
 
-    def test_v1_chain_migration_produces_v4_fields(self):
-        """A v1 entry should chain through all migrations and gain v4 fields."""
+    def test_v1_chain_migration_produces_v5_fields(self):
+        """A v1 entry should chain through all migrations and gain v4+v5 fields."""
         from custom_components.climate_advisor.const import (
             DEFAULT_SENSOR_DEBOUNCE_SECONDS,
             DEFAULT_MANUAL_GRACE_SECONDS,
@@ -642,6 +643,7 @@ class TestMigrationViaRealFunction:
             CONF_MANUAL_GRACE_NOTIFY,
             CONF_AUTOMATION_GRACE_PERIOD,
             CONF_AUTOMATION_GRACE_NOTIFY,
+            CONF_EMAIL_NOTIFY,
         )
         v1 = {"weather_entity": "weather.forecast_home", "climate_entity": "climate.living_room"}
         data, ok = self._call_migrate(v1)
@@ -652,11 +654,25 @@ class TestMigrationViaRealFunction:
         assert data.get(CONF_MANUAL_GRACE_NOTIFY) is False
         assert data.get(CONF_AUTOMATION_GRACE_PERIOD) == DEFAULT_AUTOMATION_GRACE_SECONDS
         assert data.get(CONF_AUTOMATION_GRACE_NOTIFY) is True
+        # v5 field
+        assert data.get(CONF_EMAIL_NOTIFY) is True
 
-    def test_already_v4_entry_returns_true_without_changes(self):
-        """A v4 entry should pass through with no mutations."""
-        v4 = dict(FULL_CONFIG)
-        entry = _make_config_entry(v4, version=4)
+    def test_v4_entry_migrates_to_v5_with_email_notify(self):
+        """A v4 entry should gain email_notify=True via v4→v5 migration."""
+        from custom_components.climate_advisor.const import CONF_EMAIL_NOTIFY
+        v4 = {
+            "weather_entity": "weather.forecast_home",
+            "climate_entity": "climate.living_room",
+            "notify_service": "notify.notify",
+        }
+        data, ok = self._call_migrate(v4, start_version=4)
+        assert ok is True
+        assert data.get(CONF_EMAIL_NOTIFY) is True
+
+    def test_already_v5_entry_returns_true_without_changes(self):
+        """A v5 entry should pass through with no mutations."""
+        v5 = dict(FULL_CONFIG)
+        entry = _make_config_entry(v5, version=5)
         hass = _make_hass()
 
         from custom_components.climate_advisor import async_migrate_entry

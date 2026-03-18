@@ -15,6 +15,7 @@ from .classifier import DayClassification
 from .const import (
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
+    CONF_EMAIL_NOTIFY,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
     CONF_SENSOR_DEBOUNCE,
@@ -57,6 +58,21 @@ class AutomationEngine:
         self._automation_grace_cancel: Any | None = None
         self._grace_active = False
         self._last_resume_source: str | None = None
+
+    async def _notify(self, message: str, title: str) -> None:
+        """Send a notification via the configured service, plus email if enabled."""
+        service_name = (
+            self.notify_service.split(".")[-1]
+            if "." in self.notify_service
+            else self.notify_service
+        )
+        await self.hass.services.async_call(
+            "notify", service_name, {"message": message, "title": title}
+        )
+        if self.config.get(CONF_EMAIL_NOTIFY, True):
+            await self.hass.services.async_call(
+                "notify", "send_email", {"message": message, "title": title}
+            )
 
     @property
     def is_paused_by_door(self) -> bool:
@@ -171,18 +187,11 @@ class AutomationEngine:
                 CONF_SENSOR_DEBOUNCE, DEFAULT_SENSOR_DEBOUNCE_SECONDS
             ) // 60
             friendly_name = entity_id.split(".")[-1].replace("_", " ").title()
-            service_name = self.notify_service.split(".")[-1] if "." in self.notify_service else self.notify_service
-            await self.hass.services.async_call(
-                "notify",
-                service_name,
-                {
-                    "message": (
-                        f"🚪 HVAC paused — {friendly_name} has been open for "
-                        f"{debounce_minutes} minutes. "
-                        f"Heating/cooling will resume when it's closed."
-                    ),
-                    "title": "Climate Advisor",
-                },
+            await self._notify(
+                f"🚪 HVAC paused — {friendly_name} has been open for "
+                f"{debounce_minutes} minutes. "
+                f"Heating/cooling will resume when it's closed.",
+                "Climate Advisor",
             )
             _LOGGER.info("Paused HVAC due to open: %s", entity_id)
 
@@ -249,23 +258,12 @@ class AutomationEngine:
             _LOGGER.info("%s grace period expired (%d seconds)", source, duration)
 
             if should_notify:
-                service_name = (
-                    self.notify_service.split(".")[-1]
-                    if "." in self.notify_service
-                    else self.notify_service
-                )
                 self.hass.async_create_task(
-                    self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        {
-                            "message": (
-                                f"⏱️ {source.capitalize()} grace period expired "
-                                f"({duration // 60} minutes). HVAC will now respond "
-                                f"normally to door/window sensor changes."
-                            ),
-                            "title": "Climate Advisor",
-                        },
+                    self._notify(
+                        f"⏱️ {source.capitalize()} grace period expired "
+                        f"({duration // 60} minutes). HVAC will now respond "
+                        f"normally to door/window sensor changes.",
+                        "Climate Advisor",
                     )
                 )
 
@@ -314,14 +312,9 @@ class AutomationEngine:
             _LOGGER.info("Occupancy returned — restoring comfort setpoint")
 
         # Notify with estimated recovery time
-        service_name = self.notify_service.split(".")[-1] if "." in self.notify_service else self.notify_service
-        await self.hass.services.async_call(
-            "notify",
-            service_name,
-            {
-                "message": "🏠 Welcome home! Restoring comfort temperature. Should feel normal in about 20–30 minutes.",
-                "title": "Climate Advisor",
-            },
+        await self._notify(
+            "🏠 Welcome home! Restoring comfort temperature. Should feel normal in about 20–30 minutes.",
+            "Climate Advisor",
         )
 
     async def handle_bedtime(self) -> None:
