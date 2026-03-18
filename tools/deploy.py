@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
@@ -22,7 +23,28 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPONENT_DIR = REPO_ROOT / "custom_components" / "climate_advisor"
 ENV_FILE = REPO_ROOT / ".deploy.env"
+LOG_DIR = REPO_ROOT / "logs"
 BACKUP_KEEP_COUNT = 5
+
+_log = logging.getLogger("deploy")
+_log_path: Path | None = None
+
+
+def setup_logging() -> Path:
+    """Configure file logging. Returns the log file path."""
+    global _log_path
+    LOG_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    _log_path = LOG_DIR / f"deploy-{timestamp}.log"
+
+    handler = logging.FileHandler(_log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+    ))
+    _log.setLevel(logging.DEBUG)
+    _log.addHandler(handler)
+    _log.info("Deploy log started: %s", _log_path)
+    return _log_path
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +70,8 @@ def ok(msg: str) -> None:
 
 def fail(msg: str) -> None:
     print(f"   {Color.RED}[FAIL]{Color.RESET} {msg}")
+    if _log_path:
+        print(f"   {Color.YELLOW}[LOG]{Color.RESET} See {_log_path}")
 
 
 def info(msg: str) -> None:
@@ -119,14 +143,20 @@ def remote_path(config: dict[str, str]) -> str:
 def run_ssh(config: dict[str, str], command: str) -> tuple[int, str]:
     """Run a command on the remote server via SSH. Returns (returncode, output)."""
     cmd = ssh_args(config) + [ssh_target(config), command]
+    _log.debug("SSH cmd: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
+    _log.debug("SSH rc=%d stdout=%r stderr=%r", result.returncode,
+               result.stdout.strip(), result.stderr.strip())
     output = (result.stdout + result.stderr).strip()
     return result.returncode, output
 
 
 def run_local(command: list[str]) -> tuple[int, str]:
     """Run a local command. Returns (returncode, output)."""
+    _log.debug("Local cmd: %s", " ".join(command))
     result = subprocess.run(command, capture_output=True, text=True)
+    _log.debug("Local rc=%d stdout=%r stderr=%r", result.returncode,
+               result.stdout.strip(), result.stderr.strip())
     output = (result.stdout + result.stderr).strip()
     return result.returncode, output
 
@@ -195,8 +225,12 @@ def deploy_files(config: dict[str, str]) -> bool:
     local_count = len(local_files)
 
     cmd = scp_args(config) + local_files + [f"{target}:{rpath}/"]
+    _log.debug("SCP cmd: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
+    _log.debug("SCP rc=%d stdout=%r stderr=%r", result.returncode,
+               result.stdout.strip(), result.stderr.strip())
     if result.returncode != 0:
+        _log.error("SCP failed: rc=%d stderr=%s", result.returncode, result.stderr.strip())
         fail("File copy failed")
         if result.stderr:
             print(f"   {result.stderr.strip()}")
@@ -302,8 +336,14 @@ def main() -> None:
     parser.add_argument("--rollback", action="store_true", help="Restore most recent backup")
     args = parser.parse_args()
 
+    setup_logging()
+
     config = load_config()
     rpath = remote_path(config)
+
+    _log.info("Config: host=%s port=%s user=%s target=%s",
+              config["HA_HOST"], config["HA_SSH_PORT"],
+              config["HA_SSH_USER"], remote_path(config))
 
     print(f"{Color.CYAN}============================================{Color.RESET}")
     print(f"{Color.CYAN}  Climate Advisor Deployment Tool{Color.RESET}")

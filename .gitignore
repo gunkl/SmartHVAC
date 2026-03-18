@@ -6,6 +6,8 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+logs/
+*.log
 
 # Sensitive files — never commit
 .deploy.env
