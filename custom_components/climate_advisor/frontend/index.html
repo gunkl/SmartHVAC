@@ -317,32 +317,27 @@
     });
   });
 
-  // --- Auth: extract HA token from parent window ---
-  let _authToken = null;
-
+  // --- Auth: extract HA token ---
   function getAuthToken() {
-    if (_authToken) return _authToken;
+    // Method 1: parent window's hass object (same-origin iframe)
     try {
-      // HA exposes the token on the parent document's hassConnection
-      const ha = document.querySelector('home-assistant')
-        || (window.parent && window.parent.document.querySelector('home-assistant'));
+      const ha = window.parent.document.querySelector('home-assistant');
       if (ha && ha.hass && ha.hass.auth && ha.hass.auth.data) {
-        _authToken = ha.hass.auth.data.access_token;
+        return ha.hass.auth.data.access_token;
       }
-    } catch (e) {
-      // Cross-origin or unavailable — fall through
-    }
-    return _authToken;
-  }
+    } catch (e) { /* cross-origin or not ready */ }
 
-  // Listen for auth token sent via postMessage from HA frontend
-  window.addEventListener('message', (ev) => {
-    if (ev.data && ev.data.type === 'auth' && ev.data.access_token) {
-      _authToken = ev.data.access_token;
-      // Re-load all data now that we have auth
-      loadAll();
-    }
-  });
+    // Method 2: localStorage (HA stores tokens here, same-origin accessible)
+    try {
+      const stored = localStorage.getItem('hassTokens');
+      if (stored) {
+        const tokens = JSON.parse(stored);
+        if (tokens && tokens.access_token) return tokens.access_token;
+      }
+    } catch (e) { /* unavailable */ }
+
+    return null;
+  }
 
   // --- API helpers ---
   async function apiFetch(path, opts = {}) {
@@ -703,7 +698,7 @@
     }
   }
 
-  // --- Initial load ---
+  // --- Initial load (retry until auth token is available) ---
   function loadAll() {
     loadStatus();
     loadBriefing();
@@ -711,7 +706,20 @@
     loadAutomationState();
     loadLearning();
   }
-  loadAll();
+
+  let _loadRetries = 0;
+  function initLoad() {
+    if (getAuthToken()) {
+      loadAll();
+    } else if (_loadRetries < 20) {
+      _loadRetries++;
+      setTimeout(initLoad, 250);
+    } else {
+      // Give up waiting — try anyway (will show error messages in UI)
+      loadAll();
+    }
+  }
+  initLoad();
 
   // --- Auto-refresh ---
   setInterval(() => { loadStatus(); loadBriefing(); }, 60000);
