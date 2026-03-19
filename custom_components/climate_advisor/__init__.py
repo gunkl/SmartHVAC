@@ -32,6 +32,7 @@ from .const import (
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     DOMAIN,
+    VERSION,
     TEMP_SOURCE_SENSOR,
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_WEATHER_SERVICE,
@@ -210,11 +211,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if action == "accept":
             changes = coordinator.learning.accept_suggestion(suggestion_key)
+            await hass.async_add_executor_job(coordinator.learning.save_state)
             _LOGGER.info("Suggestion accepted: %s → changes: %s", suggestion_key, changes)
             # Apply changes to coordinator config
             coordinator.config.update(changes)
         elif action == "dismiss":
             coordinator.learning.dismiss_suggestion(suggestion_key)
+            await hass.async_add_executor_job(coordinator.learning.save_state)
             _LOGGER.info("Suggestion dismissed: %s", suggestion_key)
 
     hass.services.async_register(
@@ -240,6 +243,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from homeassistant.util import dt as dt_util
 
         diag = {
+            "version": VERSION,
             "timestamp": dt_util.now().isoformat(),
             "debug_state": coordinator.get_debug_state(),
             "chart_data_summary": {
@@ -291,7 +295,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config={"url": f"{PANEL_URL}/index.html?v={_panel_hash}"},
     )
 
-    _LOGGER.info("Climate Advisor integration loaded successfully")
+    _LOGGER.info("Climate Advisor v%s loaded successfully", VERSION)
     return True
 
 

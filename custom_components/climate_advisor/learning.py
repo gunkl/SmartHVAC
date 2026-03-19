@@ -74,13 +74,18 @@ class LearningEngine:
 
         Args:
             storage_path: Path to the HA config directory for persistent storage.
+
+        Note: Call load_state() after construction to read persisted data
+        from disk.  This is intentionally not done in __init__ because
+        the file I/O is blocking and must be run via
+        hass.async_add_executor_job from an async context.
         """
         self._db_path = storage_path / LEARNING_DB_FILE
-        self._state = self._load_state()
+        self._state = LearningState()
         self._last_suggestion_keys: list[str] = []
 
-    def _load_state(self) -> LearningState:
-        """Load learning state from disk."""
+    def load_state(self) -> None:
+        """Load learning state from disk (blocking I/O — run via executor)."""
         if self._db_path.exists():
             try:
                 data = json.loads(self._db_path.read_text())
@@ -88,13 +93,14 @@ class LearningEngine:
                     "Loaded learning state — %d records",
                     len(data.get("records", [])),
                 )
-                return LearningState(**data)
+                self._state = LearningState(**data)
+                return
             except (json.JSONDecodeError, TypeError) as err:
                 _LOGGER.warning("Failed to load learning state, starting fresh: %s", err)
-        return LearningState()
+        self._state = LearningState()
 
-    def _save_state(self) -> None:
-        """Persist learning state to disk."""
+    def save_state(self) -> None:
+        """Persist learning state to disk (blocking I/O — run via executor)."""
         try:
             self._db_path.write_text(json.dumps(asdict(self._state), indent=2))
             _LOGGER.debug("Saved learning state — %d records", len(self._state.records))
@@ -125,8 +131,6 @@ class LearningEngine:
             record.day_type,
             len(self._state.records),
         )
-
-        self._save_state()
 
     def generate_suggestions(self) -> list[str]:
         """Analyze recent patterns and generate improvement suggestions.
@@ -295,7 +299,6 @@ class LearningEngine:
         """Mark a suggestion as dismissed so it won't reappear soon."""
         self._state.dismissed_suggestions.append(suggestion_key)
         _LOGGER.info("Learning suggestion dismissed — key=%s", suggestion_key)
-        self._save_state()
 
     def accept_suggestion(self, suggestion_key: str) -> dict[str, Any]:
         """Accept a suggestion and return the config changes to apply.
@@ -336,7 +339,6 @@ class LearningEngine:
             "suggestion": suggestion_key,
             "changes": changes,
         })
-        self._save_state()
 
         return changes
 

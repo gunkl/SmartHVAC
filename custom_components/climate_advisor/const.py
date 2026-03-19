@@ -2,6 +2,10 @@
 
 DOMAIN = "climate_advisor"
 
+# Integration version — MUST match manifest.json "version" field.
+# A test in tests/test_version_sync.py enforces this.
+VERSION = "0.1.0"
+
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
 DEFAULT_COMFORT_COOL = 75

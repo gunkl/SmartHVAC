@@ -29,6 +29,7 @@ from .state import StatePersistence
 from .const import (
     CONF_SENSOR_POLARITY_INVERTED,
     DOMAIN,
+    VERSION,
     DAY_TYPE_HOT,
     DAY_TYPE_COLD,
     ATTR_DAY_TYPE,
@@ -185,10 +186,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             )
         )
 
-        _LOGGER.info("Climate Advisor coordinator setup complete")
+        _LOGGER.info("Climate Advisor v%s coordinator setup complete", VERSION)
 
     async def async_restore_state(self) -> None:
         """Restore operational state from disk after startup."""
+        await self.hass.async_add_executor_job(self.learning.load_state)
         state = await self.hass.async_add_executor_job(
             self._state_persistence.load
         )
@@ -214,6 +216,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     rec_data["suggestion_sent"] = [sent]
                 recovered = DailyRecord(**rec_data)
                 self.learning.record_day(recovered)
+                await self.hass.async_add_executor_job(
+                    self.learning.save_state
+                )
                 _LOGGER.info("Recovered yesterday's record during startup")
             except (TypeError, KeyError) as err:
                 _LOGGER.warning("Failed to recover yesterday's record: %s", err)
@@ -737,7 +742,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         """Handle bedtime setback."""
         await self.automation_engine.handle_bedtime()
 
-    @callback
     async def _async_end_of_day(self, now: datetime) -> None:
         """Finalize the day's record and reset for tomorrow."""
         if self._today_record:
@@ -751,6 +755,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             # Flush any accumulated HVAC runtime
             self._flush_hvac_runtime()
             self.learning.record_day(self._today_record)
+            await self.hass.async_add_executor_job(
+                self.learning.save_state
+            )
             _LOGGER.info("Day record saved for learning")
 
         self._today_record = None

@@ -25,6 +25,7 @@ from .const import (
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
     DOMAIN,
+    VERSION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class ClimateAdvisorStatusView(HomeAssistantView):
         hvac_mode = climate_state.state if climate_state else "unknown"
 
         return self.json({
+            "version": VERSION,
             "day_type": data.get(ATTR_DAY_TYPE, "unknown"),
             "trend_direction": data.get(ATTR_TREND, "unknown"),
             "trend_magnitude": data.get(ATTR_TREND_MAGNITUDE, 0),
@@ -207,10 +209,12 @@ class ClimateAdvisorRespondSuggestionView(HomeAssistantView):
 
         if action == "accept":
             changes = coordinator.learning.accept_suggestion(suggestion_key)
+            await hass.async_add_executor_job(coordinator.learning.save_state)
             coordinator.config.update(changes)
             return self.json({"status": "ok", "changes": changes})
         else:
             coordinator.learning.dismiss_suggestion(suggestion_key)
+            await hass.async_add_executor_job(coordinator.learning.save_state)
             return self.json({"status": "ok", "dismissed": suggestion_key})
 
 

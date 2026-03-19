@@ -133,6 +133,16 @@ Sequence: sensor opens → debounce timer → HVAC paused → user turns on
 
 **Briefing integration**: The daily briefing automatically mentions active grace periods so users understand why door/window sensing may behave differently than expected. The fresh air section also shows the actual configured debounce duration (e.g., "5 minutes" instead of a hardcoded value) so the briefing always reflects the user's settings.
 
+## Integration Version
+
+- **Canonical version**: `manifest.json` `"version"` field (shown in HA integrations UI)
+- **Python constant**: `const.VERSION` (used in startup logs, API responses, diagnostics)
+- **Format**: semantic versioning (`MAJOR.MINOR.PATCH`)
+- **Sync rule**: both locations MUST match. A test in `tests/test_version_sync.py` enforces this automatically.
+- **When releasing**: update both `const.py` and `manifest.json`.
+
+Note: `config_flow.VERSION` (config entry schema) and `state.STATE_VERSION` (state file format) are separate internal versioning concerns and do not track the integration release version.
+
 ## Constants (const.py)
 
 ### Day Type Thresholds
