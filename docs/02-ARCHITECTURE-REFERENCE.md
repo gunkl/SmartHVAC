@@ -14,7 +14,8 @@ custom_components/climate_advisor/
 ├── briefing.py          # Daily email/notification text generation
 ├── automation.py        # HVAC service calls, door/window pause, occupancy
 ├── learning.py          # Pattern tracking, suggestion generation, persistence
-└── sensor.py            # 6 HA sensor entities for dashboards
+├── sensor.py            # 6 HA sensor entities for dashboards
+└── switch.py            # Automation enable/disable switch (observe-only mode)
 ```
 
 ## Data Flow
@@ -159,3 +160,28 @@ Sequence: sensor opens → debounce timer → HVAC paused → user turns on
 - High compliance threshold: 80%
 - Data retention: 90-day rolling window
 - Storage: JSON file in HA config dir
+
+## Observe-Only Mode (Disable Automation)
+
+Climate Advisor exposes a `switch.climate_advisor_automation` entity that controls whether real actions are executed.
+
+**When ON (default)**: Normal operation — all thermostat changes and notifications are executed.
+
+**When OFF (observe-only)**: The full computation pipeline continues (classification, decision-making, state tracking, logging) but all HA service calls are skipped:
+
+- `climate.set_hvac_mode` — skipped
+- `climate.set_temperature` — skipped
+- `notify.*` — skipped (including daily briefing delivery)
+
+Skipped actions are logged at INFO level with a `[DRY RUN]` prefix:
+```
+INFO  [DRY RUN] Would set HVAC mode to cool — daily classification — hot day, trend warming 8°F
+INFO  [DRY RUN] Would set temperature to 72°F — bedtime — heat setback (comfort 70 - 4 + modifier 2)
+INFO  [DRY RUN] Would send notification: Climate Advisor — 🏠 Welcome home! ...
+```
+
+### Implementation
+
+Guards are placed at the 3 thermostat primitives (`_set_hvac_mode`, `_set_temperature`, `_notify`) in `AutomationEngine` plus the briefing notification in the coordinator. Higher-level logic (classification application, door/window pause tracking, grace periods, occupancy handling) continues unaffected.
+
+The toggle state is persisted via `StatePersistence` and survives HA restarts. It is also exposed in the dashboard API (`/api/climate_advisor/status`) and debug state.

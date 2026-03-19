@@ -41,7 +41,7 @@ from .coordinator import ClimateAdvisorCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "switch"]
 
 
 def _resolve_weather_entity(hass: HomeAssistant, configured: str) -> str | None:

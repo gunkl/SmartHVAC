@@ -64,6 +64,19 @@ Reasons follow a **trigger — context** pattern using the em dash separator:
 | `bedtime` | `%s setback (comfort %s ± offset + modifier %s)` |
 | `morning wake-up` | `restoring %s comfort` |
 
+### Dry-run prefix convention
+
+When automation is disabled (observe-only mode), skipped service calls are logged with a `[DRY RUN]` prefix at INFO level:
+
+```
+INFO  [DRY RUN] Would set HVAC mode to cool — daily classification — hot day, trend warming 8°F
+INFO  [DRY RUN] Would set temperature to 72°F — bedtime — heat setback (comfort 70 - 4 + modifier 2)
+INFO  [DRY RUN] Would send notification: Climate Advisor — Welcome home! ...
+INFO  [DRY RUN] Briefing generated but notification skipped (automation disabled)
+```
+
+The `[DRY RUN]` prefix makes it easy to `grep` logs for skipped actions and distinguish them from real ones.
+
 ### Why `reason` is required (no default)
 
 Making it a required keyword-only parameter ensures every current and future call site is forced to provide an explanation. A missing reason causes a loud `TypeError` at runtime rather than a silent log gap.

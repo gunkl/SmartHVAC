@@ -63,6 +63,7 @@ class ClimateAdvisorStatusView(HomeAssistantView):
             "automation_status": data.get(ATTR_AUTOMATION_STATUS, "unknown"),
             "compliance_score": data.get(ATTR_COMPLIANCE_SCORE, 1.0),
             "next_action": data.get(ATTR_NEXT_ACTION, ""),
+            "automation_enabled": coordinator.automation_enabled,
         })
 
 

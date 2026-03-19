@@ -990,6 +990,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             }
 
         return {
+            "automation_enabled": self._automation_enabled,
             "paused_by_door": ae.is_paused_by_door,
             "pre_pause_mode": ae._pre_pause_mode,
             "grace_active": ae._grace_active,
