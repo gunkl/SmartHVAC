@@ -94,35 +94,46 @@ class AutomationEngine:
         )
 
         # Set the base HVAC mode
+        cls_reason = (
+            "daily classification — %s day, trend %s %s°F"
+            % (classification.day_type, classification.trend_direction,
+               classification.trend_magnitude)
+        )
         if classification.hvac_mode in ("heat", "cool"):
-            await self._set_hvac_mode(classification.hvac_mode)
-            await self._set_temperature_for_mode(classification)
+            await self._set_hvac_mode(classification.hvac_mode, reason=cls_reason)
+            await self._set_temperature_for_mode(classification, reason=cls_reason)
         elif classification.hvac_mode == "off":
-            await self._set_hvac_mode("off")
+            await self._set_hvac_mode(
+                "off",
+                reason="daily classification — %s day, HVAC not needed"
+                % classification.day_type,
+            )
 
         # Handle pre-conditioning
         if classification.pre_condition and classification.pre_condition_target:
             await self._schedule_pre_condition(classification)
 
-    async def _set_hvac_mode(self, mode: str) -> None:
+    async def _set_hvac_mode(self, mode: str, *, reason: str) -> None:
         """Set the thermostat HVAC mode."""
         await self.hass.services.async_call(
             "climate",
             "set_hvac_mode",
             {"entity_id": self.climate_entity, "hvac_mode": mode},
         )
-        _LOGGER.debug("Set HVAC mode to %s", mode)
+        _LOGGER.info("Set HVAC mode to %s — %s", mode, reason)
 
-    async def _set_temperature(self, temperature: float) -> None:
+    async def _set_temperature(self, temperature: float, *, reason: str) -> None:
         """Set the thermostat target temperature."""
         await self.hass.services.async_call(
             "climate",
             "set_temperature",
             {"entity_id": self.climate_entity, "temperature": temperature},
         )
-        _LOGGER.debug("Set temperature to %s°F", temperature)
+        _LOGGER.info("Set temperature to %s°F — %s", temperature, reason)
 
-    async def _set_temperature_for_mode(self, c: DayClassification) -> None:
+    async def _set_temperature_for_mode(
+        self, c: DayClassification, *, reason: str
+    ) -> None:
         """Set temperature based on the classification and current period."""
         if c.hvac_mode == "heat":
             target = self.config["comfort_heat"]
@@ -131,10 +142,11 @@ class AutomationEngine:
             if c.pre_condition and c.pre_condition_target and c.pre_condition_target < 0:
                 # Pre-cool: target is below comfort
                 target = target + c.pre_condition_target
+                reason = "%s (pre-cool offset %s°F)" % (reason, c.pre_condition_target)
         else:
             return
 
-        await self._set_temperature(target)
+        await self._set_temperature(target, reason=reason)
 
     async def _schedule_pre_condition(self, c: DayClassification) -> None:
         """Schedule pre-heating or pre-cooling based on trend.
@@ -180,7 +192,11 @@ class AutomationEngine:
 
         if self._pre_pause_mode and self._pre_pause_mode != "off":
             self._paused_by_door = True
-            await self._set_hvac_mode("off")
+            await self._set_hvac_mode(
+                "off",
+                reason="door/window open — %s, was %s mode"
+                % (entity_id, self._pre_pause_mode),
+            )
 
             # Notify
             debounce_minutes = self.config.get(
@@ -193,7 +209,6 @@ class AutomationEngine:
                 f"Heating/cooling will resume when it's closed.",
                 "Climate Advisor",
             )
-            _LOGGER.info("Paused HVAC due to open: %s", entity_id)
 
     async def handle_all_doors_windows_closed(self) -> None:
         """Resume HVAC after all monitored doors/windows are closed."""
@@ -202,10 +217,16 @@ class AutomationEngine:
 
         self._paused_by_door = False
         if self._pre_pause_mode:
-            await self._set_hvac_mode(self._pre_pause_mode)
+            await self._set_hvac_mode(
+                self._pre_pause_mode,
+                reason="door/window closed — restoring %s mode"
+                % self._pre_pause_mode,
+            )
             if self._current_classification:
-                await self._set_temperature_for_mode(self._current_classification)
-            _LOGGER.info("Resumed HVAC after doors/windows closed")
+                await self._set_temperature_for_mode(
+                    self._current_classification,
+                    reason="door/window closed — restoring comfort",
+                )
             self._start_grace_period("automation")
         self._pre_pause_mode = None
 
@@ -294,12 +315,18 @@ class AutomationEngine:
 
         if c.hvac_mode == "heat":
             setback = self.config["setback_heat"] + c.setback_modifier
-            await self._set_temperature(setback)
-            _LOGGER.info("Occupancy away — heat setback to %s°F", setback)
+            await self._set_temperature(
+                setback,
+                reason="occupancy away — heat setback (base %s + modifier %s)"
+                % (self.config["setback_heat"], c.setback_modifier),
+            )
         elif c.hvac_mode == "cool":
             setback = self.config["setback_cool"] - c.setback_modifier
-            await self._set_temperature(setback)
-            _LOGGER.info("Occupancy away — cool setback to %s°F", setback)
+            await self._set_temperature(
+                setback,
+                reason="occupancy away — cool setback (base %s - modifier %s)"
+                % (self.config["setback_cool"], c.setback_modifier),
+            )
 
     async def handle_occupancy_home(self) -> None:
         """Handle someone returning — restore comfort."""
@@ -308,8 +335,9 @@ class AutomationEngine:
             return
 
         if c.hvac_mode in ("heat", "cool"):
-            await self._set_temperature_for_mode(c)
-            _LOGGER.info("Occupancy returned — restoring comfort setpoint")
+            await self._set_temperature_for_mode(
+                c, reason="occupancy home — restoring %s comfort" % c.hvac_mode
+            )
 
         # Notify with estimated recovery time
         await self._notify(
@@ -325,12 +353,18 @@ class AutomationEngine:
 
         if c.hvac_mode == "heat":
             bedtime_target = self.config["comfort_heat"] - 4 + c.setback_modifier
-            await self._set_temperature(bedtime_target)
-            _LOGGER.info("Bedtime setback — heat to %s°F", bedtime_target)
+            await self._set_temperature(
+                bedtime_target,
+                reason="bedtime — heat setback (comfort %s - 4 + modifier %s)"
+                % (self.config["comfort_heat"], c.setback_modifier),
+            )
         elif c.hvac_mode == "cool":
             bedtime_target = self.config["comfort_cool"] + 3
-            await self._set_temperature(bedtime_target)
-            _LOGGER.info("Bedtime setback — cool to %s°F", bedtime_target)
+            await self._set_temperature(
+                bedtime_target,
+                reason="bedtime — cool setback (comfort %s + 3)"
+                % self.config["comfort_cool"],
+            )
 
     async def handle_morning_wakeup(self) -> None:
         """Restore comfort for morning wake-up."""
@@ -339,11 +373,15 @@ class AutomationEngine:
             return
 
         if c.hvac_mode == "heat":
-            await self._set_temperature(self.config["comfort_heat"])
+            await self._set_temperature(
+                self.config["comfort_heat"],
+                reason="morning wake-up — restoring heat comfort",
+            )
         elif c.hvac_mode == "cool":
-            await self._set_temperature(self.config["comfort_cool"])
-
-        _LOGGER.info("Morning wake-up — restoring comfort setpoint")
+            await self._set_temperature(
+                self.config["comfort_cool"],
+                reason="morning wake-up — restoring cool comfort",
+            )
 
     def restore_state(self, state: dict[str, Any]) -> None:
         """Restore automation state from persisted data.

@@ -30,13 +30,51 @@ The logger name automatically carries module identity (`custom_components.climat
 | `WARNING` | Recoverable problems with fallback behavior. Always name what failed **and** what happens next. | `"Weather entity %s not found. Check entity ID in options."` |
 | `ERROR` | Unrecoverable failures with no fallback (file I/O failures, broken invariants) | `"Failed to save learning state: %s"` |
 
+## Thermostat Adjustment Logging
+
+Every thermostat adjustment must include a plain-text **reason** explaining why the change is being made. This is enforced by a required `reason: str` keyword-only parameter on both primitive methods:
+
+```python
+async def _set_hvac_mode(self, mode: str, *, reason: str) -> None:
+async def _set_temperature(self, temperature: float, *, reason: str) -> None:
+async def _set_temperature_for_mode(self, c: DayClassification, *, reason: str) -> None:
+```
+
+The primitives emit a single consolidated `INFO` log per adjustment:
+
+```
+INFO  Set HVAC mode to cool — daily classification — hot day, trend warming 8°F
+INFO  Set temperature to 72°F — daily classification — hot day (pre-cool offset -3°F)
+INFO  Set HVAC mode to off — door/window open — binary_sensor.kitchen_window, was cool mode
+INFO  Set temperature to 68°F — bedtime — heat setback (comfort 70 - 4 + modifier 2)
+INFO  Set temperature to 70°F — morning wake-up — restoring heat comfort
+```
+
+### Reason string convention
+
+Reasons follow a **trigger — context** pattern using the em dash separator:
+
+| Trigger | Context format |
+|---------|---------------|
+| `daily classification` | `%s day, trend %s %s°F` |
+| `door/window open` | `%s, was %s mode` |
+| `door/window closed` | `restoring %s mode` / `restoring comfort` |
+| `occupancy away` | `%s setback (base %s + modifier %s)` |
+| `occupancy home` | `restoring %s comfort` |
+| `bedtime` | `%s setback (comfort %s ± offset + modifier %s)` |
+| `morning wake-up` | `restoring %s comfort` |
+
+### Why `reason` is required (no default)
+
+Making it a required keyword-only parameter ensures every current and future call site is forced to provide an explanation. A missing reason causes a loud `TypeError` at runtime rather than a silent log gap.
+
 ## Module Coverage
 
 | Module | Log Statements | Levels Used |
 |--------|---------------|-------------|
 | `__init__.py` | 12 | INFO |
 | `coordinator.py` | ~25 | DEBUG, INFO, WARNING |
-| `automation.py` | ~17 | DEBUG, INFO |
+| `automation.py` | ~15 | INFO |
 | `classifier.py` | 4 | DEBUG |
 | `briefing.py` | 5 | DEBUG |
 | `config_flow.py` | 4 | DEBUG, INFO |
@@ -64,7 +102,7 @@ _LOGGER.warning(
 )
 ```
 
-**INFO — state transition with detail** (automation.py):
+**INFO — thermostat adjustment with reason** (automation.py):
 ```python
-_LOGGER.info("Bedtime setback — heat to %s°F", target)
+_LOGGER.info("Set temperature to %s°F — %s", temperature, reason)
 ```
