@@ -72,6 +72,7 @@ ATTR_AUTOMATION_STATUS = "automation_status"
 ATTR_LEARNING_SUGGESTIONS = "pending_suggestions"
 ATTR_COMPLIANCE_SCORE = "compliance_score"
 ATTR_ESTIMATED_SAVINGS = "estimated_savings"
+ATTR_AUTOMATION_ENABLED = "automation_enabled"
 
 # API paths for dashboard panel
 API_BASE = "/api/climate_advisor"

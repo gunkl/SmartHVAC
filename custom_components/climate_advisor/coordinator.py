@@ -99,8 +99,26 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._outdoor_temp_history: list[tuple[str, float]] = []
         self._indoor_temp_history: list[tuple[str, float]] = []
 
+        # Observe-only mode: when disabled, automation still runs but skips actions
+        self._automation_enabled: bool = True
+
         # HVAC runtime tracking
         self._hvac_on_since: datetime | None = None
+
+    @property
+    def automation_enabled(self) -> bool:
+        """Whether automation actions are enabled (False = observe-only)."""
+        return self._automation_enabled
+
+    def set_automation_enabled(self, enabled: bool) -> None:
+        """Enable or disable automation actions (observe-only mode)."""
+        self._automation_enabled = enabled
+        self.automation_engine.dry_run = not enabled
+        _LOGGER.info(
+            "Automation %s",
+            "enabled" if enabled else "disabled (observe-only)",
+        )
+        self.hass.async_create_task(self._async_save_state())
 
     async def async_setup(self) -> None:
         """Set up scheduled events and state listeners."""
@@ -273,6 +291,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if auto_state:
             self.automation_engine.restore_state(auto_state)
 
+        # Observe-only mode
+        self._automation_enabled = state.get("automation_enabled", True)
+        self.automation_engine.dry_run = not self._automation_enabled
+
         _LOGGER.info("State restore complete")
 
     def _build_state_dict(self) -> dict[str, Any]:
@@ -320,6 +342,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 "sent_today": self._briefing_sent_today,
                 "last_text": self._last_briefing,
             },
+            "automation_enabled": self._automation_enabled,
         }
 
     async def _async_save_state(self) -> None:
@@ -674,6 +697,16 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         )
 
         self._last_briefing = briefing
+
+        # In observe-only mode, skip sending the notification
+        if not self._automation_enabled:
+            _LOGGER.info(
+                "[DRY RUN] Briefing generated but notification skipped "
+                "(automation disabled)"
+            )
+            self._briefing_sent_today = True
+            await self._async_save_state()
+            return
 
         # Send notification
         _notify_svc = self.config["notify_service"]

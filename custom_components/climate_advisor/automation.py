@@ -53,6 +53,9 @@ class AutomationEngine:
         self._paused_by_door = False
         self._pre_pause_mode: str | None = None
 
+        # Dry-run mode: when True, all service calls are logged but skipped
+        self.dry_run: bool = False
+
         # Grace period state
         self._manual_grace_cancel: Any | None = None
         self._automation_grace_cancel: Any | None = None
@@ -61,6 +64,9 @@ class AutomationEngine:
 
     async def _notify(self, message: str, title: str) -> None:
         """Send a notification via the configured service, plus email if enabled."""
+        if self.dry_run:
+            _LOGGER.info("[DRY RUN] Would send notification: %s — %s", title, message)
+            return
         service_name = (
             self.notify_service.split(".")[-1]
             if "." in self.notify_service
@@ -115,6 +121,9 @@ class AutomationEngine:
 
     async def _set_hvac_mode(self, mode: str, *, reason: str) -> None:
         """Set the thermostat HVAC mode."""
+        if self.dry_run:
+            _LOGGER.info("[DRY RUN] Would set HVAC mode to %s — %s", mode, reason)
+            return
         await self.hass.services.async_call(
             "climate",
             "set_hvac_mode",
@@ -124,6 +133,9 @@ class AutomationEngine:
 
     async def _set_temperature(self, temperature: float, *, reason: str) -> None:
         """Set the thermostat target temperature."""
+        if self.dry_run:
+            _LOGGER.info("[DRY RUN] Would set temperature to %s°F — %s", temperature, reason)
+            return
         await self.hass.services.async_call(
             "climate",
             "set_temperature",
@@ -407,6 +419,7 @@ class AutomationEngine:
             "pre_pause_mode": self._pre_pause_mode,
             "grace_active": self._grace_active,
             "last_resume_source": self._last_resume_source,
+            "dry_run": self.dry_run,
             "current_classification": (
                 {
                     "day_type": self._current_classification.day_type,
