@@ -10,7 +10,7 @@ David runs Home Assistant and has access to:
 - Most (not all) door and window contact sensors
 - A notification service for daily briefings (email or mobile push)
 
-His wife frequently forgets the heater is on, leading to expensive heating bills. The goal is to automate HVAC management invisibly while keeping the home comfortable, and to send a daily briefing that tells the humans what (if anything) they should do and why.
+The user frequently forgets the heater is on, leading to expensive heating bills. The goal is to automate HVAC management invisibly while keeping the home comfortable, and to send a daily briefing that tells the user what (if anything) they should do and why.
 
 ## Project State
 
