@@ -154,36 +154,42 @@ entities:
 
 ## Development Roadmap
 
-### v0.1 (Current) — Foundation
-- [x] Day type classification from forecast
-- [x] Trend analysis with predictive adjustments
-- [x] Daily briefing generation
-- [x] Door/window pause automation
-- [x] Occupancy setback
-- [x] Bedtime/morning schedule
-- [x] Learning engine data collection
-- [x] Config flow setup wizard
+See [Issue #11](https://github.com/gunkl/SmartHVAC/issues/11) for full tracking.
 
-### v0.2 — Learning Goes Live
-- [ ] Learning suggestions sent in daily briefing
-- [ ] Accept/dismiss suggestions via notification actions
-- [ ] Auto-adjust setpoints based on override patterns
-- [ ] Track window open/close events from sensors
-- [ ] Compliance scoring refinement
+### Phase 1: Core (v0.1.0) — Complete
+- [x] 5-level day type classification with trend analysis
+- [x] Daily briefing as primary UI (email/notification)
+- [x] Door/window pause automation with grace periods
+- [x] Occupancy-based setback with configurable delay
+- [x] Bedtime/morning scheduling with forecast-aware adjustments
+- [x] Runaway protection (runtime alerts, daily budgets)
+- [x] Learning engine foundation (90-day rolling window, 6 pattern detectors)
+- [x] 3-step config flow wizard, 6 HA sensor entities, dashboard API
+- [x] Flexible temperature source configuration
+- [x] Separate comfort/setback temps for heat and cool modes
 
-### v0.3 — Advanced Intelligence
-- [ ] Multi-zone support (different rooms, different strategies)
-- [ ] Energy cost tracking (utility rate integration)
-- [ ] Weekly summary email with savings estimate
-- [ ] Humidity-aware recommendations
-- [ ] Solar gain modeling (which rooms get sun when)
+### Phase 2: Enhanced Learning & Adaptation (v0.2.x) — In Progress
+- [x] Persist operational state across restarts (#10)
+- [x] Populate DailyRecord fields (runtime, avg temp, comfort violations, window compliance)
+- [x] Per-sensor pause tracking and granular daily records (#12)
+- [x] Override direction/timing/magnitude analysis (#12)
+- [ ] Thermal model learning (heat/cool rates, recovery time estimates)
+- [ ] Optimized pre-heat/pre-cool timing based on thermal performance
+- [ ] Setback depth optimization based on house characteristics
+- [ ] Override-driven scheduling suggestions ("You raise temp 2°F at 3pm daily")
 
-### v0.4 — Mature Automation
-- [ ] Seasonal baseline learning (knows your house's thermal behavior)
-- [ ] Anomaly detection (unexpected energy use patterns)
-- [ ] Integration with energy monitoring (actual vs. estimated savings)
-- [ ] Custom day type definitions
-- [ ] API for external dashboards
+### Phase 3: Seasonal & Cost Intelligence (v0.3+) — Future
+- [ ] Seasonal performance baselines (after 1 year of data)
+- [ ] Anomaly detection (e.g., "heating 30% higher than last November")
+- [ ] Energy cost integration (utility rates → estimated cost)
+- [ ] Savings tracking vs. "no automation" baseline
+
+### Phase 4: Multi-Zone & Advanced (v0.4+) — Future
+- [ ] Multi-zone HVAC support (multiple thermostats)
+- [ ] Room-level occupancy detection
+- [ ] Humidity-based decisions
+- [ ] Energy source cost optimization
+- [ ] Advanced thermal model with per-zone coefficients
 
 ## Contributing
 
