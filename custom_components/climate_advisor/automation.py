@@ -16,6 +16,8 @@ from .const import (
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
     CONF_EMAIL_NOTIFY,
+    CONF_FAN_ENTITY,
+    CONF_FAN_MODE,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
     CONF_SENSOR_DEBOUNCE,
@@ -24,6 +26,10 @@ from .const import (
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     ECONOMIZER_TEMP_DELTA,
+    FAN_MODE_BOTH,
+    FAN_MODE_DISABLED,
+    FAN_MODE_HVAC,
+    FAN_MODE_WHOLE_HOUSE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,8 +70,11 @@ class AutomationEngine:
         self._grace_active = False
         self._last_resume_source: str | None = None
 
-        # Economizer state
+        # Economizer state (two-phase window cooling per Issue #27)
+        # Phase "cool-down": AC runs to cool to set temp (outdoor air assists)
+        # Phase "maintain": AC off, natural ventilation holds temp
         self._economizer_active: bool = False
+        self._economizer_phase: str = "inactive"  # "inactive", "cool-down", "maintain"
 
     async def _notify(self, message: str, title: str) -> None:
         """Send a notification via the configured service, plus email if enabled."""
@@ -400,51 +409,186 @@ class AutomationEngine:
                 reason="morning wake-up — restoring cool comfort",
             )
 
+    async def _activate_fan(self, *, reason: str) -> None:
+        """Activate fan based on configured fan_mode."""
+        fan_mode = self.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
+        if fan_mode == FAN_MODE_DISABLED:
+            return
+
+        if self.dry_run:
+            _LOGGER.info("[DRY RUN] Would activate fan — %s", reason)
+            return
+
+        if fan_mode in (FAN_MODE_WHOLE_HOUSE, FAN_MODE_BOTH):
+            fan_entity = self.config.get(CONF_FAN_ENTITY)
+            if fan_entity:
+                # Detect domain from entity_id
+                domain = fan_entity.split(".")[0]  # "fan" or "switch"
+                await self.hass.services.async_call(
+                    domain, "turn_on", {"entity_id": fan_entity}
+                )
+                _LOGGER.info("Activated %s fan (%s) — %s", domain, fan_entity, reason)
+
+        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+            await self.hass.services.async_call(
+                "climate", "set_fan_mode",
+                {"entity_id": self.climate_entity, "fan_mode": "on"},
+            )
+            _LOGGER.info("Activated HVAC fan — %s", reason)
+
+    async def _deactivate_fan(self, *, reason: str) -> None:
+        """Deactivate fan based on configured fan_mode."""
+        fan_mode = self.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
+        if fan_mode == FAN_MODE_DISABLED:
+            return
+
+        if self.dry_run:
+            _LOGGER.info("[DRY RUN] Would deactivate fan — %s", reason)
+            return
+
+        if fan_mode in (FAN_MODE_WHOLE_HOUSE, FAN_MODE_BOTH):
+            fan_entity = self.config.get(CONF_FAN_ENTITY)
+            if fan_entity:
+                domain = fan_entity.split(".")[0]
+                await self.hass.services.async_call(
+                    domain, "turn_off", {"entity_id": fan_entity}
+                )
+                _LOGGER.info("Deactivated %s fan (%s) — %s", domain, fan_entity, reason)
+
+        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+            await self.hass.services.async_call(
+                "climate", "set_fan_mode",
+                {"entity_id": self.climate_entity, "fan_mode": "auto"},
+            )
+            _LOGGER.info("Deactivated HVAC fan — %s", reason)
+
     async def check_window_cooling_opportunity(
         self,
         outdoor_temp: float,
         indoor_temp: float | None,
         windows_physically_open: bool,
+        current_hour: int = -1,
     ) -> bool:
-        """Check if window cooling can supplement or replace AC.
+        """Two-phase window cooling strategy (Issue #27).
 
-        Returns True if the economizer activated (AC paused), False otherwise.
+        Phase 1 — cool-down: When windows are open and outdoor temp has dropped
+        near comfort, run AC to cool to set temp. Outdoor air assists, making
+        AC more efficient.
+
+        Phase 2 — maintain: Once indoor reaches comfort (or below), pause AC
+        and let natural ventilation hold the temperature.
+
+        Time-bounded to morning (6-9 AM) and evening (5 PM - midnight) hours.
+        Respects aggressive_savings: when True, skip AC assist and rely on
+        ventilation only.
+
+        Returns True if economizer is active (either phase), False otherwise.
         """
         c = self._current_classification
         if not c or c.day_type != DAY_TYPE_HOT:
+            if self._economizer_active:
+                await self._deactivate_economizer(outdoor_temp)
             return False
 
         comfort_cool = self.config.get("comfort_cool", 75)
         delta = self.config.get("economizer_temp_delta", ECONOMIZER_TEMP_DELTA)
+        aggressive_savings = self.config.get("aggressive_savings", False)
 
-        if windows_physically_open and outdoor_temp <= comfort_cool + delta:
-            if not self._economizer_active:
-                self._economizer_active = True
+        # Time-bound check: only during morning (6-9) and evening (17-24) hours
+        if current_hour < 0:
+            # Default: allow (caller didn't pass hour, skip time gate)
+            in_window = True
+        else:
+            in_window = (6 <= current_hour < 9) or (17 <= current_hour < 24)
+
+        # Conditions for economizer eligibility
+        eligible = (
+            windows_physically_open
+            and outdoor_temp <= comfort_cool + delta
+            and in_window
+        )
+
+        if not eligible:
+            if self._economizer_active:
+                await self._deactivate_economizer(outdoor_temp)
+            return False
+
+        # --- Economizer is eligible ---
+        self._economizer_active = True
+
+        if aggressive_savings:
+            # Savings mode: skip AC, rely purely on ventilation
+            if self._economizer_phase != "maintain":
+                self._economizer_phase = "maintain"
                 await self._set_hvac_mode(
                     "off",
-                    reason="economizer — outdoor %.0f°F near comfort %s°F, windows open"
-                    % (outdoor_temp, comfort_cool),
+                    reason="economizer (savings) — outdoor %.0f°F, ventilation only"
+                    % outdoor_temp,
+                )
+                await self._activate_fan(
+                    reason="economizer maintain — fan assists ventilation"
                 )
                 _LOGGER.info(
-                    "Economizer activated: outdoor=%.0f°F, comfort_cool=%s°F, delta=%s°F",
-                    outdoor_temp, comfort_cool, delta,
+                    "Economizer (savings): ventilation only, outdoor=%.0f°F",
+                    outdoor_temp,
                 )
             return True
-        elif self._economizer_active:
-            # Outdoor temp too high or windows closed — resume AC
-            self._economizer_active = False
+
+        # Comfort mode: two-phase strategy
+        if indoor_temp is not None and indoor_temp > comfort_cool:
+            # Phase 1: cool-down — run AC, outdoor air assists efficiency
+            if self._economizer_phase != "cool-down":
+                self._economizer_phase = "cool-down"
+                await self._set_hvac_mode(
+                    "cool",
+                    reason="economizer cool-down — indoor %.0f°F > comfort %s°F, "
+                    "outdoor %.0f°F assisting" % (indoor_temp, comfort_cool, outdoor_temp),
+                )
+                await self._set_temperature(
+                    comfort_cool,
+                    reason="economizer cool-down — target comfort %s°F"
+                    % comfort_cool,
+                )
+                _LOGGER.info(
+                    "Economizer phase=cool-down: indoor=%.0f°F, target=%s°F, outdoor=%.0f°F",
+                    indoor_temp, comfort_cool, outdoor_temp,
+                )
+            return True
+        else:
+            # Phase 2: maintain — indoor at or below comfort, AC off
+            if self._economizer_phase != "maintain":
+                self._economizer_phase = "maintain"
+                await self._set_hvac_mode(
+                    "off",
+                    reason="economizer maintain — indoor %.0f°F at comfort, "
+                    "ventilation holding" % (indoor_temp if indoor_temp is not None else 0),
+                )
+                await self._activate_fan(
+                    reason="economizer maintain — fan assists ventilation"
+                )
+                _LOGGER.info(
+                    "Economizer phase=maintain: indoor=%.0f°F, AC off",
+                    indoor_temp if indoor_temp is not None else 0,
+                )
+            return True
+
+    async def _deactivate_economizer(self, outdoor_temp: float) -> None:
+        """Deactivate economizer and resume normal AC operation."""
+        c = self._current_classification
+        self._economizer_active = False
+        self._economizer_phase = "inactive"
+        await self._deactivate_fan(reason="economizer off — fan no longer needed")
+        if c and c.hvac_mode == "cool":
             await self._set_hvac_mode(
                 "cool",
-                reason="economizer off — outdoor %.0f°F above threshold, resuming AC"
+                reason="economizer off — resuming normal AC (outdoor %.0f°F)"
                 % outdoor_temp,
             )
             await self._set_temperature_for_mode(
                 c,
                 reason="economizer off — restoring comfort cooling",
             )
-            _LOGGER.info("Economizer deactivated: outdoor=%.0f°F", outdoor_temp)
-
-        return False
+        _LOGGER.info("Economizer deactivated: outdoor=%.0f°F", outdoor_temp)
 
     def restore_state(self, state: dict[str, Any]) -> None:
         """Restore automation state from persisted data.
@@ -455,6 +599,7 @@ class AutomationEngine:
         self._paused_by_door = state.get("paused_by_door", False)
         self._pre_pause_mode = state.get("pre_pause_mode")
         self._economizer_active = state.get("economizer_active", False)
+        self._economizer_phase = state.get("economizer_phase", "inactive")
         # Grace timers cannot be restored — clear on restart
         self._grace_active = False
         self._last_resume_source = None
@@ -473,6 +618,7 @@ class AutomationEngine:
             "last_resume_source": self._last_resume_source,
             "dry_run": self.dry_run,
             "economizer_active": self._economizer_active,
+            "economizer_phase": self._economizer_phase,
             "current_classification": (
                 {
                     "day_type": self._current_classification.day_type,

@@ -13,6 +13,7 @@ from .const import (
     API_AUTOMATION_STATE,
     API_BRIEFING,
     API_CHART_DATA,
+    API_CONFIG,
     API_FORCE_RECLASSIFY,
     API_LEARNING,
     API_RESPOND_SUGGESTION,
@@ -24,6 +25,7 @@ from .const import (
     ATTR_NEXT_ACTION,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
+    CONFIG_METADATA,
     DOMAIN,
     VERSION,
 )
@@ -70,7 +72,15 @@ class ClimateAdvisorStatusView(HomeAssistantView):
 
 
 class ClimateAdvisorBriefingView(HomeAssistantView):
-    """Return the current daily briefing text."""
+    """Return the current daily briefing text.
+
+    Optional query parameter:
+        verbosity: "tldr_only" | "normal" (default) | "verbose"
+            Controls how much of the briefing body is returned.
+            - "tldr_only": structured header + TLDR table only
+            - "normal": header + TLDR table + trimmed conversational body
+            - "verbose": header + TLDR table + full original body
+    """
 
     url = API_BRIEFING
     name = "api:climate_advisor:briefing"
@@ -82,9 +92,30 @@ class ClimateAdvisorBriefingView(HomeAssistantView):
         if not coordinator:
             return self.json({"error": "Climate Advisor not loaded"}, status_code=503)
 
+        verbosity = request.rel_url.query.get("verbosity", "normal")
+        if verbosity not in ("tldr_only", "normal", "verbose"):
+            return self.json(
+                {"error": "verbosity must be one of: tldr_only, normal, verbose"},
+                status_code=400,
+            )
+
+        briefing = coordinator._last_briefing
+
+        # If a non-default verbosity is requested and the coordinator exposes
+        # the data needed to regenerate, do so.  Otherwise return cached text.
+        if verbosity != "normal" and briefing and hasattr(coordinator, "_regenerate_briefing"):
+            try:
+                briefing = await coordinator._regenerate_briefing(verbosity=verbosity)
+            except Exception:
+                _LOGGER.warning(
+                    "Could not regenerate briefing for verbosity=%s; returning cached text",
+                    verbosity,
+                )
+
         return self.json({
-            "briefing": coordinator._last_briefing,
+            "briefing": briefing,
             "briefing_sent_today": coordinator._briefing_sent_today,
+            "verbosity": verbosity,
         })
 
 
@@ -218,6 +249,45 @@ class ClimateAdvisorRespondSuggestionView(HomeAssistantView):
             return self.json({"status": "ok", "dismissed": suggestion_key})
 
 
+class ClimateAdvisorConfigView(HomeAssistantView):
+    """Return current configuration settings with metadata."""
+
+    url = API_CONFIG
+    name = "api:climate_advisor:config"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            return self.json({"error": "Climate Advisor not loaded"}, status_code=503)
+
+        config = coordinator.config
+        settings = []
+
+        for key, meta in CONFIG_METADATA.items():
+            value = config.get(key)
+            # Sanitize: replace notify service names (may reveal personal info)
+            if key == "notify_service":
+                value = "configured" if value else "not set"
+            # Convert time objects to strings
+            if hasattr(value, "strftime"):
+                value = str(value)
+            # Convert lists to counts for display
+            if isinstance(value, list):
+                value = f"{len(value)} configured"
+
+            settings.append({
+                "key": key,
+                "value": value,
+                "label": meta["label"],
+                "description": meta["description"],
+                "category": meta["category"],
+            })
+
+        return self.json({"settings": settings})
+
+
 # All views to register
 API_VIEWS = [
     ClimateAdvisorStatusView,
@@ -228,4 +298,5 @@ API_VIEWS = [
     ClimateAdvisorForceReclassifyView,
     ClimateAdvisorSendBriefingView,
     ClimateAdvisorRespondSuggestionView,
+    ClimateAdvisorConfigView,
 ]

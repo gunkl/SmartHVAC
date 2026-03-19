@@ -67,7 +67,9 @@
           "manual_grace_seconds": "Pause after manual thermostat change (minutes)",
           "manual_grace_notify": "Notify on manual override",
           "automation_grace_seconds": "Cooldown after automated change (minutes)",
-          "automation_grace_notify": "Notify on automation actions"
+          "automation_grace_notify": "Notify on automation actions",
+          "fan_mode": "Fan Control Mode",
+          "fan_entity": "Fan Entity"
         },
         "data_description": {
           "door_window_sensors": "Select any binary sensor entities to monitor, including binary sensor groups that bundle multiple sensors together.",
@@ -76,7 +78,9 @@
           "manual_grace_seconds": "How long to wait after you manually adjust the thermostat before Climate Advisor resumes automation. Gives you time to enjoy your chosen temperature.",
           "manual_grace_notify": "Send a notification when Climate Advisor detects that you manually changed the thermostat.",
           "automation_grace_seconds": "How long to wait after Climate Advisor makes an automated change before allowing another one. Prevents rapid back-to-back adjustments.",
-          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat."
+          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat.",
+          "fan_mode": "How to control fans for ventilation. 'Whole house fan' controls a dedicated fan entity. 'HVAC fan' uses the thermostat fan mode. 'Both' uses both.",
+          "fan_entity": "The fan or switch entity to control (only needed for whole house fan mode)."
         }
       },
       "schedule": {
@@ -147,7 +151,9 @@
           "manual_grace_seconds": "Pause after manual thermostat change (minutes)",
           "manual_grace_notify": "Notify on manual override",
           "automation_grace_seconds": "Cooldown after automated change (minutes)",
-          "automation_grace_notify": "Notify on automation actions"
+          "automation_grace_notify": "Notify on automation actions",
+          "fan_mode": "Fan Control Mode",
+          "fan_entity": "Fan Entity"
         },
         "data_description": {
           "door_window_sensors": "Select any binary sensor entities to monitor, including binary sensor groups that bundle multiple sensors together.",
@@ -156,7 +162,9 @@
           "manual_grace_seconds": "How long to wait after you manually adjust the thermostat before Climate Advisor resumes automation.",
           "manual_grace_notify": "Send a notification when Climate Advisor detects that you manually changed the thermostat.",
           "automation_grace_seconds": "How long to wait after Climate Advisor makes an automated change before allowing another one.",
-          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat."
+          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat.",
+          "fan_mode": "How to control fans for ventilation. 'Whole house fan' controls a dedicated fan entity. 'HVAC fan' uses the thermostat fan mode. 'Both' uses both.",
+          "fan_entity": "The fan or switch entity to control (only needed for whole house fan mode)."
         }
       },
       "schedule": {

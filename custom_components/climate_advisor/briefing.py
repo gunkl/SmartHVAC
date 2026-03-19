@@ -16,14 +16,15 @@ from datetime import time
 
 from .classifier import DayClassification
 from .const import (
-    DAY_TYPE_HOT,
-    DAY_TYPE_WARM,
-    DAY_TYPE_MILD,
-    DAY_TYPE_COOL,
     DAY_TYPE_COLD,
-    DEFAULT_SENSOR_DEBOUNCE_SECONDS,
-    DEFAULT_MANUAL_GRACE_SECONDS,
+    DAY_TYPE_COOL,
+    DAY_TYPE_HOT,
+    DAY_TYPE_MILD,
+    DAY_TYPE_WARM,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
+    DEFAULT_MANUAL_GRACE_SECONDS,
+    DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    FAN_MODE_DISABLED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ def generate_briefing(
     automation_grace_seconds: int = DEFAULT_AUTOMATION_GRACE_SECONDS,
     grace_active: bool = False,
     grace_source: str | None = None,
+    verbosity: str = "normal",
+    fan_mode: str = FAN_MODE_DISABLED,
 ) -> str:
     """Generate the daily climate briefing message.
 
@@ -60,6 +63,9 @@ def generate_briefing(
         automation_grace_seconds: Grace period after Climate Advisor resumes HVAC.
         grace_active: Whether a grace period is currently active.
         grace_source: "manual" or "automation" if a grace period is active.
+        verbosity: "tldr_only" (header + table only), "normal" (header + table + trimmed
+            body), or "verbose" (header + table + full original body).
+        fan_mode: Fan control mode — one of the FAN_MODE_* constants.
 
     Returns:
         Formatted briefing string suitable for email or notification.
@@ -69,11 +75,12 @@ def generate_briefing(
 
     _LOGGER.debug(
         "Generating briefing — day_type=%s, trend=%s, "
-        "comfort_heat=%.0f°F, comfort_cool=%.0f°F",
+        "comfort_heat=%.0f°F, comfort_cool=%.0f°F, verbosity=%s",
         c.day_type,
         c.trend_direction,
         comfort_heat,
         comfort_cool,
+        verbosity,
     )
 
     # Structured header (kept for quick scanning)
@@ -86,11 +93,31 @@ def generate_briefing(
     lines.append(f"Day Type: {c.day_type.title()} | Trend: {trend_desc}")
     lines.append("")
 
+    # TLDR table — always included
+    config = {
+        "comfort_heat": comfort_heat,
+        "comfort_cool": comfort_cool,
+        "setback_heat": setback_heat,
+        "setback_cool": setback_cool,
+        "sleep_time": sleep_time,
+        "wake_time": wake_time,
+    }
+    lines.extend(_generate_tldr_table(c, config))
+    lines.append("")
+
+    if verbosity == "tldr_only":
+        briefing_text = "\n".join(lines).rstrip()
+        _LOGGER.debug(
+            "Briefing generated (tldr_only) — %d chars",
+            len(briefing_text),
+        )
+        return briefing_text
+
     # Conversational body
     if c.day_type == DAY_TYPE_HOT:
-        lines.extend(_hot_day_plan(c, comfort_cool, setback_cool, wake_time, sleep_time))
+        lines.extend(_hot_day_plan(c, comfort_cool, setback_cool, wake_time, sleep_time, fan_mode=fan_mode))
     elif c.day_type == DAY_TYPE_WARM:
-        lines.extend(_warm_day_plan(c, comfort_cool, wake_time, sleep_time))
+        lines.extend(_warm_day_plan(c, comfort_cool, wake_time, sleep_time, fan_mode=fan_mode))
     elif c.day_type == DAY_TYPE_MILD:
         lines.extend(_mild_day_plan(c, comfort_heat, wake_time, sleep_time))
     elif c.day_type == DAY_TYPE_COOL:
@@ -146,6 +173,76 @@ def generate_briefing(
     return briefing_text
 
 
+def _generate_tldr_table(c: DayClassification, config: dict) -> list[str]:
+    """Generate a pipe-delimited markdown TLDR summary table.
+
+    Args:
+        c: Today's day classification.
+        config: Dict with comfort_heat, comfort_cool, setback_heat, setback_cool,
+            sleep_time, wake_time keys.
+
+    Returns:
+        List of lines forming a markdown table.
+    """
+    comfort_heat = config["comfort_heat"]
+    comfort_cool = config["comfort_cool"]
+    sleep_time = config["sleep_time"]
+
+    # --- Day Type row ---
+    day_type_val = f"{c.day_type.title()} ({c.today_high:.0f}°F)"
+
+    # --- HVAC Mode row ---
+    if c.hvac_mode == "cool":
+        hvac_val = f"Cool at {comfort_cool:.0f}°F"
+    elif c.hvac_mode == "heat":
+        hvac_val = f"Heat at {comfort_heat:.0f}°F"
+    else:
+        hvac_val = "Off — windows day"
+
+    # --- Windows row ---
+    if c.windows_recommended and c.window_open_time and c.window_close_time:
+        open_t = c.window_open_time.strftime(_FMT_HOUR)
+        close_t = c.window_close_time.strftime(_FMT_HOUR)
+        windows_val = f"Open {open_t} – {close_t}"
+    elif c.window_opportunity_morning and c.window_opportunity_evening:
+        windows_val = "Open morning/evening if cool enough"
+    elif c.window_opportunity_morning:
+        windows_val = "Open morning if cool enough"
+    elif c.window_opportunity_evening:
+        windows_val = "Open evening if cool enough"
+    else:
+        windows_val = "Closed all day"
+
+    # --- Bedtime Setback row ---
+    sleep_str = sleep_time.strftime(_FMT_HOUR)
+    if c.hvac_mode == "cool":
+        # setback for cool days goes up (warmer is fine when sleeping)
+        bedtime_temp = comfort_cool + 3  # standard cool setback
+        bedtime_val = f"{bedtime_temp:.0f}°F at {sleep_str}"
+    elif c.hvac_mode == "heat":
+        bedtime_temp = comfort_heat - 4  # standard heat setback
+        bedtime_val = f"{bedtime_temp:.0f}°F at {sleep_str}"
+    else:
+        bedtime_val = "No setback"
+
+    # --- Tomorrow row ---
+    trend_desc = _trend_description(c)
+    tomorrow_val = f"{trend_desc} ({c.tomorrow_high:.0f}°F)"
+
+    col1 = 16
+    col2 = 20
+    header = f"| {'Setting':<{col1}} | {'Value':<{col2}} |"
+    sep = f"|{'-' * (col1 + 2)}|{'-' * (col2 + 2)}|"
+    rows = [
+        f"| {'Day Type':<{col1}} | {day_type_val:<{col2}} |",
+        f"| {'HVAC Mode':<{col1}} | {hvac_val:<{col2}} |",
+        f"| {'Windows':<{col1}} | {windows_val:<{col2}} |",
+        f"| {'Bedtime Setback':<{col1}} | {bedtime_val:<{col2}} |",
+        f"| {'Tomorrow':<{col1}} | {tomorrow_val:<{col2}} |",
+    ]
+    return [header, sep] + rows
+
+
 def _trend_description(c: DayClassification) -> str:
     """Human-readable trend description."""
     if c.trend_direction == "warming":
@@ -159,37 +256,43 @@ def _trend_description(c: DayClassification) -> str:
     return "Stable"
 
 
-def _hot_day_plan(c, comfort_cool, setback_cool, wake_time, sleep_time) -> list[str]:
+def _hot_day_plan(c, comfort_cool, setback_cool, wake_time, sleep_time, fan_mode: str = FAN_MODE_DISABLED) -> list[str]:
     """Conversational plan for hot days (85°F+)."""
-    return [
-        f"I got a head start on the heat this morning. The AC pre-cooled the house"
-        f" to {comfort_cool - 2:.0f}°F while the outdoor air was still cool — that"
-        f" banking strategy saves a lot of energy over the course of the day.",
-        "",
-        f"Today's a keep-it-sealed kind of day. Keep all windows and doors closed,"
-        f" and if you can, close the blinds on sun-facing windows (especially"
-        f" west-facing ones after noon). I'll hold things at {comfort_cool:.0f}°F"
-        f" all day — you shouldn't need to touch anything.",
-        "",
-        f"If outdoor temps drop below {comfort_cool:.0f}°F after sunset, I'll send"
-        f" you a heads-up that it's safe to open windows and give the AC a rest."
-        f" If you do open up, I'll handle shutting the AC off automatically.",
-    ]
-
-
-def _warm_day_plan(c, comfort_cool, wake_time, sleep_time) -> list[str]:
-    """Conversational plan for warm days (75-85°F)."""
     lines = [
-        "The HVAC is off this morning — the house held its temperature"
-        " nicely overnight.",
+        f"I pre-cooled to {comfort_cool - 2:.0f}°F this morning while outdoor air"
+        f" was still cool — that banking strategy cuts energy use significantly over"
+        f" the course of the day.",
+        "",
+        f"Today's a keep-it-sealed kind of day. Close the blinds on sun-facing"
+        f" windows (especially west-facing ones after noon) and I'll handle the rest."
+        f" If outdoor temps drop below {comfort_cool:.0f}°F after sunset, I'll send"
+        f" a heads-up that it's safe to open up.",
     ]
+    if fan_mode != FAN_MODE_DISABLED:
+        lines.append("")
+        lines.append(
+            "When evening ventilation windows open, I'll use the fan to help"
+            " pull that cool outdoor air through the house."
+        )
+    return lines
+
+
+def _warm_day_plan(c, comfort_cool, wake_time, sleep_time, fan_mode: str = FAN_MODE_DISABLED) -> list[str]:
+    """Conversational plan for warm days (75-85°F)."""
+    lines = []
 
     if c.windows_recommended and c.window_open_time:
         open_t = c.window_open_time.strftime(_FMT_HOUR)
-        lines[0] += (
-            f" Around {open_t}, it'll be a great time to open some windows."
-            " Opening on opposite sides gives you a nice cross-breeze that"
-            " keeps things comfortable without the AC."
+        lines.append(
+            f"Around {open_t}, open windows on opposite sides for a cross-breeze"
+            f" — natural ventilation keeps things comfortable without the AC."
+        )
+    else:
+        lines.append("HVAC is off this morning — no action needed.")
+
+    if fan_mode != FAN_MODE_DISABLED:
+        lines.append(
+            "I'll use the fan to boost cross-ventilation when windows are open."
         )
 
     lines.append("")
@@ -197,15 +300,13 @@ def _warm_day_plan(c, comfort_cool, wake_time, sleep_time) -> list[str]:
     if c.window_close_time:
         close_t = c.window_close_time.strftime(_FMT_HOUR)
         lines.append(
-            f"You'll want to close things up by {close_t} though — I'll be ready"
-            f" to kick on the AC if temps push above {comfort_cool:.0f}°F, and it"
-            f" works much better with the house sealed up."
+            f"Close up by {close_t} so I can kick on the AC if temps push above"
+            f" {comfort_cool:.0f}°F — it works much better with the house sealed."
         )
     else:
         lines.append(
-            f"If it gets too warm inside, the AC will step in automatically above"
-            f" {comfort_cool:.0f}°F as a safety net. But with good airflow, you"
-            f" probably won't need it."
+            f"The AC will step in above {comfort_cool:.0f}°F as a safety net if"
+            f" needed, but with good airflow you probably won't need it."
         )
 
     return lines
@@ -214,33 +315,26 @@ def _warm_day_plan(c, comfort_cool, wake_time, sleep_time) -> list[str]:
 def _mild_day_plan(c, comfort_heat, wake_time, sleep_time) -> list[str]:
     """Conversational plan for mild days (60-74°F)."""
     lines = [
-        f"This is the good stuff — a day where the house practically takes care"
-        f" of itself. I ran the heater to {comfort_heat:.0f}°F before sunrise,"
-        f" and now it's off for the day. The weather does the rest.",
+        f"A day where the house practically takes care of itself. I warmed to"
+        f" {comfort_heat:.0f}°F before sunrise — now HVAC is off and the weather"
+        f" does the rest.",
     ]
 
     if c.windows_recommended and c.window_open_time:
         open_t = c.window_open_time.strftime(_FMT_HOUR)
         lines.append("")
         lines.append(
-            f"By {open_t}, the outside air will be around 60°F and climbing."
-            f" If you open windows on the south and east side first, you'll get a"
-            f" natural cross-breeze that freshens the air and warms the house for free."
+            f"Open south and east windows around {open_t} for a natural"
+            f" cross-breeze that freshens the air and warms the house for free."
         )
-
-    lines.append("")
-    lines.append(
-        "Through the afternoon, no HVAC needed at all. Enjoy the break!"
-    )
 
     if c.window_close_time:
         close_t = c.window_close_time.strftime(_FMT_HOUR)
         lines.append("")
         lines.append(
-            f"Close up the windows by {close_t} to trap the warmth before the"
-            f" sun drops. The house should coast comfortably through dinner. If"
-            f" it dips below {comfort_heat - 2:.0f}°F later tonight, I'll gently"
-            f" kick the heater back on — but that's all automatic."
+            f"Close up by {close_t} to trap the warmth. If it dips below"
+            f" {comfort_heat - 2:.0f}°F tonight, I'll bring the heater back on"
+            f" automatically."
         )
 
     return lines
@@ -249,38 +343,30 @@ def _mild_day_plan(c, comfort_heat, wake_time, sleep_time) -> list[str]:
 def _cool_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time) -> list[str]:
     """Conversational plan for cool days (45-59°F)."""
     return [
-        f"It's a heater day. I'll keep the house at {comfort_heat:.0f}°F through"
-        f" the morning — it's too cool outside for windows today, so we're"
-        f" staying sealed up.",
+        f"Heater day — too cool outside for windows. I'll hold {comfort_heat:.0f}°F"
+        f" through the morning, ease back a couple degrees midday to ride any solar"
+        f" gain, then return to {comfort_heat:.0f}°F as the sun drops.",
         "",
-        "Between about 11am and 3pm, I'll ease the setpoint back a couple"
-        " degrees to ride whatever solar gain the house picks up through the"
-        " windows. You won't notice the difference, but it saves a bit of energy.",
-        "",
-        f"After 3pm I'll bring it back to {comfort_heat:.0f}°F as the sun drops."
-        f" At bedtime, I'll set things to {comfort_heat - 4:.0f}°F for sleeping"
-        f" — most people sleep better a little cooler.",
+        f"At bedtime I'll set back to {comfort_heat - 4:.0f}°F — most people sleep"
+        f" better a little cooler.",
     ]
 
 
 def _cold_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time) -> list[str]:
     """Conversational plan for cold days (below 45°F)."""
     lines = [
-        f"It's going to be cold out there. The heater runs all day at"
-        f" {comfort_heat:.0f}°F, and you can help it out — keep doors and windows"
-        f" closed, minimize how long you hold exterior doors open, and close"
-        f" curtains on the north side. If you have south-facing windows, open"
-        f" those curtains to grab some free solar heat.",
+        "Cold day — heater runs all day. Help it out: close north-side curtains,"
+        " open south-facing ones for free solar heat, and minimize time holding"
+        " exterior doors open.",
     ]
 
     if c.pre_condition and c.trend_direction == "cooling":
         target = comfort_heat + (c.pre_condition_target or 3)
         lines.append("")
         lines.append(
-            f"Tomorrow's even colder, so I'm going to bank some extra heat this"
-            f" evening. Starting around 7pm, I'll bump the setpoint up to"
-            f" {target:.0f}°F for a couple hours, then coast into the night. The"
-            f" house will feel extra warm before bed — that's on purpose."
+            f"Tomorrow's even colder, so I'm banking extra heat this evening —"
+            f" I'll bump to {target:.0f}°F around 7pm for a couple hours."
+            f" If the house feels extra warm before bed, that's on purpose."
         )
 
     lines.append("")

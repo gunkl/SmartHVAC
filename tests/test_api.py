@@ -14,6 +14,7 @@ from custom_components.climate_advisor.const import (
     API_FORCE_RECLASSIFY,
     API_SEND_BRIEFING,
     API_RESPOND_SUGGESTION,
+    API_CONFIG,
 )
 from custom_components.climate_advisor.api import (
     _get_coordinator,
@@ -55,6 +56,7 @@ class TestAPIConstants:
             API_FORCE_RECLASSIFY,
             API_SEND_BRIEFING,
             API_RESPOND_SUGGESTION,
+            API_CONFIG,
         ]
         for path in paths:
             assert path.startswith("/api/climate_advisor/"), f"{path} has wrong prefix"
@@ -69,6 +71,7 @@ class TestAPIConstants:
             API_FORCE_RECLASSIFY,
             API_SEND_BRIEFING,
             API_RESPOND_SUGGESTION,
+            API_CONFIG,
         ]
         assert len(paths) == len(set(paths))
 
@@ -77,7 +80,7 @@ class TestAPIViewList:
     """Test the API_VIEWS registry."""
 
     def test_correct_count(self):
-        assert len(API_VIEWS) == 8
+        assert len(API_VIEWS) == 9
 
     def test_all_are_callable(self):
         for view_cls in API_VIEWS:

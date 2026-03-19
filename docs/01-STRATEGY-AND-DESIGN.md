@@ -2,7 +2,7 @@
 
 ## The Problem
 
-David's wife frequently forgets the heater is on, resulting in expensive heating bills. The household has Home Assistant with a thermostat (with presence sensing), weather forecasts, and most door/window sensors.
+People frequently forget the heater is on, resulting in expensive heating bills. The household has Home Assistant with a thermostat (with presence sensing), weather forecasts, and most door/window sensors.
 
 ## Core Philosophy
 
@@ -70,7 +70,7 @@ A single morning email/notification that:
 4. Describes what happens if they leave the house
 5. Includes learning suggestions when available
 
-The briefing **is** the user interface. The wife doesn't need to know about 15 automations — she reads one email and does 2–3 things.
+The briefing **is** the user interface. The user doesn't need to know about 15 automations — they read one email and do 2–3 things.
 
 ## The Learning Engine
 
@@ -97,3 +97,9 @@ The system handles both heating and cooling:
 - Door/window pause applies to both modes
 - "Just open windows" notifications when HVAC isn't needed
 - Separate comfort and setback setpoints for heat vs. cool
+
+## Configuration Metadata
+
+When adding new configuration options, update `CONFIG_METADATA` in `const.py` so the
+Settings tab in the dashboard displays the new option with its label, behavior
+description, and category.

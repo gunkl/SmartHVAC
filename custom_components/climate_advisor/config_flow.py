@@ -11,28 +11,42 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
-    DOMAIN,
-    CONF_SENSOR_POLARITY_INVERTED,
-    CONF_SENSOR_DEBOUNCE,
-    CONF_MANUAL_GRACE_PERIOD,
-    CONF_MANUAL_GRACE_NOTIFY,
-    CONF_AUTOMATION_GRACE_PERIOD,
     CONF_AUTOMATION_GRACE_NOTIFY,
+    CONF_AUTOMATION_GRACE_PERIOD,
     CONF_EMAIL_NOTIFY,
-    DEFAULT_COMFORT_HEAT,
-    DEFAULT_COMFORT_COOL,
-    DEFAULT_SETBACK_HEAT,
-    DEFAULT_SETBACK_COOL,
-    DEFAULT_SENSOR_DEBOUNCE_SECONDS,
-    DEFAULT_MANUAL_GRACE_SECONDS,
+    CONF_FAN_ENTITY,
+    CONF_FAN_MODE,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
-    TEMP_SOURCE_SENSOR,
-    TEMP_SOURCE_INPUT_NUMBER,
-    TEMP_SOURCE_WEATHER_SERVICE,
+    DEFAULT_COMFORT_COOL,
+    DEFAULT_COMFORT_HEAT,
+    DEFAULT_FAN_MODE,
+    DEFAULT_MANUAL_GRACE_SECONDS,
+    DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    DEFAULT_SETBACK_COOL,
+    DEFAULT_SETBACK_HEAT,
+    CONF_MANUAL_GRACE_NOTIFY,
+    CONF_MANUAL_GRACE_PERIOD,
+    CONF_SENSOR_DEBOUNCE,
+    CONF_SENSOR_POLARITY_INVERTED,
+    DOMAIN,
+    FAN_MODE_BOTH,
+    FAN_MODE_DISABLED,
+    FAN_MODE_HVAC,
+    FAN_MODE_WHOLE_HOUSE,
     TEMP_SOURCE_CLIMATE_FALLBACK,
+    TEMP_SOURCE_INPUT_NUMBER,
+    TEMP_SOURCE_SENSOR,
+    TEMP_SOURCE_WEATHER_SERVICE,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+FAN_MODE_OPTIONS = [
+    selector.SelectOptionDict(value=FAN_MODE_DISABLED, label="Disabled (no fan control)"),
+    selector.SelectOptionDict(value=FAN_MODE_WHOLE_HOUSE, label="Whole house fan (dedicated entity)"),
+    selector.SelectOptionDict(value=FAN_MODE_HVAC, label="HVAC fan mode"),
+    selector.SelectOptionDict(value=FAN_MODE_BOTH, label="Both (whole house fan + HVAC fan mode)"),
+]
 
 OUTDOOR_SOURCE_OPTIONS = [
     selector.SelectOptionDict(value=TEMP_SOURCE_WEATHER_SERVICE, label="Weather service (recommended)"),
@@ -252,6 +266,20 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_AUTOMATION_GRACE_NOTIFY, default=True
                     ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_FAN_MODE, default=DEFAULT_FAN_MODE
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=FAN_MODE_OPTIONS,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_FAN_ENTITY,
+                        description={"suggested_value": None},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=["fan", "switch"])
+                    ),
                 }
             ),
         )
@@ -498,6 +526,21 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         CONF_AUTOMATION_GRACE_NOTIFY,
                         default=current.get(CONF_AUTOMATION_GRACE_NOTIFY, True),
                     ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_FAN_MODE,
+                        default=current.get(CONF_FAN_MODE, DEFAULT_FAN_MODE),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=FAN_MODE_OPTIONS,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_FAN_ENTITY,
+                        description={"suggested_value": current.get(CONF_FAN_ENTITY)},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=["fan", "switch"])
+                    ),
                 }
             ),
         )

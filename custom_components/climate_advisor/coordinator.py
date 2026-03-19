@@ -474,6 +474,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     forecast.current_outdoor_temp,
                     forecast.current_indoor_temp,
                     windows_open,
+                    current_hour=dt_util.now().hour,
                 )
 
             # Save state after classification update
@@ -979,6 +980,81 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return "Keep doors closed — help the heater out."
 
         return "No action needed right now. Automation is handling it."
+
+    def _compute_automation_status(self) -> str:
+        """Compute the current automation status string."""
+        if not self._automation_enabled:
+            return "disabled"
+        if self.automation_engine.is_paused_by_door:
+            return "paused — door/window open"
+        if self.automation_engine._grace_active:
+            source = self.automation_engine._last_resume_source or "automation"
+            return f"grace period ({source})"
+        return "active"
+
+    def _compute_next_automation_action(
+        self, c: DayClassification | None
+    ) -> tuple[str, str]:
+        """Compute the next scheduled automation action and its time.
+
+        Returns:
+            Tuple of (action_description, execution_time_str).
+        """
+        if not c:
+            return ("Waiting for classification...", "")
+
+        now = dt_util.now()
+        now_time = now.time()
+
+        # Check if automation is paused
+        if self.automation_engine.is_paused_by_door:
+            return ("Waiting — HVAC paused (door/window open)", "")
+
+        if self.automation_engine._grace_active:
+            source = self.automation_engine._last_resume_source or "automation"
+            return (f"Grace period active ({source})", "")
+
+        # Build list of upcoming scheduled events
+        wake_time = self.config.get("wake_time", "06:30:00")
+        sleep_time = self.config.get("sleep_time", "22:30:00")
+        briefing_time = self.config.get("briefing_time", "06:00:00")
+
+        # Parse time strings to time objects
+        def _parse_time(t: str) -> time:
+            parts = t.split(":")
+            return time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+
+        events: list[tuple[time, str]] = []
+
+        bt = _parse_time(briefing_time)
+        wt = _parse_time(wake_time)
+        st = _parse_time(sleep_time)
+
+        if now_time < bt:
+            events.append((bt, "Send daily briefing"))
+        if now_time < wt:
+            if c.hvac_mode in ("heat", "cool"):
+                events.append((wt, f"Morning wake-up — restore {c.hvac_mode} comfort"))
+            else:
+                events.append((wt, "Morning wake-up check"))
+        if now_time < st:
+            if c.hvac_mode == "heat":
+                bedtime_target = self.config.get("comfort_heat", 70) - 4 + c.setback_modifier
+                events.append((st, f"Bedtime — heat setback to {bedtime_target:.0f}°F"))
+            elif c.hvac_mode == "cool":
+                bedtime_target = self.config.get("comfort_cool", 75) + 3
+                events.append((st, f"Bedtime — cool setback to {bedtime_target:.0f}°F"))
+            else:
+                events.append((st, "Bedtime check"))
+
+        if not events:
+            return ("No more actions today", "")
+
+        # Sort by time, return earliest
+        events.sort(key=lambda e: e[0])
+        next_time, next_desc = events[0]
+        time_str = next_time.strftime("%I:%M %p").lstrip("0")
+        return (next_desc, time_str)
 
     @property
     def current_classification(self) -> DayClassification | None:

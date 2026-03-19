@@ -649,3 +649,100 @@ class TestTrendMagnitudeBoundaries:
         assert result.setback_modifier == pytest.approx(3.0)
         assert result.pre_condition is True
         assert result.pre_condition_target == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# Window opportunity flags on HOT days (Issue #18)
+# ---------------------------------------------------------------------------
+
+class TestHotDayWindowOpportunityFlags:
+    """HOT days set window_opportunity_morning / window_opportunity_evening
+    based on today_low and tomorrow_low thresholds."""
+
+    def _classify_hot(self, today_low: float, tomorrow_low: float) -> object:
+        """Classify a HOT day with given lows and a stable trend."""
+        return classify_day(ForecastSnapshot(
+            today_high=90.0,
+            today_low=today_low,
+            tomorrow_high=90.0,
+            tomorrow_low=tomorrow_low,
+            current_outdoor_temp=85.0,
+        ))
+
+    # --- Morning opportunity (today_low <= 80) ---
+
+    def test_hot_day_window_opportunity_morning_when_low_at_boundary(self):
+        """today_low == 80 → morning opportunity set."""
+        result = self._classify_hot(today_low=80, tomorrow_low=85)
+        assert result.day_type == DAY_TYPE_HOT
+        assert result.window_opportunity_morning is True
+
+    def test_hot_day_window_opportunity_morning_when_low_below_boundary(self):
+        """today_low < 80 → morning opportunity set."""
+        result = self._classify_hot(today_low=68, tomorrow_low=85)
+        assert result.window_opportunity_morning is True
+
+    def test_hot_day_no_window_opportunity_morning_when_low_above_boundary(self):
+        """today_low > 80 → morning opportunity NOT set."""
+        result = self._classify_hot(today_low=81, tomorrow_low=68)
+        assert result.window_opportunity_morning is False
+
+    # --- Evening opportunity (tomorrow_low <= 80) ---
+
+    def test_hot_day_window_opportunity_evening_when_tomorrow_low_at_boundary(self):
+        """tomorrow_low == 80 → evening opportunity set."""
+        result = self._classify_hot(today_low=85, tomorrow_low=80)
+        assert result.day_type == DAY_TYPE_HOT
+        assert result.window_opportunity_evening is True
+
+    def test_hot_day_window_opportunity_evening_when_tomorrow_low_below_boundary(self):
+        """tomorrow_low < 80 → evening opportunity set."""
+        result = self._classify_hot(today_low=85, tomorrow_low=65)
+        assert result.window_opportunity_evening is True
+
+    def test_hot_day_no_window_opportunity_evening_when_tomorrow_low_above_boundary(self):
+        """tomorrow_low > 80 → evening opportunity NOT set."""
+        result = self._classify_hot(today_low=68, tomorrow_low=82)
+        assert result.window_opportunity_evening is False
+
+    # --- Both flags ---
+
+    def test_hot_day_both_opportunities_when_both_lows_low(self):
+        """Both lows <= 80 → both flags set."""
+        result = self._classify_hot(today_low=70, tomorrow_low=70)
+        assert result.window_opportunity_morning is True
+        assert result.window_opportunity_evening is True
+
+    def test_hot_day_no_opportunities_when_both_lows_high(self):
+        """Both lows > 80 → both flags False."""
+        result = self._classify_hot(today_low=82, tomorrow_low=83)
+        assert result.window_opportunity_morning is False
+        assert result.window_opportunity_evening is False
+
+    # --- Flags absent on non-HOT days ---
+
+    def test_warm_day_no_window_opportunity_flags(self):
+        """WARM day (windows_recommended=True) should not set opportunity flags."""
+        result = classify_day(ForecastSnapshot(
+            today_high=80.0,
+            today_low=60.0,
+            tomorrow_high=80.0,
+            tomorrow_low=60.0,
+            current_outdoor_temp=70.0,
+        ))
+        assert result.day_type == DAY_TYPE_WARM
+        assert result.window_opportunity_morning is False
+        assert result.window_opportunity_evening is False
+
+    def test_mild_day_no_window_opportunity_flags(self):
+        """MILD day should not set opportunity flags."""
+        result = classify_day(ForecastSnapshot(
+            today_high=67.0,
+            today_low=50.0,
+            tomorrow_high=67.0,
+            tomorrow_low=50.0,
+            current_outdoor_temp=60.0,
+        ))
+        assert result.day_type == DAY_TYPE_MILD
+        assert result.window_opportunity_morning is False
+        assert result.window_opportunity_evening is False

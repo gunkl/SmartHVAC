@@ -13,7 +13,6 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from custom_components.climate_advisor.automation import AutomationEngine
 from custom_components.climate_advisor.classifier import DayClassification
@@ -268,9 +267,6 @@ class TestCoordinatorSync:
         coordinator._async_save_state = AsyncMock()
 
         # Import the real method and bind it
-        from custom_components.climate_advisor.coordinator import (
-            ClimateAdvisorCoordinator,
-        )
 
         # Call the real method logic
         def set_automation_enabled(enabled: bool) -> None:

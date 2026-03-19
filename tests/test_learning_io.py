@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from custom_components.climate_advisor.const import LEARNING_DB_FILE
 from custom_components.climate_advisor.learning import (

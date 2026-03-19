@@ -220,6 +220,47 @@
     color: var(--text-secondary);
   }
   .trend-arrow { font-size: 1rem; }
+  .settings-group { margin-bottom: 20px; }
+  .settings-group h3 {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .setting-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .setting-row:last-child { border-bottom: none; }
+  .setting-info { flex: 1; min-width: 0; }
+  .setting-label {
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin-bottom: 3px;
+  }
+  .setting-description {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+  .setting-value {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--primary);
+    white-space: nowrap;
+    flex-shrink: 0;
+    max-width: 180px;
+    text-align: right;
+    word-break: break-word;
+    white-space: normal;
+  }
 </style>
 </head>
 <body>
@@ -229,6 +270,7 @@
 <div class="tabs">
   <button class="tab-btn active" data-tab="status">Status</button>
   <button class="tab-btn" data-tab="debug">Debug</button>
+  <button class="tab-btn" data-tab="settings">Settings</button>
 </div>
 
 <div id="tab-status" class="tab-content active">
@@ -307,6 +349,24 @@
   </div>
 </div>
 
+<div id="tab-settings" class="tab-content">
+  <div class="card">
+    <h2>Configuration</h2>
+    <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:16px">
+      These are the current settings for Climate Advisor. All values are read-only here.
+      Use the button below to change settings.
+    </p>
+    <div id="settings-content">
+      <div class="loading">Loading settings...</div>
+    </div>
+  </div>
+  <button class="btn secondary"
+          onclick="window.open('/config/integrations/integration/climate_advisor', '_blank')"
+          style="margin-bottom:16px">
+    Reconfigure in Home Assistant
+  </button>
+</div>
+
 <script>
 (function() {
   'use strict';
@@ -319,6 +379,7 @@
       btn.classList.add('active');
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
       if (btn.dataset.tab === 'status') loadChart();
+      if (btn.dataset.tab === 'settings') loadSettings();
     });
   });
 
@@ -741,6 +802,63 @@
     }
   }
 
+  // --- Settings tab ---
+  const CATEGORY_LABELS = {
+    core: 'Core',
+    sensors: 'Sensors',
+    fan: 'Fan',
+    schedule: 'Schedule',
+    advanced: 'Advanced',
+  };
+  const CATEGORY_ORDER = ['core', 'sensors', 'fan', 'schedule', 'advanced'];
+
+  async function loadSettings() {
+    try {
+      const data = await apiFetch('config');
+      const el = document.getElementById('settings-content');
+      const settings = data.settings || [];
+
+      if (settings.length === 0) {
+        el.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem">No settings available.</p>';
+        return;
+      }
+
+      // Group by category
+      const grouped = {};
+      settings.forEach(s => {
+        const cat = s.category || 'advanced';
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push(s);
+      });
+
+      let html = '';
+      CATEGORY_ORDER.forEach(cat => {
+        const items = grouped[cat];
+        if (!items || items.length === 0) return;
+        const catLabel = CATEGORY_LABELS[cat] || cat;
+        html += `<div class="settings-group"><h3>${catLabel}</h3>`;
+        items.forEach(s => {
+          const displayValue = s.value == null ? '<span style="color:var(--text-secondary)">not set</span>'
+            : String(s.value);
+          html += `
+            <div class="setting-row">
+              <div class="setting-info">
+                <div class="setting-label">${s.label}</div>
+                <div class="setting-description">${s.description}</div>
+              </div>
+              <div class="setting-value">${displayValue}</div>
+            </div>`;
+        });
+        html += '</div>';
+      });
+
+      el.innerHTML = html;
+    } catch (e) {
+      document.getElementById('settings-content').innerHTML =
+        '<p style="color:var(--danger)">Failed to load settings: ' + e.message + '</p>';
+    }
+  }
+
   // --- Initial load (retry until auth token is available) ---
   function loadAll() {
     loadStatus();
@@ -748,6 +866,7 @@
     loadChart();
     loadAutomationState();
     loadLearning();
+    loadSettings();
   }
 
   let _loadRetries = 0;

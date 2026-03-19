@@ -962,3 +962,77 @@ class TestConfigMinutesConversion:
         large_debounce_seconds = 3600  # 60 minutes
         engine = _make_automation_engine({CONF_SENSOR_DEBOUNCE: large_debounce_seconds})
         assert engine.config[CONF_SENSOR_DEBOUNCE] == 3600
+
+
+# ---------------------------------------------------------------------------
+# Physical window tracking on HOT days (Issue #18 — bug fix)
+# ---------------------------------------------------------------------------
+
+class TestPhysicalWindowTrackingOnHotDay:
+    """On HOT days windows_recommended=False, but physical opens must still be recorded.
+
+    The coordinator's _debounce_expired callback now has an unconditional block
+    that tracks physical opens regardless of windows_recommended.  These tests
+    replicate that logic inline (the same approach used throughout this file)
+    so we can verify the fix without needing a live coordinator.
+    """
+
+    def _simulate_debounce_expired(self, today_record, windows_recommended: bool):
+        """Replicate the coordinator's _debounce_expired window-tracking logic."""
+        # --- compliance block (gated on windows_recommended) ---
+        if windows_recommended and not today_record.windows_opened:
+            today_record.windows_opened = True
+            today_record.window_open_actual_time = "2026-03-19T08:30:00"
+
+        # --- physical tracking block (always runs) ---
+        if not today_record.windows_physically_opened:
+            today_record.windows_physically_opened = True
+            today_record.window_physical_open_time = "2026-03-19T08:30:00"
+
+    def _make_record(self):
+        """Create a minimal DailyRecord for today."""
+        from custom_components.climate_advisor.learning import DailyRecord
+        return DailyRecord(date="2026-03-19", day_type="hot", trend_direction="stable")
+
+    def test_physical_window_tracking_on_hot_day(self):
+        """HOT day (windows_recommended=False), window opens → windows_physically_opened = True."""
+        record = self._make_record()
+        assert record.windows_physically_opened is False
+        assert record.window_physical_open_time is None
+
+        self._simulate_debounce_expired(record, windows_recommended=False)
+
+        assert record.windows_physically_opened is True
+        assert record.window_physical_open_time is not None
+
+    def test_compliance_tracking_NOT_set_on_hot_day(self):
+        """On a HOT day (windows_recommended=False), compliance tracking stays False."""
+        record = self._make_record()
+        self._simulate_debounce_expired(record, windows_recommended=False)
+
+        # Physical tracking is set
+        assert record.windows_physically_opened is True
+        # Compliance tracking is NOT set
+        assert record.windows_opened is False
+        assert record.window_open_actual_time is None
+
+    def test_physical_tracking_also_set_on_warm_day(self):
+        """On a WARM day (windows_recommended=True), BOTH compliance and physical are set."""
+        record = self._make_record()
+        record.day_type = "warm"
+
+        self._simulate_debounce_expired(record, windows_recommended=True)
+
+        assert record.windows_opened is True
+        assert record.windows_physically_opened is True
+
+    def test_physical_open_time_is_idempotent(self):
+        """Calling the tracking logic twice does not overwrite the first open time."""
+        record = self._make_record()
+        self._simulate_debounce_expired(record, windows_recommended=False)
+        first_time = record.window_physical_open_time
+
+        # Simulate a second sensor open event
+        self._simulate_debounce_expired(record, windows_recommended=False)
+
+        assert record.window_physical_open_time == first_time

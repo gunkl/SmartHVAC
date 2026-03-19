@@ -11,7 +11,7 @@ from datetime import time
 import pytest
 
 from custom_components.climate_advisor.classifier import DayClassification
-from custom_components.climate_advisor.briefing import generate_briefing
+from custom_components.climate_advisor.briefing import generate_briefing, _generate_tldr_table
 
 
 # ---------------------------------------------------------------------------
@@ -567,3 +567,265 @@ class TestGracePeriodSection:
         )
         assert "hands-off" not in result.lower()
         assert "settling period" not in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# TLDR table tests
+# ---------------------------------------------------------------------------
+
+def _make_config(
+    comfort_heat: float = COMFORT_HEAT,
+    comfort_cool: float = COMFORT_COOL,
+    setback_heat: float = SETBACK_HEAT,
+    setback_cool: float = SETBACK_COOL,
+    sleep_time: time = DEFAULT_SLEEP,
+    wake_time: time = DEFAULT_WAKE,
+) -> dict:
+    return {
+        "comfort_heat": comfort_heat,
+        "comfort_cool": comfort_cool,
+        "setback_heat": setback_heat,
+        "setback_cool": setback_cool,
+        "sleep_time": sleep_time,
+        "wake_time": wake_time,
+    }
+
+
+class TestTldrTable:
+    """_generate_tldr_table() should produce accurate rows for each day type."""
+
+    def test_tldr_hot_day_type_row(self):
+        c = _make_classification("hot", today_high=92, today_low=70)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "Hot" in table
+        assert "92" in table
+
+    def test_tldr_hot_day_hvac_mode_row(self):
+        c = _make_classification("hot", today_high=92, today_low=70)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "Cool at 75" in table
+
+    def test_tldr_hot_day_windows_row(self):
+        """Hot days with window_opportunity flags should say morning/evening or Closed."""
+        c = _make_classification("hot", today_high=92, today_low=70)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        # DayClassification sets window_opportunity flags on hot days
+        assert "morning" in table.lower() or "evening" in table.lower() or "Closed" in table
+
+    def test_tldr_warm_day_windows_open_times(self):
+        """Warm days should show open/close times in the Windows row."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        # warm day window_open_time=08:00, window_close_time=18:00
+        assert "Open" in table
+        assert "8" in table  # open time hour
+        assert "6" in table or "18" in table  # close time
+
+    def test_tldr_cold_day_hvac_mode_row(self):
+        c = _make_classification("cold", today_high=38, today_low=22)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "Heat at 70" in table
+
+    def test_tldr_cold_day_windows_row(self):
+        """Cold days have no window recommendation — should say 'Closed all day'."""
+        c = _make_classification("cold", today_high=38, today_low=22)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "Closed all day" in table
+
+    def test_tldr_contains_bedtime_heat_info(self):
+        """Heat mode: bedtime setback should be comfort_heat - 4."""
+        c = _make_classification("cool", today_high=55, today_low=35)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        # COMFORT_HEAT=70, setback = 70-4 = 66
+        assert "66" in table
+        assert "10:30 PM" in table  # DEFAULT_SLEEP
+
+    def test_tldr_contains_bedtime_cool_info(self):
+        """Cool mode: bedtime setback should be comfort_cool + 3."""
+        c = _make_classification("hot", today_high=95, today_low=72)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        # COMFORT_COOL=75, setback = 75+3 = 78
+        assert "78" in table
+
+    def test_tldr_off_mode_no_setback(self):
+        """Off mode days should show 'No setback'."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "No setback" in table
+
+    def test_tldr_contains_tomorrow_trend(self):
+        c = _make_classification(
+            "mild", today_high=68, today_low=48,
+            tomorrow_high=80, tomorrow_low=60,
+            trend_direction="warming", trend_magnitude=12,
+        )
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "80" in table  # tomorrow high
+        assert "warm" in table.lower()
+
+    def test_tldr_stable_tomorrow(self):
+        c = _make_classification("mild", today_high=68, today_low=48,
+                                  tomorrow_high=69, tomorrow_low=49,
+                                  trend_direction="stable", trend_magnitude=1)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "Stable" in table
+        assert "69" in table
+
+    def test_tldr_is_markdown_table(self):
+        """Output should look like a markdown pipe table."""
+        c = _make_classification("hot", today_high=92, today_low=70)
+        rows = _generate_tldr_table(c, _make_config())
+        # Every row should start and end with |
+        for row in rows:
+            assert row.startswith("|"), f"Row does not start with |: {row!r}"
+            assert row.endswith("|"), f"Row does not end with |: {row!r}"
+
+    def test_tldr_separator_row_present(self):
+        """There should be exactly one separator row (dashes)."""
+        c = _make_classification("mild", today_high=68)
+        rows = _generate_tldr_table(c, _make_config())
+        sep_rows = [r for r in rows if set(r.strip("|").replace(" ", "")) <= set("-|")]
+        assert len(sep_rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# Verbosity parameter tests
+# ---------------------------------------------------------------------------
+
+class TestVerbosity:
+    """generate_briefing() verbosity parameter should control output length/content."""
+
+    def test_verbosity_tldr_only_no_body(self):
+        """tldr_only should omit all conversational body paragraphs."""
+        c = _make_classification("hot", today_high=92, today_low=70)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            verbosity="tldr_only",
+        )
+        # Should have the header
+        assert "Your Home Climate Plan" in result
+        # Should have the TLDR table
+        assert "Day Type" in result
+        assert "HVAC Mode" in result
+        # Should NOT have conversational body phrases
+        assert "I pre-cooled" not in result
+        assert "head out" not in result
+
+    def test_verbosity_tldr_only_has_table(self):
+        """tldr_only must include the TLDR table."""
+        c = _make_classification("cold", today_high=38, today_low=22)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            verbosity="tldr_only",
+        )
+        assert "| Day Type" in result
+        assert "| HVAC Mode" in result
+        assert "| Windows" in result
+        assert "| Bedtime Setback" in result
+        assert "| Tomorrow" in result
+
+    def test_verbosity_normal_has_tldr_and_body(self):
+        """normal verbosity should include both the TLDR table and body text."""
+        c = _make_classification("cool", today_high=55, today_low=35)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            verbosity="normal",
+        )
+        # TLDR table present
+        assert "| Day Type" in result
+        # Conversational body present
+        assert "I'll" in result or "I'm" in result
+
+    def test_verbosity_normal_is_default(self):
+        """Omitting verbosity should produce the same output as verbosity='normal'."""
+        c = _make_classification("mild", today_high=68, today_low=48)
+        default_result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+        )
+        normal_result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            verbosity="normal",
+        )
+        assert default_result == normal_result
+
+    def test_verbosity_tldr_only_shorter_than_normal(self):
+        """tldr_only output should always be shorter than normal output."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        tldr = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            verbosity="tldr_only",
+        )
+        normal = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            verbosity="normal",
+        )
+        assert len(tldr) < len(normal)
+
+    def test_verbosity_verbose_has_body(self):
+        """verbose should include body text (same as normal for now)."""
+        c = _make_classification("hot", today_high=95, today_low=72)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            verbosity="verbose",
+        )
+        assert "| Day Type" in result
+        assert "I'll" in result or "I'm" in result or "I pre-cooled" in result
