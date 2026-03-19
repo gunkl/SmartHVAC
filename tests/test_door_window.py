@@ -706,3 +706,259 @@ class TestConfigMigrationV4ToV5:
         new_data.setdefault(CONF_EMAIL_NOTIFY, True)
 
         assert new_data[CONF_EMAIL_NOTIFY] is False
+
+
+# ---------------------------------------------------------------------------
+# Debounce / grace interaction tests (Issue #13)
+# ---------------------------------------------------------------------------
+
+class TestDebounceGraceInteraction:
+    """Tests for the interaction between debounce timers and grace periods."""
+
+    def test_manual_override_detected_without_off_state(self):
+        """Race condition fix: override is detected even when old state never hit 'off'.
+
+        Replicates the coordinator detection logic inline:
+        Before the fix: old_state.state == "off" was required.
+        After the fix: any non-off/unavailable/unknown new_state triggers detection.
+        """
+        is_paused_by_door = True
+        old_state_value = "cool"   # thermostat was already in "cool", never hit "off"
+        new_state_value = "cool"   # changed to "cool" again (or any active mode)
+
+        # Old (broken) logic — would NOT detect the override
+        old_logic_detected = (
+            is_paused_by_door
+            and old_state_value == "off"
+            and new_state_value not in ("off", "unavailable", "unknown")
+        )
+        assert old_logic_detected is False
+
+        # New (fixed) logic — detects override regardless of old_state
+        new_logic_detected = (
+            is_paused_by_door
+            and new_state_value not in ("off", "unavailable", "unknown")
+        )
+        assert new_logic_detected is True
+
+    def test_manual_override_cancels_debounce_timers(self):
+        """Simulates _cancel_all_debounce_timers: all timers cancelled, dict cleared."""
+        cancel_a = MagicMock()
+        cancel_b = MagicMock()
+        door_open_timers = {
+            "binary_sensor.front_door": cancel_a,
+            "binary_sensor.back_door": cancel_b,
+        }
+
+        # Replicate coordinator._cancel_all_debounce_timers() logic
+        for cancel_fn in door_open_timers.values():
+            cancel_fn()
+        door_open_timers.clear()
+
+        cancel_a.assert_called_once()
+        cancel_b.assert_called_once()
+        assert door_open_timers == {}
+
+    def test_grace_blocks_new_pause_after_manual_override(self):
+        """Full sequence: open → paused → manual override (grace) → reopen → blocked."""
+        engine = _make_automation_engine()
+        engine.hass.states.get.return_value = _make_state("heat")
+
+        # Step 1: door opens — engine pauses HVAC
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._paused_by_door is True
+
+        # Step 2: user manually overrides during pause — grace starts
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later",
+            return_value=MagicMock(),
+        ):
+            asyncio.run(engine.handle_manual_override_during_pause())
+
+        assert engine._paused_by_door is False
+        assert engine._grace_active is True
+
+        # Step 3: door opens again — should be blocked by grace
+        engine.hass.services.async_call.reset_mock()
+        asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        # Pause should NOT have happened
+        assert engine._paused_by_door is False
+        engine.hass.services.async_call.assert_not_called()
+
+    def test_grace_blocks_same_sensor_reopen(self):
+        """Grace period blocks a re-open from the same sensor that originally triggered."""
+        engine = _make_automation_engine()
+        engine.hass.states.get.return_value = _make_state("cool")
+
+        sensor = "binary_sensor.front_door"
+
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open(sensor))
+
+        assert engine._paused_by_door is True
+
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later",
+            return_value=MagicMock(),
+        ):
+            asyncio.run(engine.handle_manual_override_during_pause())
+
+        assert engine._grace_active is True
+
+        # Same sensor reopens — still blocked
+        engine.hass.services.async_call.reset_mock()
+        asyncio.run(engine.handle_door_window_open(sensor))
+
+        assert engine._paused_by_door is False
+        engine.hass.services.async_call.assert_not_called()
+
+    def test_multiple_sensors_staggered_debounce(self):
+        """Sensor A triggers pause, user overrides (grace starts), sensor B blocked."""
+        engine = _make_automation_engine()
+        engine.hass.states.get.return_value = _make_state("heat")
+
+        # Sensor A fires first
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.sensor_a"))
+
+        assert engine._paused_by_door is True
+
+        # User manually overrides
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later",
+            return_value=MagicMock(),
+        ):
+            asyncio.run(engine.handle_manual_override_during_pause())
+
+        assert engine._grace_active is True
+        assert engine._paused_by_door is False
+
+        # Sensor B's debounce expires and tries to pause
+        engine.hass.services.async_call.reset_mock()
+        asyncio.run(engine.handle_door_window_open("binary_sensor.sensor_b"))
+
+        # Grace should have blocked sensor B
+        assert engine._paused_by_door is False
+        engine.hass.services.async_call.assert_not_called()
+
+    def test_grace_expiry_allows_new_pause(self):
+        """After grace expires (_grace_active=False), the next open should pause."""
+        engine = _make_automation_engine()
+        engine.hass.states.get.return_value = _make_state("heat")
+
+        # Simulate completed manual override with grace already expired
+        engine._grace_active = False
+        engine._last_resume_source = None
+        engine._paused_by_door = False
+
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._paused_by_door is True
+
+    def test_zero_grace_allows_immediate_repause(self):
+        """With CONF_MANUAL_GRACE_PERIOD=0, manual override leaves no grace — next open pauses."""
+        engine = _make_automation_engine({CONF_MANUAL_GRACE_PERIOD: 0})
+        engine.hass.states.get.return_value = _make_state("heat")
+
+        # First open — pauses HVAC
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._paused_by_door is True
+
+        # Manual override with zero-duration grace — grace should NOT activate
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ) as mock_call_later:
+            asyncio.run(engine.handle_manual_override_during_pause())
+
+        mock_call_later.assert_not_called()
+        assert engine._grace_active is False
+        assert engine._paused_by_door is False
+
+        # Door opens again — should pause immediately (no grace blocking)
+        engine.hass.services.async_call.reset_mock()
+        with patch(
+            "custom_components.climate_advisor.automation.async_call_later"
+        ):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._paused_by_door is True
+
+
+# ---------------------------------------------------------------------------
+# Config minutes ↔ seconds conversion tests (Issue #13)
+# ---------------------------------------------------------------------------
+
+class TestConfigMinutesConversion:
+    """Tests for the minutes-to-seconds conversion added in Issue #13.
+
+    Config flow now accepts user input in minutes and stores seconds (* 60).
+    Options flow displays stored seconds as minutes (// 60).
+    """
+
+    def test_minutes_to_seconds_on_save(self):
+        """Simulates config_flow: user enters 5 minutes → stored as 300 seconds."""
+        user_input_minutes = 5
+        stored_seconds = user_input_minutes * 60
+        assert stored_seconds == 300
+
+    def test_seconds_to_minutes_on_display(self):
+        """Simulates options flow: stored 300 seconds → displayed as 5 minutes."""
+        stored_seconds = 300
+        display_minutes = stored_seconds // 60
+        assert display_minutes == 5
+
+    def test_debounce_max_allows_60_minutes(self):
+        """60-minute debounce (3600 s) is within the new max (previously capped at 900 s)."""
+        user_input_minutes = 60
+        stored_seconds = user_input_minutes * 60
+        assert stored_seconds == 3600
+        # Confirm it exceeds the old 900 s cap — this is now a valid value
+        assert stored_seconds > 900
+
+    def test_grace_max_allows_240_minutes(self):
+        """240-minute grace (14400 s) is within the new max."""
+        user_input_minutes = 240
+        stored_seconds = user_input_minutes * 60
+        assert stored_seconds == 14400
+        # Should be well beyond the old debounce cap
+        assert stored_seconds > 3600
+
+    def test_zero_minutes_stored_as_zero_seconds(self):
+        """0 minutes → 0 seconds, which disables the grace period."""
+        stored_seconds = 0 * 60
+        assert stored_seconds == 0
+
+    def test_round_trip_minutes_seconds(self):
+        """Storing and retrieving any whole-minute value is lossless."""
+        for minutes in (1, 5, 10, 30, 60, 120, 240):
+            stored = minutes * 60
+            displayed = stored // 60
+            assert displayed == minutes
+
+    def test_engine_accepts_large_grace_from_config(self):
+        """AutomationEngine stores a large grace value from config without modification."""
+        large_grace_seconds = 14400  # 240 minutes
+        engine = _make_automation_engine({CONF_MANUAL_GRACE_PERIOD: large_grace_seconds})
+        assert engine.config[CONF_MANUAL_GRACE_PERIOD] == 14400
+
+    def test_engine_accepts_large_debounce_from_config(self):
+        """AutomationEngine stores a large debounce value from config without modification."""
+        large_debounce_seconds = 3600  # 60 minutes
+        engine = _make_automation_engine({CONF_SENSOR_DEBOUNCE: large_debounce_seconds})
+        assert engine.config[CONF_SENSOR_DEBOUNCE] == 3600

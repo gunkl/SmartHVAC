@@ -323,14 +323,24 @@
   });
 
   // --- Auth: extract HA token from parent window ---
-  function getAuthToken() {
-    // Method 1: parent window's hass object (same-origin iframe)
+  function _getHassAuth() {
     try {
       const ha = window.parent.document.querySelector('home-assistant');
-      if (ha && ha.hass && ha.hass.auth && ha.hass.auth.data) {
-        return ha.hass.auth.data.access_token;
-      }
+      if (ha && ha.hass && ha.hass.auth) return ha.hass.auth;
     } catch (e) { /* cross-origin or not ready */ }
+    return null;
+  }
+
+  async function getAuthToken() {
+    // Method 1: parent window's hass object (same-origin iframe)
+    const auth = _getHassAuth();
+    if (auth) {
+      // Proactively refresh if token expires within 5 minutes
+      if (auth.data && auth.data.expires && auth.data.expires - Date.now() < 300000) {
+        try { await auth.refreshAccessToken(); } catch (e) { /* refresh failed */ }
+      }
+      if (auth.data && auth.data.access_token) return auth.data.access_token;
+    }
 
     // Method 2: localStorage fallback (HA stores tokens here)
     try {
@@ -344,9 +354,20 @@
     return null;
   }
 
+  async function forceTokenRefresh() {
+    const auth = _getHassAuth();
+    if (auth) {
+      try {
+        await auth.refreshAccessToken();
+        if (auth.data && auth.data.access_token) return auth.data.access_token;
+      } catch (e) { /* refresh failed */ }
+    }
+    return null;
+  }
+
   // --- API helpers ---
   async function apiFetch(path, opts = {}) {
-    const token = getAuthToken();
+    const token = await getAuthToken();
     const headers = { ...(opts.headers || {}) };
     if (token) {
       headers['Authorization'] = 'Bearer ' + token;
@@ -356,6 +377,21 @@
       ...opts,
       headers,
     });
+    if (resp.status === 401) {
+      // Token was stale — force-refresh and retry once
+      const freshToken = await forceTokenRefresh();
+      if (freshToken && freshToken !== token) {
+        const retryHeaders = { ...(opts.headers || {}), 'Authorization': 'Bearer ' + freshToken };
+        const retry = await fetch('/api/climate_advisor/' + path, {
+          credentials: 'same-origin',
+          ...opts,
+          headers: retryHeaders,
+        });
+        if (!retry.ok) throw new Error('HTTP ' + retry.status);
+        return retry.json();
+      }
+      throw new Error('HTTP 401');
+    }
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     return resp.json();
   }
@@ -715,8 +751,9 @@
   }
 
   let _loadRetries = 0;
-  function initLoad() {
-    if (getAuthToken()) {
+  async function initLoad() {
+    const token = await getAuthToken();
+    if (token) {
       loadAll();
     } else if (_loadRetries < 20) {
       _loadRetries++;
@@ -728,10 +765,40 @@
   }
   initLoad();
 
-  // --- Auto-refresh ---
-  setInterval(() => { loadStatus(); loadBriefing(); }, 60000);
-  setInterval(loadChart, 300000);
-  setInterval(() => { loadAutomationState(); loadLearning(); }, 60000);
+  // --- Auto-refresh with backoff on auth failure ---
+  let _authFailCount = 0;
+  const _BASE_POLL = 60000;     // 60s normal
+  const _CHART_POLL = 300000;   // 5min normal
+  const _MAX_BACKOFF = 600000;  // 10min ceiling
+
+  function _backoff(baseMs) {
+    if (_authFailCount === 0) return baseMs;
+    return Math.min(baseMs * Math.pow(2, _authFailCount), _MAX_BACKOFF);
+  }
+
+  async function _pollCycle() {
+    try {
+      await Promise.all([loadStatus(), loadBriefing(), loadAutomationState(), loadLearning()]);
+      if (_authFailCount > 0) {
+        _authFailCount = 0;
+        console.info('Climate Advisor: auth recovered, resuming normal polling');
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('401')) {
+        _authFailCount = Math.min(_authFailCount + 1, 5);
+        console.warn('Climate Advisor: auth failure #' + _authFailCount + ', backing off');
+      }
+    }
+    setTimeout(_pollCycle, _backoff(_BASE_POLL));
+  }
+
+  async function _chartCycle() {
+    try { await loadChart(); } catch (e) { /* handled internally */ }
+    setTimeout(_chartCycle, _backoff(_CHART_POLL));
+  }
+
+  setTimeout(_pollCycle, _BASE_POLL);
+  setTimeout(_chartCycle, _CHART_POLL);
 
   // Redraw chart on resize
   window.addEventListener('resize', loadChart);

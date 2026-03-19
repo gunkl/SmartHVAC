@@ -363,6 +363,22 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             unsub()
         self._unsub_dw_listeners.clear()
 
+    def _cancel_all_debounce_timers(self) -> None:
+        """Cancel all pending door/window debounce timers.
+
+        Called when a manual HVAC override is detected so that orphaned
+        debounce timers for still-open sensors cannot interfere with the
+        manual grace period.
+        """
+        if self._door_open_timers:
+            _LOGGER.info(
+                "Cancelling %d pending debounce timer(s) due to manual override",
+                len(self._door_open_timers),
+            )
+            for cancel in self._door_open_timers.values():
+                cancel()
+            self._door_open_timers.clear()
+
     def _is_sensor_open(self, entity_id: str) -> bool:
         """Check if a door/window sensor is in the 'open' state, respecting polarity."""
         inverted = self.config.get(CONF_SENSOR_POLARITY_INVERTED, False)
@@ -548,9 +564,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         weather_entity = self.config["weather_entity"]
         weather_state = self.hass.states.get(weather_entity)
         if not weather_state:
-            _LOGGER.warning(
-                "Weather entity %s not found in Home Assistant. "
-                "Check that the entity ID is correct in the integration options.",
+            _LOGGER.debug(
+                "Weather entity %s not found — repair issue should be active",
                 weather_entity,
             )
             return None
@@ -807,10 +822,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if not new_state or not old_state:
             return
 
-        # Detect manual HVAC override during a door/window pause
+        # Detect manual HVAC override during a door/window pause.
+        # Note: we intentionally do NOT require old_state == "off" here.
+        # The async _set_hvac_mode("off") service call may not have
+        # propagated to HA's state machine yet when the user quickly
+        # turns HVAC back on, so old_state could still be the pre-pause
+        # mode (e.g. "cool"). The paused_by_door flag is authoritative.
         if (
             self.automation_engine.is_paused_by_door
-            and old_state.state == "off"
             and new_state.state not in ("off", "unavailable", "unknown")
         ):
             _LOGGER.info(
@@ -819,6 +838,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 new_state.state,
             )
             await self.automation_engine.handle_manual_override_during_pause()
+            self._cancel_all_debounce_timers()
 
         # HVAC runtime tracking via hvac_action (preferred) or mode
         new_action = new_state.attributes.get("hvac_action", "").lower()

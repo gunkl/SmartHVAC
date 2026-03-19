@@ -67,7 +67,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 5
+    VERSION = 6
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -199,6 +199,10 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Handle the door/window sensor selection step."""
         if user_input is not None:
+            # Convert minutes (UI) to seconds (internal storage)
+            for key in (CONF_SENSOR_DEBOUNCE, CONF_MANUAL_GRACE_PERIOD, CONF_AUTOMATION_GRACE_PERIOD):
+                if key in user_input:
+                    user_input[key] = int(user_input[key] * 60)
             self._data.update(user_input)
             return await self.async_step_schedule()
 
@@ -216,33 +220,33 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_SENSOR_POLARITY_INVERTED, default=False
                     ): selector.BooleanSelector(),
                     vol.Optional(
-                        CONF_SENSOR_DEBOUNCE, default=DEFAULT_SENSOR_DEBOUNCE_SECONDS
+                        CONF_SENSOR_DEBOUNCE, default=DEFAULT_SENSOR_DEBOUNCE_SECONDS // 60
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=900, step=30,
-                            unit_of_measurement="seconds",
-                            mode="slider",
+                            min=0, max=60, step=1,
+                            unit_of_measurement="minutes",
+                            mode="box",
                         )
                     ),
                     vol.Optional(
-                        CONF_MANUAL_GRACE_PERIOD, default=DEFAULT_MANUAL_GRACE_SECONDS
+                        CONF_MANUAL_GRACE_PERIOD, default=DEFAULT_MANUAL_GRACE_SECONDS // 60
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=7200, step=60,
-                            unit_of_measurement="seconds",
-                            mode="slider",
+                            min=0, max=240, step=1,
+                            unit_of_measurement="minutes",
+                            mode="box",
                         )
                     ),
                     vol.Optional(
                         CONF_MANUAL_GRACE_NOTIFY, default=False
                     ): selector.BooleanSelector(),
                     vol.Optional(
-                        CONF_AUTOMATION_GRACE_PERIOD, default=DEFAULT_AUTOMATION_GRACE_SECONDS
+                        CONF_AUTOMATION_GRACE_PERIOD, default=DEFAULT_AUTOMATION_GRACE_SECONDS // 60
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=7200, step=60,
-                            unit_of_measurement="seconds",
-                            mode="slider",
+                            min=0, max=240, step=1,
+                            unit_of_measurement="minutes",
+                            mode="box",
                         )
                     ),
                     vol.Optional(
@@ -430,6 +434,10 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         """Step 3: Door/window sensor configuration."""
         if user_input is not None:
+            # Convert minutes (UI) to seconds (internal storage)
+            for key in (CONF_SENSOR_DEBOUNCE, CONF_MANUAL_GRACE_PERIOD, CONF_AUTOMATION_GRACE_PERIOD):
+                if key in user_input:
+                    user_input[key] = int(user_input[key] * 60)
             self._updates.update(user_input)
             return await self.async_step_schedule()
 
@@ -454,22 +462,22 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     ): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_SENSOR_DEBOUNCE,
-                        default=current.get(CONF_SENSOR_DEBOUNCE, DEFAULT_SENSOR_DEBOUNCE_SECONDS),
+                        default=current.get(CONF_SENSOR_DEBOUNCE, DEFAULT_SENSOR_DEBOUNCE_SECONDS) // 60,
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=900, step=30,
-                            unit_of_measurement="seconds",
-                            mode="slider",
+                            min=0, max=60, step=1,
+                            unit_of_measurement="minutes",
+                            mode="box",
                         )
                     ),
                     vol.Optional(
                         CONF_MANUAL_GRACE_PERIOD,
-                        default=current.get(CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS),
+                        default=current.get(CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS) // 60,
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=7200, step=60,
-                            unit_of_measurement="seconds",
-                            mode="slider",
+                            min=0, max=240, step=1,
+                            unit_of_measurement="minutes",
+                            mode="box",
                         )
                     ),
                     vol.Optional(
@@ -478,12 +486,12 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     ): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_AUTOMATION_GRACE_PERIOD,
-                        default=current.get(CONF_AUTOMATION_GRACE_PERIOD, DEFAULT_AUTOMATION_GRACE_SECONDS),
+                        default=current.get(CONF_AUTOMATION_GRACE_PERIOD, DEFAULT_AUTOMATION_GRACE_SECONDS) // 60,
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=7200, step=60,
-                            unit_of_measurement="seconds",
-                            mode="slider",
+                            min=0, max=240, step=1,
+                            unit_of_measurement="minutes",
+                            mode="box",
                         )
                     ),
                     vol.Optional(

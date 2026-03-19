@@ -669,8 +669,8 @@ class TestMigrationViaRealFunction:
         assert ok is True
         assert data.get(CONF_EMAIL_NOTIFY) is True
 
-    def test_already_v5_entry_returns_true_without_changes(self):
-        """A v5 entry should pass through with no mutations."""
+    def test_already_v5_entry_migrates_to_v6(self):
+        """A v5 entry should migrate to v6 (weather entity validation)."""
         v5 = dict(FULL_CONFIG)
         entry = _make_config_entry(v5, version=5)
         hass = _make_hass()
@@ -678,8 +678,10 @@ class TestMigrationViaRealFunction:
         from custom_components.climate_advisor import async_migrate_entry
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
-        # No updates should have been written
-        hass.config_entries.async_update_entry.assert_not_called()
+        # v5→v6 migration should have been applied
+        hass.config_entries.async_update_entry.assert_called_once()
+        call_kwargs = hass.config_entries.async_update_entry.call_args
+        assert call_kwargs[1]["version"] == 6
 
 
 # ---------------------------------------------------------------------------

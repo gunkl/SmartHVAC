@@ -63,10 +63,10 @@
         "data": {
           "door_window_sensors": "Door/Window Sensors",
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
-          "sensor_debounce_seconds": "Open delay before pausing HVAC (seconds)",
-          "manual_grace_seconds": "Pause after manual thermostat change (seconds)",
+          "sensor_debounce_seconds": "Open delay before pausing HVAC (minutes)",
+          "manual_grace_seconds": "Pause after manual thermostat change (minutes)",
           "manual_grace_notify": "Notify on manual override",
-          "automation_grace_seconds": "Cooldown after automated change (seconds)",
+          "automation_grace_seconds": "Cooldown after automated change (minutes)",
           "automation_grace_notify": "Notify on automation actions"
         },
         "data_description": {
@@ -143,10 +143,10 @@
         "data": {
           "door_window_sensors": "Door/Window Sensors",
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
-          "sensor_debounce_seconds": "Open delay before pausing HVAC (seconds)",
-          "manual_grace_seconds": "Pause after manual thermostat change (seconds)",
+          "sensor_debounce_seconds": "Open delay before pausing HVAC (minutes)",
+          "manual_grace_seconds": "Pause after manual thermostat change (minutes)",
           "manual_grace_notify": "Notify on manual override",
-          "automation_grace_seconds": "Cooldown after automated change (seconds)",
+          "automation_grace_seconds": "Cooldown after automated change (minutes)",
           "automation_grace_notify": "Notify on automation actions"
         },
         "data_description": {
@@ -185,6 +185,12 @@
           "aggressive_savings": "When enabled, Climate Advisor favors energy savings over comfort \u2014 for example, using wider temperature swings and earlier setbacks."
         }
       }
+    }
+  },
+  "issues": {
+    "weather_entity_not_found": {
+      "title": "Weather entity not found",
+      "description": "The configured weather entity `{entity_id}` no longer exists in Home Assistant. This usually happens when a weather integration is renamed or reinstalled.\n\nGo to the Climate Advisor integration options to select the correct weather entity."
     }
   }
 }
