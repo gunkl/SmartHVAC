@@ -4,6 +4,7 @@ Covers:
 - StatePersistence class (save, load, corrupt/missing file handling)
 - Coordinator state restore logic (same-day, different-day, yesterday recovery)
 - DailyRecord field population (runtime, comfort violations, avg temp, windows)
+- Phase 2: Per-sensor pause tracking, granular overrides, suggestion tracking
 """
 from __future__ import annotations
 
@@ -487,3 +488,214 @@ class TestAutomationRestoreState:
 
         assert engine._paused_by_door is True
         assert engine._pre_pause_mode is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Per-sensor door/window pause tracking
+# ---------------------------------------------------------------------------
+
+
+class TestDoorPauseBySensor:
+    """Test per-sensor pause count tracking."""
+
+    def test_sensor_counts_accumulate(self):
+        record = DailyRecord(date="2026-03-18", day_type="mild", trend_direction="stable")
+        # Simulate 3 pauses from back_door, 1 from front_door
+        for _ in range(3):
+            record.door_window_pause_events += 1
+            sensor_key = "back_door"
+            record.door_pause_by_sensor[sensor_key] = (
+                record.door_pause_by_sensor.get(sensor_key, 0) + 1
+            )
+        record.door_window_pause_events += 1
+        sensor_key = "front_door"
+        record.door_pause_by_sensor[sensor_key] = (
+            record.door_pause_by_sensor.get(sensor_key, 0) + 1
+        )
+
+        assert record.door_window_pause_events == 4
+        assert record.door_pause_by_sensor == {"back_door": 3, "front_door": 1}
+
+    def test_round_trip_preserves_sensor_dict(self, tmp_path: Path):
+        sp = StatePersistence(tmp_path)
+        record = DailyRecord(
+            date="2026-03-18", day_type="mild", trend_direction="stable",
+            door_window_pause_events=5,
+            door_pause_by_sensor={"garage_door": 3, "kitchen_window": 2},
+        )
+        state = {"date": "2026-03-18", "today_record": asdict(record)}
+        sp.save(state)
+        loaded = sp.load()
+        restored = DailyRecord(**loaded["today_record"])
+        assert restored.door_pause_by_sensor == {"garage_door": 3, "kitchen_window": 2}
+
+    def test_empty_dict_default(self):
+        record = DailyRecord(date="2026-03-18", day_type="mild", trend_direction="stable")
+        assert record.door_pause_by_sensor == {}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Granular override records
+# ---------------------------------------------------------------------------
+
+
+class TestOverrideDetails:
+    """Test structured override event recording."""
+
+    def test_override_appended_correctly(self):
+        record = DailyRecord(date="2026-03-18", day_type="cool", trend_direction="stable")
+        old_val, new_val = 70.0, 72.0
+        magnitude = round(new_val - old_val, 1)
+        record.manual_overrides += 1
+        record.override_details.append({
+            "time": "14:30",
+            "old_temp": old_val,
+            "new_temp": new_val,
+            "direction": "up" if magnitude > 0 else "down",
+            "magnitude": abs(magnitude),
+        })
+        assert len(record.override_details) == 1
+        assert record.override_details[0]["direction"] == "up"
+        assert record.override_details[0]["magnitude"] == 2.0
+
+    def test_override_direction_down(self):
+        record = DailyRecord(date="2026-03-18", day_type="warm", trend_direction="stable")
+        old_val, new_val = 74.0, 71.0
+        magnitude = round(new_val - old_val, 1)
+        record.override_details.append({
+            "time": "22:00",
+            "old_temp": old_val,
+            "new_temp": new_val,
+            "direction": "up" if magnitude > 0 else "down",
+            "magnitude": abs(magnitude),
+        })
+        assert record.override_details[0]["direction"] == "down"
+        assert record.override_details[0]["magnitude"] == 3.0
+
+    def test_override_round_trip(self, tmp_path: Path):
+        sp = StatePersistence(tmp_path)
+        record = DailyRecord(
+            date="2026-03-18", day_type="cool", trend_direction="stable",
+            manual_overrides=2,
+            override_details=[
+                {"time": "09:00", "old_temp": 68.0, "new_temp": 70.0,
+                 "direction": "up", "magnitude": 2.0},
+                {"time": "21:00", "old_temp": 72.0, "new_temp": 69.0,
+                 "direction": "down", "magnitude": 3.0},
+            ],
+        )
+        state = {"date": "2026-03-18", "today_record": asdict(record)}
+        sp.save(state)
+        loaded = sp.load()
+        restored = DailyRecord(**loaded["today_record"])
+        assert len(restored.override_details) == 2
+        assert restored.override_details[0]["direction"] == "up"
+        assert restored.override_details[1]["magnitude"] == 3.0
+
+    def test_empty_list_default(self):
+        record = DailyRecord(date="2026-03-18", day_type="mild", trend_direction="stable")
+        assert record.override_details == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Suggestion tracking
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestionTracking:
+    """Test suggestion key recording and round-trip."""
+
+    def test_suggestion_keys_populated(self, tmp_path: Path):
+        from custom_components.climate_advisor.learning import LearningEngine
+        engine = LearningEngine(tmp_path)
+
+        # Add enough records to trigger suggestions (need MIN_DATA_POINTS_FOR_SUGGESTION)
+        from custom_components.climate_advisor.const import MIN_DATA_POINTS_FOR_SUGGESTION
+        for i in range(MIN_DATA_POINTS_FOR_SUGGESTION):
+            engine.record_day(DailyRecord(
+                date=f"2026-03-{i+1:02d}",
+                day_type="mild",
+                trend_direction="stable",
+                manual_overrides=5,  # Trigger frequent_overrides pattern
+            ))
+
+        suggestions = engine.generate_suggestions()
+        keys = engine.get_last_suggestion_keys()
+        # Keys and suggestions should have same length
+        assert len(keys) == len(suggestions)
+        # If overrides triggered, the key should be present
+        if suggestions:
+            assert "frequent_overrides" in keys
+
+    def test_suggestion_sent_round_trip(self, tmp_path: Path):
+        sp = StatePersistence(tmp_path)
+        record = DailyRecord(
+            date="2026-03-18", day_type="mild", trend_direction="stable",
+            suggestion_sent=["frequent_overrides", "comfort_violations"],
+        )
+        state = {"date": "2026-03-18", "today_record": asdict(record)}
+        sp.save(state)
+        loaded = sp.load()
+        restored = DailyRecord(**loaded["today_record"])
+        assert restored.suggestion_sent == ["frequent_overrides", "comfort_violations"]
+
+    def test_no_suggestions_leaves_empty_list(self, tmp_path: Path):
+        from custom_components.climate_advisor.learning import LearningEngine
+        engine = LearningEngine(tmp_path)
+        suggestions = engine.generate_suggestions()
+        keys = engine.get_last_suggestion_keys()
+        assert suggestions == []
+        assert keys == []
+
+    def test_empty_list_default(self):
+        record = DailyRecord(date="2026-03-18", day_type="mild", trend_direction="stable")
+        assert record.suggestion_sent == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Backward compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompatNewFields:
+    """Test that old records without new Phase 2 fields get sensible defaults."""
+
+    def test_old_record_without_new_fields(self):
+        """Simulate loading an old DailyRecord dict that lacks Phase 2 fields."""
+        old_data = {
+            "date": "2026-03-15",
+            "day_type": "cool",
+            "trend_direction": "stable",
+            "door_window_pause_events": 3,
+            "manual_overrides": 2,
+            "suggestion_sent": None,  # Old format was str | None
+            "suggestion_response": None,
+        }
+        # Normalize suggestion_sent (as coordinator does)
+        sent = old_data.get("suggestion_sent")
+        if sent is None:
+            old_data["suggestion_sent"] = []
+        elif isinstance(sent, str):
+            old_data["suggestion_sent"] = [sent]
+
+        record = DailyRecord(**old_data)
+        assert record.door_pause_by_sensor == {}
+        assert record.override_details == []
+        assert record.suggestion_sent == []
+
+    def test_old_record_with_string_suggestion_sent(self):
+        """Old format had suggestion_sent as a string."""
+        old_data = {
+            "date": "2026-03-15",
+            "day_type": "cool",
+            "trend_direction": "stable",
+            "suggestion_sent": "frequent_overrides",
+        }
+        sent = old_data.get("suggestion_sent")
+        if sent is None:
+            old_data["suggestion_sent"] = []
+        elif isinstance(sent, str):
+            old_data["suggestion_sent"] = [sent]
+
+        record = DailyRecord(**old_data)
+        assert record.suggestion_sent == ["frequent_overrides"]

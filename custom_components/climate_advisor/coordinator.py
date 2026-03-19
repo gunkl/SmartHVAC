@@ -187,7 +187,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # If the state is from yesterday, recover the DailyRecord to learning
         if state_date == yesterday_str and state.get("today_record"):
             try:
-                recovered = DailyRecord(**state["today_record"])
+                rec_data = state["today_record"]
+                # Normalize suggestion_sent for backward compat
+                sent = rec_data.get("suggestion_sent")
+                if sent is None:
+                    rec_data["suggestion_sent"] = []
+                elif isinstance(sent, str):
+                    rec_data["suggestion_sent"] = [sent]
+                recovered = DailyRecord(**rec_data)
                 self.learning.record_day(recovered)
                 _LOGGER.info("Recovered yesterday's record during startup")
             except (TypeError, KeyError) as err:
@@ -246,6 +253,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         record_data = state.get("today_record")
         if record_data:
             try:
+                # Normalize suggestion_sent for backward compat (was str|None, now list)
+                sent = record_data.get("suggestion_sent")
+                if sent is None:
+                    record_data["suggestion_sent"] = []
+                elif isinstance(sent, str):
+                    record_data["suggestion_sent"] = [sent]
                 self._today_record = DailyRecord(**record_data)
             except (TypeError, KeyError) as err:
                 _LOGGER.warning("Failed to restore today's record: %s", err)
@@ -616,8 +629,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             hvac_mode_recommended=classification.hvac_mode,
         )
 
-        # Generate briefing text
+        # Generate briefing text and track which suggestions were sent
         suggestions = self.learning.generate_suggestions()
+        if self._today_record:
+            self._today_record.suggestion_sent = self.learning.get_last_suggestion_keys()
         wake_time = _parse_time(self.config.get("wake_time", "06:30"))
         sleep_time = _parse_time(self.config.get("sleep_time", "22:30"))
 
@@ -730,6 +745,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     await self.automation_engine.handle_door_window_open(eid)
                     if self._today_record:
                         self._today_record.door_window_pause_events += 1
+                        sensor_key = eid.split(".")[-1]
+                        self._today_record.door_pause_by_sensor[sensor_key] = (
+                            self._today_record.door_pause_by_sensor.get(sensor_key, 0) + 1
+                        )
 
                         # Track window compliance during recommended window period
                         c = self._current_classification
@@ -833,6 +852,19 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             # This is a rough heuristic — in production you'd track which
             # changes were initiated by the integration vs. manual
             self._today_record.manual_overrides += 1
+            try:
+                old_val = float(old_temp)
+                new_val = float(new_temp)
+                magnitude = round(new_val - old_val, 1)
+                self._today_record.override_details.append({
+                    "time": dt_util.now().strftime("%H:%M"),
+                    "old_temp": old_val,
+                    "new_temp": new_val,
+                    "direction": "up" if magnitude > 0 else "down",
+                    "magnitude": abs(magnitude),
+                })
+            except (ValueError, TypeError):
+                pass  # Non-numeric temps, skip detail recording
             _LOGGER.debug("Possible manual override detected: %s -> %s", old_temp, new_temp)
             await self._async_save_state()
 

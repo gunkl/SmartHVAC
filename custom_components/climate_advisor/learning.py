@@ -42,7 +42,9 @@ class DailyRecord:
     hvac_runtime_minutes: float = 0.0
     occupancy_away_minutes: float = 0.0
     door_window_pause_events: int = 0
+    door_pause_by_sensor: dict[str, int] = field(default_factory=dict)
     manual_overrides: int = 0
+    override_details: list[dict] = field(default_factory=list)
 
     # Outcomes
     avg_indoor_temp: float | None = None
@@ -50,7 +52,7 @@ class DailyRecord:
     estimated_cost: float | None = None
 
     # User responded to suggestion?
-    suggestion_sent: str | None = None
+    suggestion_sent: list[str] = field(default_factory=list)
     suggestion_response: str | None = None  # "accepted", "dismissed", "ignored"
 
 
@@ -75,6 +77,7 @@ class LearningEngine:
         """
         self._db_path = storage_path / LEARNING_DB_FILE
         self._state = self._load_state()
+        self._last_suggestion_keys: list[str] = []
 
     def _load_state(self) -> LearningState:
         """Load learning state from disk."""
@@ -138,9 +141,10 @@ class LearningEngine:
                 len(records),
                 MIN_DATA_POINTS_FOR_SUGGESTION,
             )
+            self._last_suggestion_keys = []
             return []
 
-        suggestions: list[str] = []
+        pairs: list[tuple[str, str]] = []
         recently_dismissed = set(self._state.dismissed_suggestions)
 
         # --- Pattern: Windows recommended but rarely opened ---
@@ -149,13 +153,13 @@ class LearningEngine:
             compliance = sum(1 for r in window_days if r.get("windows_opened")) / len(window_days)
             suggestion_key = "low_window_compliance"
             if compliance < COMPLIANCE_THRESHOLD_LOW and suggestion_key not in recently_dismissed:
-                suggestions.append(
+                pairs.append((suggestion_key,
                     f"Over the past {len(window_days)} days where opening windows was recommended, "
                     f"they were opened only {compliance:.0%} of the time. "
                     f"Would you like Climate Advisor to stop suggesting window actions "
                     f"and instead rely on HVAC with optimized schedules? "
                     f"This uses slightly more energy but requires no manual action."
-                )
+                ))
 
         # --- Pattern: Frequent manual overrides ---
         recent_14 = records[-14:] if len(records) >= 14 else records
@@ -163,13 +167,45 @@ class LearningEngine:
         if total_overrides > 10:
             suggestion_key = "frequent_overrides"
             if suggestion_key not in recently_dismissed:
-                # Try to detect direction — are they overriding up or down?
-                suggestions.append(
-                    f"You've manually adjusted the thermostat {total_overrides} times "
-                    f"in the past two weeks. This may indicate the comfort setpoints "
-                    f"don't match your preferences. Would you like Climate Advisor to "
-                    f"analyze the override patterns and suggest new setpoints?"
-                )
+                # Analyze override direction and timing from granular data
+                all_overrides: list[dict] = []
+                for r in recent_14:
+                    all_overrides.extend(r.get("override_details", []))
+
+                if all_overrides:
+                    up_count = sum(1 for o in all_overrides if o.get("direction") == "up")
+                    down_count = sum(1 for o in all_overrides if o.get("direction") == "down")
+                    avg_mag = sum(o.get("magnitude", 0) for o in all_overrides) / len(all_overrides)
+
+                    # Find peak hour by clustering override times
+                    hour_counts: dict[int, int] = {}
+                    for o in all_overrides:
+                        try:
+                            hour = int(o.get("time", "12:00").split(":")[0])
+                            hour_counts[hour] = hour_counts.get(hour, 0) + 1
+                        except (ValueError, IndexError):
+                            pass
+
+                    direction_word = "up" if up_count >= down_count else "down"
+                    detail = f"mostly {direction_word} by about {avg_mag:.0f}\u00b0F"
+                    if hour_counts:
+                        peak_hour = max(hour_counts, key=hour_counts.get)  # type: ignore[arg-type]
+                        peak_time = f"{peak_hour}:00" if peak_hour >= 10 else f" {peak_hour}:00"
+                        detail += f", often around {peak_time.strip()}"
+
+                    pairs.append((suggestion_key,
+                        f"You've manually adjusted the thermostat {total_overrides} times "
+                        f"in the past two weeks ({detail}). "
+                        f"Would you like Climate Advisor to adjust the comfort setpoints, "
+                        f"or add a scheduled temperature bump?"
+                    ))
+                else:
+                    pairs.append((suggestion_key,
+                        f"You've manually adjusted the thermostat {total_overrides} times "
+                        f"in the past two weeks. This may indicate the comfort setpoints "
+                        f"don't match your preferences. Would you like Climate Advisor to "
+                        f"analyze the override patterns and suggest new setpoints?"
+                    ))
 
         # --- Pattern: High runtime on mild/warm days ---
         mild_warm_days = [
@@ -181,13 +217,13 @@ class LearningEngine:
             if avg_runtime > 120:  # More than 2 hours on mild/warm days
                 suggestion_key = "high_runtime_mild_days"
                 if suggestion_key not in recently_dismissed:
-                    suggestions.append(
+                    pairs.append((suggestion_key,
                         f"On mild and warm days, the HVAC has been running an average of "
                         f"{avg_runtime:.0f} minutes — more than expected. This could indicate "
                         f"doors/windows being left open, or the setpoint being too aggressive. "
                         f"Would you like to add more door/window sensors, or adjust the "
                         f"setpoints for mild days?"
-                    )
+                    ))
 
         # --- Pattern: Leaving home frequently without setback taking effect ---
         away_days = [r for r in recent_14 if r.get("occupancy_away_minutes", 0) > 30]
@@ -195,13 +231,13 @@ class LearningEngine:
         if len(short_away) > 5:
             suggestion_key = "short_departures"
             if suggestion_key not in recently_dismissed:
-                suggestions.append(
-                    "You frequently leave for 30–45 minute periods, which is barely "
+                pairs.append((suggestion_key,
+                    "You frequently leave for 30\u201345 minute periods, which is barely "
                     "long enough for the setback to take effect before you return. "
                     "Would you like to shorten the setback delay from 15 minutes to "
                     "5 minutes for these quick trips, or skip setback for departures "
                     "under 1 hour?"
-                )
+                ))
 
         # --- Pattern: Comfort violations (too cold/hot despite automation) ---
         violation_days = [
@@ -210,27 +246,50 @@ class LearningEngine:
         if len(violation_days) > 5:
             suggestion_key = "comfort_violations"
             if suggestion_key not in recently_dismissed:
-                suggestions.append(
+                pairs.append((suggestion_key,
                     f"The house has been outside your comfort range for more than "
                     f"30 minutes on {len(violation_days)} of the last 14 days. "
                     f"Would you like to reduce the setback aggressiveness, or "
                     f"start the morning warm-up earlier?"
-                )
+                ))
 
         # --- Pattern: Door/window pauses happening frequently ---
         pause_total = sum(r.get("door_window_pause_events", 0) for r in recent_14)
         if pause_total > 20:
             suggestion_key = "frequent_door_pauses"
             if suggestion_key not in recently_dismissed:
-                suggestions.append(
-                    f"HVAC has been paused {pause_total} times due to open doors/windows "
-                    f"in the past two weeks. If a specific door is the main culprit, "
-                    f"would you like to extend the pause delay for that door, or "
-                    f"exclude it from monitoring?"
-                )
+                # Aggregate per-sensor pause data across 14-day window
+                sensor_totals: dict[str, int] = {}
+                for r in recent_14:
+                    for sensor, count in r.get("door_pause_by_sensor", {}).items():
+                        sensor_totals[sensor] = sensor_totals.get(sensor, 0) + count
 
+                if sensor_totals:
+                    top_sensor = max(sensor_totals, key=sensor_totals.get)  # type: ignore[arg-type]
+                    top_count = sensor_totals[top_sensor]
+                    top_name = top_sensor.replace("_", " ").title()
+                    pairs.append((suggestion_key,
+                        f"HVAC has been paused {pause_total} times due to open doors/windows "
+                        f"in the past two weeks. {top_name} was the most frequent trigger "
+                        f"({top_count} times). Would you like to extend the pause delay for "
+                        f"that sensor, or exclude it from monitoring?"
+                    ))
+                else:
+                    pairs.append((suggestion_key,
+                        f"HVAC has been paused {pause_total} times due to open doors/windows "
+                        f"in the past two weeks. If a specific door is the main culprit, "
+                        f"would you like to extend the pause delay for that door, or "
+                        f"exclude it from monitoring?"
+                    ))
+
+        self._last_suggestion_keys = [key for key, _ in pairs]
+        suggestions = [text for _, text in pairs]
         _LOGGER.debug("Generated %d learning suggestions", len(suggestions))
         return suggestions
+
+    def get_last_suggestion_keys(self) -> list[str]:
+        """Return the keys of the most recently generated suggestions."""
+        return list(self._last_suggestion_keys)
 
     def dismiss_suggestion(self, suggestion_key: str) -> None:
         """Mark a suggestion as dismissed so it won't reappear soon."""
