@@ -60,7 +60,7 @@ def _make_hass(weather_entities: list[str] | None = None) -> MagicMock:
 
     hass.states.async_all = mock_async_all
     hass.config_entries.async_update_entry = MagicMock()
-    hass.config_entries.async_reload = AsyncMock()
+    hass.config_entries.async_reload = MagicMock()
     return hass
 
 

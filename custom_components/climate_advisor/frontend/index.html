@@ -207,6 +207,12 @@
     color: var(--text-secondary);
     width: 40%;
   }
+  .kv-table .kv-desc {
+    margin-left: 8px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-style: italic;
+  }
   .suggestion-card {
     padding: 12px;
     background: var(--bg);
@@ -499,6 +505,14 @@
           <div class="label">Next Action</div>
           <div class="value" style="font-size:0.85rem">${data.next_action || 'None'}</div>
         </div>
+        <div class="status-item">
+          <div class="label">Next Automation</div>
+          <div class="value" style="font-size:0.85rem">${data.next_automation_action || 'None'}</div>
+        </div>
+        <div class="status-item">
+          <div class="label">Automation Time</div>
+          <div class="value">${data.next_automation_time || '\u2014'}</div>
+        </div>
       `;
       document.getElementById('status-loading').style.display = 'none';
       grid.style.display = 'grid';
@@ -697,8 +711,10 @@
         <div class="debug-section">
           <table class="kv-table">
             <tr><td>Automation Enabled</td><td>${data.automation_enabled ? 'Yes' : 'No'}</td></tr>
+            <tr><td>Next Automation Action</td><td>${data.next_automation_action || 'N/A'}</td></tr>
+            <tr><td>Next Automation Time</td><td>${data.next_automation_time || 'N/A'}</td></tr>
             <tr><td>Paused by Door/Window</td><td>${data.paused_by_door ? 'Yes' : 'No'}</td></tr>
-            <tr><td>Pre-Pause Mode</td><td>${data.pre_pause_mode || 'N/A'}</td></tr>
+            <tr><td>Pre-Pause Mode</td><td>${data.pre_pause_mode || 'N/A'}<span class="kv-desc">HVAC mode before door paused automation</span></td></tr>
             <tr><td>Grace Period Active</td><td>${data.grace_active ? 'Yes' : 'No'}</td></tr>
             <tr><td>Last Resume Source</td><td>${data.last_resume_source || 'N/A'}</td></tr>
             <tr><td>Pending Debounce Timers</td><td>${(data.pending_debounce_timers || []).length}</td></tr>
@@ -717,16 +733,18 @@
           <div class="debug-section">
             <h3>Classification Details</h3>
             <table class="kv-table">
-              <tr><td>Day Type</td><td>${data.classification.day_type || 'N/A'}</td></tr>
+              <tr><td>Day Type</td><td>${data.classification.day_type || 'N/A'}<span class="kv-desc">Drives HVAC strategy</span></td></tr>
               <tr><td>HVAC Mode</td><td>${data.classification.hvac_mode || 'N/A'}</td></tr>
               <tr><td>Trend</td><td>${data.classification.trend_direction || 'N/A'} (${(data.classification.trend_magnitude || 0).toFixed(1)}\u00b0F)</td></tr>
-              <tr><td>Windows Recommended</td><td>${data.classification.windows_recommended ? 'Yes' : 'No'}</td></tr>
+              <tr><td>Windows Recommended</td><td>${data.classification.windows_recommended ? 'Yes' : 'No'}<span class="kv-desc">Open windows instead of HVAC</span></td></tr>
               <tr><td>Window Open Time</td><td>${data.classification.window_open_time || 'N/A'}</td></tr>
               <tr><td>Window Close Time</td><td>${data.classification.window_close_time || 'N/A'}</td></tr>
-              <tr><td>Morning Window Opportunity</td><td>${data.classification.window_opportunity_morning ? 'Yes (' + (data.classification.window_opportunity_morning_start || '') + ' – ' + (data.classification.window_opportunity_morning_end || '') + ')' : 'No'}</td></tr>
-              <tr><td>Evening Window Opportunity</td><td>${data.classification.window_opportunity_evening ? 'Yes (' + (data.classification.window_opportunity_evening_start || '') + '+)' : 'No'}</td></tr>
-              <tr><td>Pre-Condition</td><td>${data.classification.pre_condition ? 'Yes (' + data.classification.pre_condition_target + '\u00b0F)' : 'No'}</td></tr>
-              <tr><td>Setback Modifier</td><td>${data.classification.setback_modifier || 0}\u00b0F</td></tr>
+              <tr><td>Morning Window Opportunity</td><td>${data.classification.window_opportunity_morning ? 'Yes (' + (data.classification.window_opportunity_morning_start || '') + ' – ' + (data.classification.window_opportunity_morning_end || '') + ')' : 'No'}<span class="kv-desc">Today low ≤ 80°F</span></td></tr>
+              <tr><td>Evening Window Opportunity</td><td>${data.classification.window_opportunity_evening ? 'Yes (' + (data.classification.window_opportunity_evening_start || '') + '+)' : 'No'}<span class="kv-desc">Tomorrow low ≤ 80°F</span></td></tr>
+              <tr><td>Pre-Condition</td><td>${data.classification.pre_condition ? 'Yes (' + data.classification.pre_condition_target + '\u00b0F)' : 'No'}<span class="kv-desc">Pre-heat/cool before peak</span></td></tr>
+              <tr><td>Setback Modifier</td><td>${data.classification.setback_modifier || 0}\u00b0F<span class="kv-desc">Trend-based setpoint adjust</span></td></tr>
+              <tr><td>Today Low</td><td>${data.classification.today_low != null ? data.classification.today_low.toFixed(1) + '°F' : 'N/A'}</td></tr>
+              <tr><td>Tomorrow Low</td><td>${data.classification.tomorrow_low != null ? data.classification.tomorrow_low.toFixed(1) + '°F' : 'N/A'}</td></tr>
             </table>
           </div>
         ` : ''}

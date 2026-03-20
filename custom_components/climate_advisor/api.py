@@ -23,6 +23,8 @@ from .const import (
     ATTR_COMPLIANCE_SCORE,
     ATTR_DAY_TYPE,
     ATTR_NEXT_ACTION,
+    ATTR_NEXT_AUTOMATION_ACTION,
+    ATTR_NEXT_AUTOMATION_TIME,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
     CONFIG_METADATA,
@@ -67,6 +69,8 @@ class ClimateAdvisorStatusView(HomeAssistantView):
             "automation_status": data.get(ATTR_AUTOMATION_STATUS, "unknown"),
             "compliance_score": data.get(ATTR_COMPLIANCE_SCORE, 1.0),
             "next_action": data.get(ATTR_NEXT_ACTION, ""),
+            "next_automation_action": data.get(ATTR_NEXT_AUTOMATION_ACTION, ""),
+            "next_automation_time": data.get(ATTR_NEXT_AUTOMATION_TIME, ""),
             "automation_enabled": coordinator.automation_enabled,
             "occupancy_mode": coordinator._occupancy_mode,
         })

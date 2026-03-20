@@ -92,6 +92,14 @@ class DayClassification:
                 self.window_opportunity_evening = True
                 self.window_opportunity_evening_start = time(ECONOMIZER_EVENING_START_HOUR, 0)
                 self.window_opportunity_evening_end = time(0, 0)  # midnight
+            _LOGGER.debug(
+                "HOT day window opportunity — today_low=%.1f (morning=%s), "
+                "tomorrow_low=%.1f (evening=%s), threshold=80°F",
+                self.today_low,
+                self.window_opportunity_morning,
+                self.tomorrow_low,
+                self.window_opportunity_evening,
+            )
         elif self.day_type == DAY_TYPE_WARM:
             self.hvac_mode = "off"
             self.window_open_time = time(WARM_WINDOW_OPEN_HOUR, 0)

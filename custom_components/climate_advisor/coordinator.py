@@ -876,6 +876,29 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             today_low = today_fc.get("templow", today_fc.get("tempLow", current_outdoor - 15))
             tomorrow_high = tomorrow_fc.get("temperature", tomorrow_fc.get("tempHigh", current_outdoor))
             tomorrow_low = tomorrow_fc.get("templow", tomorrow_fc.get("tempLow", current_outdoor - 15))
+        elif forecast and len(forecast) == 1:
+            today_fc = forecast[0]
+            today_high = today_fc.get("temperature", today_fc.get("tempHigh", current_outdoor))
+            today_low = today_fc.get("templow", today_fc.get("tempLow", current_outdoor - 15))
+
+        _LOGGER.debug(
+            "Forecast parse — entries=%d, today_high=%.1f, today_low=%.1f, "
+            "tomorrow_high=%.1f, tomorrow_low=%.1f (outdoor=%.1f)%s",
+            len(forecast) if forecast else 0,
+            today_high,
+            today_low,
+            tomorrow_high,
+            tomorrow_low,
+            current_outdoor,
+            " [USING DEFAULTS — forecast had <%d entries]" % (
+                len(forecast) if forecast else 0,
+            ) if not forecast or len(forecast) < 2 else "",
+        )
+        if forecast and len(forecast) >= 1:
+            _LOGGER.debug(
+                "Forecast[0] keys: %s",
+                list(forecast[0].keys()) if isinstance(forecast[0], dict) else type(forecast[0]),
+            )
 
         return ForecastSnapshot(
             today_high=float(today_high),
@@ -1411,11 +1434,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 "pre_condition": c.pre_condition if c else None,
                 "pre_condition_target": c.pre_condition_target if c else None,
                 "setback_modifier": c.setback_modifier if c else None,
+                "today_low": c.today_low if c else None,
+                "tomorrow_low": c.tomorrow_low if c else None,
             },
             "last_action_time": ae._last_action_time,
             "last_action_reason": ae._last_action_reason,
             "manual_override_active": ae._manual_override_active,
             "manual_override_mode": ae._manual_override_mode,
+            "next_automation_action": self.data.get(ATTR_NEXT_AUTOMATION_ACTION, "") if self.data else "",
+            "next_automation_time": self.data.get(ATTR_NEXT_AUTOMATION_TIME, "") if self.data else "",
         }
 
     async def async_shutdown(self) -> None:
