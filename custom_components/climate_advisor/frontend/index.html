@@ -537,6 +537,12 @@
           <div class="label">Fan</div>
           <div class="value">${data.fan_status || 'disabled'}</div>
         </div>
+        ${data.contact_sensors && data.contact_sensors.length > 0 ? `
+        <div class="status-item">
+          <div class="label">Doors/Windows</div>
+          <div class="value" style="color: ${data.contact_status === 'all closed' ? 'var(--success, #4caf50)' : 'var(--warning, #ff9800)'}">${data.contact_status || 'unknown'}</div>
+        </div>
+        ` : ''}
       `;
       document.getElementById('status-loading').style.display = 'none';
       grid.style.display = 'grid';

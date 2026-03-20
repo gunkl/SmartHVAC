@@ -126,6 +126,7 @@ ATTR_FAN_STATUS = "fan_status"
 ATTR_FAN_RUNTIME = "fan_runtime_minutes"
 ATTR_CURRENT_SETPOINT = "current_setpoint"
 ATTR_INDOOR_TEMP = "indoor_temp"
+ATTR_CONTACT_STATUS = "contact_status"
 
 # Revisit delay — follow-up check after any HVAC action (seconds)
 REVISIT_DELAY_SECONDS = 300  # 5 minutes

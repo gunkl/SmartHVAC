@@ -75,6 +75,7 @@ from .const import (
     FAN_MODE_DISABLED,
     ATTR_FAN_STATUS,
     ATTR_FAN_RUNTIME,
+    ATTR_CONTACT_STATUS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -773,6 +774,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_LAST_ACTION_REASON: self.automation_engine._last_action_reason,
             ATTR_FAN_STATUS: self._compute_fan_status(),
             ATTR_FAN_RUNTIME: self.automation_engine._get_fan_runtime_minutes(),
+            ATTR_CONTACT_STATUS: self._compute_contact_status(),
         }
 
     def _get_outdoor_temp(self, weather_attrs: dict) -> float:
@@ -1425,6 +1427,29 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if ae._fan_active:
             return "active"
         return "inactive"
+
+    def _compute_contact_status(self) -> str:
+        """Compute the contact sensor summary string."""
+        if not self._resolved_sensors:
+            return "no sensors"
+        open_count = sum(
+            1 for s in self._resolved_sensors if self._is_sensor_open(s)
+        )
+        if open_count == 0:
+            return "all closed"
+        return f"{open_count} open"
+
+    def _compute_contact_details(self) -> list[dict[str, Any]]:
+        """Return per-sensor details for contact status attributes."""
+        details = []
+        for sensor_id in self._resolved_sensors:
+            friendly = sensor_id.split(".")[-1].replace("_", " ").title()
+            details.append({
+                "entity_id": sensor_id,
+                "friendly_name": friendly,
+                "open": self._is_sensor_open(sensor_id),
+            })
+        return details
 
     def _compute_next_automation_action(
         self, c: DayClassification | None

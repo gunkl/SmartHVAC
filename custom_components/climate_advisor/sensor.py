@@ -33,6 +33,7 @@ from .const import (
     ATTR_LAST_ACTION_REASON,
     ATTR_FAN_STATUS,
     ATTR_FAN_RUNTIME,
+    ATTR_CONTACT_STATUS,
 )
 from .coordinator import ClimateAdvisorCoordinator
 
@@ -60,6 +61,7 @@ async def async_setup_entry(
         ClimateAdvisorLastActionTimeSensor(coordinator, entry),
         ClimateAdvisorLastActionReasonSensor(coordinator, entry),
         ClimateAdvisorFanStatusSensor(coordinator, entry),
+        ClimateAdvisorContactStatusSensor(coordinator, entry),
     ]
 
     async_add_entities(entities)
@@ -299,4 +301,34 @@ class ClimateAdvisorFanStatusSensor(ClimateAdvisorBaseSensor):
             "fan_runtime_minutes": round(
                 self.coordinator.data.get(ATTR_FAN_RUNTIME, 0.0), 1
             ),
+        }
+
+
+class ClimateAdvisorContactStatusSensor(ClimateAdvisorBaseSensor):
+    """Sensor showing the current door/window contact sensor status."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(
+            coordinator, entry,
+            ATTR_CONTACT_STATUS, "Contact Sensors", "mdi:door-open"
+        )
+
+    @property
+    def icon(self) -> str:
+        """Dynamic icon based on contact status."""
+        value = self.native_value
+        if value and value != "all closed" and value != "no sensors":
+            return "mdi:door-open"
+        return "mdi:door-closed"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose per-sensor details as attributes."""
+        details = self.coordinator._compute_contact_details()
+        open_count = sum(1 for d in details if d["open"])
+        return {
+            "sensor_count": len(details),
+            "open_count": open_count,
+            "paused_by_door": self.coordinator.automation_engine.is_paused_by_door,
+            "sensors": details,
         }

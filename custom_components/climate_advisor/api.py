@@ -30,6 +30,7 @@ from .const import (
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
     ATTR_FAN_STATUS,
+    ATTR_CONTACT_STATUS,
     ATTR_CURRENT_SETPOINT,
     ATTR_INDOOR_TEMP,
     CONFIG_METADATA,
@@ -88,6 +89,8 @@ class ClimateAdvisorStatusView(HomeAssistantView):
             "automation_enabled": coordinator.automation_enabled,
             "occupancy_mode": coordinator._occupancy_mode,
             "fan_status": data.get(ATTR_FAN_STATUS, "disabled"),
+            "contact_status": data.get(ATTR_CONTACT_STATUS, "no sensors"),
+            "contact_sensors": coordinator._compute_contact_details(),
         })
 
 
