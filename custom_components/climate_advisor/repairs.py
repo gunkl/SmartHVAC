@@ -18,7 +18,7 @@ class WeatherEntityRepairFlow(RepairsFlow):
         self, user_input: dict[str, str] | None = None
     ) -> data_entry_flow.FlowResult:
         """Handle the repair step."""
-        if user_input is not None:
+        if user_input is not None and "weather_entity" in user_input:
             weather_entity = user_input["weather_entity"]
 
             # Validate the selected entity exists

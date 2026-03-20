@@ -168,6 +168,16 @@ class TestWeatherEntityRepairFlow:
         assert result["type"] == "form"
         assert result["step_id"] == "init"
 
+    def test_shows_form_when_empty_dict_input(self):
+        """Empty dict from repairs websocket API shows form instead of KeyError."""
+        flow = WeatherEntityRepairFlow()
+        flow.hass = _make_hass(["weather.home"])
+
+        result = asyncio.run(flow.async_step_init(user_input={}))
+
+        assert result["type"] == "form"
+        assert result["step_id"] == "init"
+
     def test_updates_config_on_valid_selection(self):
         """Selecting a valid entity updates config, deletes issue, reloads."""
         flow = WeatherEntityRepairFlow()
