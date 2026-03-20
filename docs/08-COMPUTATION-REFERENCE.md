@@ -234,6 +234,20 @@ Clearing the override flag at these transitions means the integration will not s
 
 Both grace periods are cancelled and reset on HA restart. Only one grace timer of each type is active at a time; starting a new one cancels the previous.
 
+### Startup Override Logic
+
+On first data update after startup, Climate Advisor checks whether the HVAC's current mode matches the day classification's recommended mode before setting a manual override:
+
+| HVAC state | Classification recommends | Result |
+|---|---|---|
+| `off` / `unavailable` / `unknown` | any | No override set |
+| `heat` | `heat` | No override — modes match |
+| `heat` | `cool` or `off` | Manual override set — respects current state |
+| `cool` | `cool` | No override — modes match |
+| `cool` | `heat` or `off` | Manual override set — respects current state |
+
+This prevents unnecessary override lockouts after a Home Assistant restart when the HVAC is already in the mode that Climate Advisor would have set anyway. See Issue #42.
+
 ---
 
 ## 12. Revisit Mechanism

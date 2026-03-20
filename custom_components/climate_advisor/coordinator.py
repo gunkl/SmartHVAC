@@ -616,6 +616,45 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return state.state == "off"
         return state.state == "on"
 
+    def _check_startup_override(
+        self, climate_state: Any, classification: Any,
+    ) -> bool:
+        """Check if manual override should be set on first run (Issue #42).
+
+        Only sets override when the current HVAC mode differs from what
+        the classification recommends.  If they match, no override is
+        needed — Climate Advisor already agrees with the current state.
+
+        Returns True if override was set, False otherwise.
+        """
+        if not climate_state or climate_state.state in (
+            "off", "unavailable", "unknown",
+        ):
+            return False
+
+        current = climate_state.state
+        recommended = classification.hvac_mode
+        if current != recommended:
+            _LOGGER.info(
+                "First run: HVAC is '%s' but classification recommends "
+                "'%s' — treating as manual override",
+                current,
+                recommended,
+            )
+            self.automation_engine._manual_override_active = True
+            self.automation_engine._manual_override_mode = current
+            self.automation_engine._manual_override_time = (
+                dt_util.now().isoformat()
+            )
+            return True
+
+        _LOGGER.info(
+            "First run: HVAC is '%s' which matches classification "
+            "— no override needed",
+            current,
+        )
+        return False
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch forecast and update classification (runs every 30 min)."""
         # Re-resolve group membership in case it changed
@@ -633,26 +672,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if forecast:
             self._current_classification = classify_day(forecast)
 
-            # Startup safety: if HVAC is already running on first update,
-            # treat it as a manual override to avoid disrupting current state
+            # Startup safety: only set manual override if the current HVAC
+            # mode differs from the classification (Issue #42)
             if self._first_run:
                 self._first_run = False
                 climate_state = self.hass.states.get(self.config["climate_entity"])
-                if climate_state and climate_state.state not in (
-                    "off", "unavailable", "unknown",
-                ):
-                    _LOGGER.info(
-                        "First run: HVAC is %s — treating as manual override "
-                        "to avoid disrupting current state",
-                        climate_state.state,
-                    )
-                    self.automation_engine._manual_override_active = True
-                    self.automation_engine._manual_override_mode = (
-                        climate_state.state
-                    )
-                    self.automation_engine._manual_override_time = (
-                        dt_util.now().isoformat()
-                    )
+                self._check_startup_override(
+                    climate_state, self._current_classification
+                )
 
             await self.automation_engine.apply_classification(self._current_classification)
 
