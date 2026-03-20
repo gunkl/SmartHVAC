@@ -172,6 +172,7 @@
   .btn.secondary { background: #78909c; }
   .btn.success { background: var(--success); }
   .btn.warning { background: var(--warning); }
+  .btn.danger { background: var(--danger); }
   .btn-group { display: flex; flex-wrap: wrap; gap: 8px; }
   .action-result {
     margin-top: 8px;
@@ -323,19 +324,20 @@
       </div>
     </div>
   </div>
-</div>
 
-<div id="tab-debug" class="tab-content">
   <div class="card">
     <h2>Actions</h2>
     <div class="btn-group">
       <button class="btn" onclick="doAction('force_reclassify')">Force Reclassify</button>
       <button class="btn secondary" onclick="doAction('send_briefing')">Send Briefing</button>
       <button class="btn warning" onclick="forceUpdate()">Force Update</button>
+      <button id="toggle-automation-btn" class="btn danger" onclick="toggleAutomation()">Disable Automation</button>
     </div>
     <div id="action-result" class="action-result"></div>
   </div>
+</div>
 
+<div id="tab-debug" class="tab-content">
   <div class="card">
     <h2>Learning Suggestions</h2>
     <div id="suggestions-container">
@@ -538,6 +540,7 @@
       `;
       document.getElementById('status-loading').style.display = 'none';
       grid.style.display = 'grid';
+      updateAutomationButton(data.automation_enabled);
     } catch (e) {
       document.getElementById('status-loading').textContent = 'Failed to load status: ' + e.message;
     }
@@ -708,6 +711,39 @@
   window.cancelOverride = async function() {
     await window.doAction('cancel_override');
     loadAutomationState();
+  };
+
+  function updateAutomationButton(enabled) {
+    const btn = document.getElementById('toggle-automation-btn');
+    if (!btn) return;
+    if (enabled) {
+      btn.textContent = 'Disable Automation';
+      btn.className = 'btn danger';
+    } else {
+      btn.textContent = 'Enable Automation';
+      btn.className = 'btn success';
+    }
+  }
+
+  window.toggleAutomation = async function() {
+    const btn = document.getElementById('toggle-automation-btn');
+    btn.disabled = true;
+    try {
+      const data = await apiPost('toggle_automation');
+      updateAutomationButton(data.automation_enabled);
+      const el = document.getElementById('action-result');
+      el.textContent = data.message || 'Done';
+      el.className = 'action-result show ok';
+      el.style.display = '';
+      setTimeout(() => { loadStatus(); }, 500);
+    } catch (e) {
+      const el = document.getElementById('action-result');
+      el.textContent = 'Error: ' + e.message;
+      el.className = 'action-result show err';
+      el.style.display = '';
+    } finally {
+      btn.disabled = false;
+    }
   };
 
   window.respondSuggestion = async function(key, action) {

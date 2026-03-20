@@ -15,6 +15,8 @@ from custom_components.climate_advisor.const import (
     API_SEND_BRIEFING,
     API_RESPOND_SUGGESTION,
     API_CONFIG,
+    API_CANCEL_OVERRIDE,
+    API_TOGGLE_AUTOMATION,
     CONFIG_METADATA,
     CONF_SENSOR_DEBOUNCE,
     CONF_MANUAL_GRACE_PERIOD,
@@ -64,6 +66,8 @@ class TestAPIConstants:
             API_SEND_BRIEFING,
             API_RESPOND_SUGGESTION,
             API_CONFIG,
+            API_CANCEL_OVERRIDE,
+            API_TOGGLE_AUTOMATION,
         ]
         for path in paths:
             assert path.startswith("/api/climate_advisor/"), f"{path} has wrong prefix"
@@ -79,6 +83,8 @@ class TestAPIConstants:
             API_SEND_BRIEFING,
             API_RESPOND_SUGGESTION,
             API_CONFIG,
+            API_CANCEL_OVERRIDE,
+            API_TOGGLE_AUTOMATION,
         ]
         assert len(paths) == len(set(paths))
 
@@ -87,7 +93,7 @@ class TestAPIViewList:
     """Test the API_VIEWS registry."""
 
     def test_correct_count(self):
-        assert len(API_VIEWS) == 10
+        assert len(API_VIEWS) == 11
 
     def test_all_are_callable(self):
         for view_cls in API_VIEWS:
@@ -206,3 +212,34 @@ class TestConfigViewDisplayTransform:
         if transform == "seconds_to_minutes" and isinstance(value, (int, float)):
             value = value // 60
         assert value is None
+
+
+class TestToggleAutomationView:
+    """Tests for the toggle_automation API endpoint."""
+
+    def test_toggle_disables_when_enabled(self):
+        """Toggling when enabled should disable automation."""
+        coord = MagicMock()
+        coord.automation_enabled = True
+        coord.set_automation_enabled = MagicMock()
+
+        new_state = not coord.automation_enabled
+        coord.set_automation_enabled(new_state)
+
+        coord.set_automation_enabled.assert_called_once_with(False)
+
+    def test_toggle_enables_when_disabled(self):
+        """Toggling when disabled should enable automation."""
+        coord = MagicMock()
+        coord.automation_enabled = False
+        coord.set_automation_enabled = MagicMock()
+
+        new_state = not coord.automation_enabled
+        coord.set_automation_enabled(new_state)
+
+        coord.set_automation_enabled.assert_called_once_with(True)
+
+    def test_toggle_automation_constant_defined(self):
+        """API_TOGGLE_AUTOMATION should be under the base path."""
+        assert API_TOGGLE_AUTOMATION.startswith("/api/climate_advisor/")
+        assert "toggle_automation" in API_TOGGLE_AUTOMATION

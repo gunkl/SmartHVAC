@@ -13,6 +13,7 @@ from .const import (
     API_AUTOMATION_STATE,
     API_BRIEFING,
     API_CANCEL_OVERRIDE,
+    API_TOGGLE_AUTOMATION,
     API_CHART_DATA,
     API_CONFIG,
     API_FORCE_RECLASSIFY,
@@ -353,6 +354,29 @@ class ClimateAdvisorCancelOverrideView(HomeAssistantView):
         })
 
 
+class ClimateAdvisorToggleAutomationView(HomeAssistantView):
+    """Toggle automation enabled/disabled state."""
+
+    url = API_TOGGLE_AUTOMATION
+    name = "api:climate_advisor:toggle_automation"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            return self.json({"error": "Climate Advisor not loaded"}, status_code=503)
+
+        new_state = not coordinator.automation_enabled
+        coordinator.set_automation_enabled(new_state)
+
+        return self.json({
+            "status": "ok",
+            "automation_enabled": new_state,
+            "message": f"Automation {'enabled' if new_state else 'disabled'}.",
+        })
+
+
 # All views to register
 API_VIEWS = [
     ClimateAdvisorStatusView,
@@ -365,4 +389,5 @@ API_VIEWS = [
     ClimateAdvisorRespondSuggestionView,
     ClimateAdvisorConfigView,
     ClimateAdvisorCancelOverrideView,
+    ClimateAdvisorToggleAutomationView,
 ]

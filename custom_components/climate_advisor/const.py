@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
@@ -142,6 +142,7 @@ API_SEND_BRIEFING = f"{API_BASE}/send_briefing"
 API_RESPOND_SUGGESTION = f"{API_BASE}/respond_suggestion"
 API_CONFIG = f"{API_BASE}/config"
 API_CANCEL_OVERRIDE = f"{API_BASE}/cancel_override"
+API_TOGGLE_AUTOMATION = f"{API_BASE}/toggle_automation"
 
 # Panel
 PANEL_URL = "/climate_advisor/frontend"
