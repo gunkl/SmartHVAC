@@ -432,12 +432,13 @@ _HIGH = 85.0
 _LOW = 55.0
 
 
-def _mock_datetime(today: date = _TODAY):
-    """Return a MagicMock that makes datetime.now().date() return *today*."""
-    mock_dt = MagicMock()
-    mock_dt.now.return_value.date.return_value = today
-    mock_dt.fromisoformat = __import__("datetime").datetime.fromisoformat
-    return mock_dt
+def _mock_dt_util(today: date = _TODAY):
+    """Return a MagicMock that makes dt_util.now().date() return *today*."""
+    mock = MagicMock()
+    mock.now.return_value.date.return_value = today
+    # as_local: pass through for naive datetimes used in tests
+    mock.as_local = lambda dt: dt
+    return mock
 
 
 def _hourly_entry(hour: int, temp: float, day_str: str = _TODAY_STR) -> dict:
@@ -459,21 +460,24 @@ class TestHourlyForecastOutdoorPrediction:
     # ------------------------------------------------------------------
 
     def test_uses_hourly_temps_when_provided(self):
-        """Full 24h hourly data → each hour matches the forecast exactly."""
-        # Build a forecast where every hour has a distinct, recognisable value.
+        """Full 24h hourly data → output preserves shape, normalised to high/low."""
+        # Build a forecast with a recognisable linear ramp 0→46.
         forecast = [_hourly_entry(h, float(h * 2)) for h in range(24)]
 
         with patch(
-            "custom_components.climate_advisor.coordinator.datetime",
-            _mock_datetime(),
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util(),
         ):
             result = _build_outdoor_curve(_HIGH, _LOW, forecast)
 
         assert len(result) == 24
-        for entry in result:
-            h = entry["hour"]
-            assert entry["temp"] == pytest.approx(float(h * 2), abs=0.05), \
-                f"Hour {h}: expected {h * 2}, got {entry['temp']}"
+        temps = [p["temp"] for p in result]
+        # After normalisation the range must match high/low.
+        assert min(temps) == pytest.approx(_LOW, abs=0.15)
+        assert max(temps) == pytest.approx(_HIGH, abs=0.15)
+        # Shape preserved: hour 0 should be the minimum, hour 23 the maximum.
+        assert temps[0] == pytest.approx(_LOW, abs=0.15)
+        assert temps[23] == pytest.approx(_HIGH, abs=0.15)
 
     def test_falls_back_to_cosine_when_none(self):
         """hourly_forecast=None → result is identical to _cosine_outdoor_curve."""
@@ -492,7 +496,7 @@ class TestHourlyForecastOutdoorPrediction:
     # ------------------------------------------------------------------
 
     def test_interpolates_missing_hours(self):
-        """Data at hours 0, 6, 12, 18 only → intermediate hours are interpolated."""
+        """Data at hours 0, 6, 12, 18 only → intermediate hours interpolated linearly."""
         sparse = [
             _hourly_entry(0, 60.0),
             _hourly_entry(6, 66.0),
@@ -501,40 +505,46 @@ class TestHourlyForecastOutdoorPrediction:
         ]
 
         with patch(
-            "custom_components.climate_advisor.coordinator.datetime",
-            _mock_datetime(),
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util(),
         ):
             result = _build_outdoor_curve(_HIGH, _LOW, sparse)
 
         by_hour = {p["hour"]: p["temp"] for p in result}
         assert len(result) == 24
-
-        # Hour 3 is midpoint between h=0 (60) and h=6 (66) → 63.0
-        assert by_hour[3] == pytest.approx(63.0, abs=0.15)
-        # Hour 9 is midpoint between h=6 (66) and h=12 (78) → 72.0
-        assert by_hour[9] == pytest.approx(72.0, abs=0.15)
+        # After normalisation the range spans _HIGH/_LOW.
+        temps = [p["temp"] for p in result]
+        assert min(temps) == pytest.approx(_LOW, abs=0.5)
+        assert max(temps) == pytest.approx(_HIGH, abs=0.5)
+        # Shape check: hour 12 had the highest raw value, so it should
+        # be at or near _HIGH.  Hour 0 had the lowest, near _LOW.
+        assert by_hour[12] == pytest.approx(_HIGH, abs=0.5)
+        assert by_hour[0] == pytest.approx(_LOW, abs=0.5)
+        # Monotonic between 0 and 6 (raw values increase)
+        assert by_hour[3] > by_hour[0]
+        assert by_hour[3] < by_hour[6]
 
     # ------------------------------------------------------------------
     # Edge-hour cosine fill
     # ------------------------------------------------------------------
 
     def test_edge_hours_use_cosine_fill(self):
-        """Data only for hours 6–18 → hours 0–5 and 19–23 use the cosine model."""
+        """Data only for hours 6–18 → hours outside that range get cosine fill,
+        then the whole curve is normalised to high/low."""
+        # All mid-day entries at the same temp; edge hours come from cosine.
         mid_forecast = [_hourly_entry(h, 70.0) for h in range(6, 19)]
-        cosine = {p["hour"]: p["temp"] for p in _cosine_outdoor_curve(_HIGH, _LOW)}
 
         with patch(
-            "custom_components.climate_advisor.coordinator.datetime",
-            _mock_datetime(),
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util(),
         ):
             result = _build_outdoor_curve(_HIGH, _LOW, mid_forecast)
 
-        by_hour = {p["hour"]: p["temp"] for p in result}
         assert len(result) == 24
-
-        for h in list(range(0, 6)) + list(range(19, 24)):
-            assert by_hour[h] == pytest.approx(cosine[h], abs=0.05), \
-                f"Edge hour {h}: expected cosine {cosine[h]}, got {by_hour[h]}"
+        temps = [p["temp"] for p in result]
+        # Normalised → range matches high/low.
+        assert min(temps) == pytest.approx(_LOW, abs=0.5)
+        assert max(temps) == pytest.approx(_HIGH, abs=0.5)
 
     # ------------------------------------------------------------------
     # Robustness
@@ -551,15 +561,12 @@ class TestHourlyForecastOutdoorPrediction:
         ]
 
         with patch(
-            "custom_components.climate_advisor.coordinator.datetime",
-            _mock_datetime(),
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util(),
         ):
             result = _build_outdoor_curve(_HIGH, _LOW, forecast)
 
         assert len(result) == 24
-        # Hour 12 is the only valid known entry → must match exactly.
-        by_hour = {p["hour"]: p["temp"] for p in result}
-        assert by_hour[12] == pytest.approx(80.0, abs=0.05)
 
     # ------------------------------------------------------------------
     # Backward compatibility
@@ -578,19 +585,54 @@ class TestHourlyForecastOutdoorPrediction:
 
     def test_filters_to_today_only(self):
         """Tomorrow's hourly entries are ignored; only today's date is used."""
-        today_entries = [_hourly_entry(h, float(100 + h)) for h in range(24)]
+        today_entries = [_hourly_entry(h, float(60 + h)) for h in range(24)]
         tomorrow_entries = [_hourly_entry(h, float(200 + h), _TOMORROW_STR) for h in range(24)]
         mixed = today_entries + tomorrow_entries
 
         with patch(
-            "custom_components.climate_advisor.coordinator.datetime",
-            _mock_datetime(_TODAY),
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util(_TODAY),
         ):
             result = _build_outdoor_curve(_HIGH, _LOW, mixed)
 
-        by_hour = {p["hour"]: p["temp"] for p in result}
         assert len(result) == 24
-        # All hours should reflect today's values (100 + h), not tomorrow's (200 + h).
-        for h in range(24):
-            assert by_hour[h] == pytest.approx(float(100 + h), abs=0.05), \
-                f"Hour {h}: expected today's value {100 + h}, got {by_hour[h]}"
+        temps = [p["temp"] for p in result]
+        # Today's raw range is 60..83 (24 entries). Normalised to _HIGH/_LOW.
+        assert min(temps) == pytest.approx(_LOW, abs=0.15)
+        assert max(temps) == pytest.approx(_HIGH, abs=0.15)
+        # Shape: hour 0 had the lowest raw value → should be near _LOW
+        assert temps[0] == pytest.approx(_LOW, abs=0.5)
+        # hour 23 had the highest raw value → should be near _HIGH
+        assert temps[23] == pytest.approx(_HIGH, abs=0.5)
+
+    # ------------------------------------------------------------------
+    # Normalisation
+    # ------------------------------------------------------------------
+
+    def test_normalisation_spans_daily_high_low(self):
+        """Hourly data with a narrow range is scaled to match daily high/low."""
+        # Hourly data only spans 68-72 but daily says 55-85.
+        forecast = [_hourly_entry(h, 68.0 + (4.0 * h / 23.0)) for h in range(24)]
+
+        with patch(
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util(),
+        ):
+            result = _build_outdoor_curve(_HIGH, _LOW, forecast)
+
+        temps = [p["temp"] for p in result]
+        assert min(temps) == pytest.approx(_LOW, abs=0.15)
+        assert max(temps) == pytest.approx(_HIGH, abs=0.15)
+
+    def test_flat_hourly_data_falls_back_to_cosine(self):
+        """If all hourly values are the same, fall back to cosine model."""
+        forecast = [_hourly_entry(h, 70.0) for h in range(24)]
+
+        with patch(
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util(),
+        ):
+            result = _build_outdoor_curve(_HIGH, _LOW, forecast)
+
+        expected = _cosine_outdoor_curve(_HIGH, _LOW)
+        assert result == expected

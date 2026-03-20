@@ -1547,25 +1547,36 @@ def _build_outdoor_curve(
 ) -> list[dict]:
     """Build 24 hourly outdoor temperature predictions.
 
-    Uses actual hourly forecast data when available.  Falls back to a
-    sinusoidal interpolation from today_high / today_low when not.
+    Uses actual hourly forecast data for the *shape* of the curve (when
+    peaks and troughs occur), then normalises the result so the range
+    spans the daily forecast ``high`` / ``low``.  Falls back to the
+    sinusoidal model when no usable hourly data is available.
     """
     if not hourly_forecast:
         return _cosine_outdoor_curve(high, low)
 
-    # Parse hourly entries into an integer-hour lookup (today only)
-    today = datetime.now().date()
+    # Parse hourly entries into an integer-hour lookup (today only).
+    # Use dt_util for timezone-aware "today" so UTC datetimes are
+    # compared against the correct local date.
+    today = dt_util.now().date()
     known: dict[int, float] = {}
     for entry in hourly_forecast:
         dt_str = entry.get("datetime") or entry.get("time")
-        temp = entry.get("temperature") if entry.get("temperature") is not None else entry.get("temp")
+        temp = (
+            entry.get("temperature")
+            if entry.get("temperature") is not None
+            else entry.get("temp")
+        )
         if dt_str is None or temp is None:
             continue
         try:
             dt_obj = datetime.fromisoformat(dt_str)
-            if dt_obj.date() != today:
+            # Convert to local time before extracting the date so that
+            # UTC timestamps map to the correct calendar day.
+            local_dt = dt_util.as_local(dt_obj) if dt_obj.tzinfo else dt_obj
+            if local_dt.date() != today:
                 continue
-            known[dt_obj.hour] = float(temp)
+            known[local_dt.hour] = float(temp)
         except (ValueError, TypeError):
             continue
 
@@ -1576,22 +1587,35 @@ def _build_outdoor_curve(
     # cosine fallback at the edges.
     cosine = {p["hour"]: p["temp"] for p in _cosine_outdoor_curve(high, low)}
     known_hours = sorted(known)
-    result: list[dict] = []
+    raw: list[float] = []
 
     for h in range(24):
         if h in known:
-            result.append({"hour": h, "temp": round(known[h], 1)})
+            raw.append(known[h])
         else:
             before = [k for k in known_hours if k < h]
             after = [k for k in known_hours if k > h]
             if before and after:
                 h0, h1 = before[-1], after[0]
                 frac = (h - h0) / (h1 - h0)
-                temp = known[h0] + frac * (known[h1] - known[h0])
-                result.append({"hour": h, "temp": round(temp, 1)})
+                raw.append(known[h0] + frac * (known[h1] - known[h0]))
             else:
-                # Edge: before all known or after all known → cosine fill
-                result.append({"hour": h, "temp": cosine[h]})
+                raw.append(cosine[h])
+
+    # Normalise so the curve spans the daily high/low.  The hourly
+    # forecast often has a narrower range than the daily summary; this
+    # keeps the shape realistic while honouring the reported extremes.
+    raw_min = min(raw)
+    raw_max = max(raw)
+    if raw_max - raw_min > 0.1:
+        scale = (high - low) / (raw_max - raw_min)
+        result = [
+            {"hour": h, "temp": round(low + (t - raw_min) * scale, 1)}
+            for h, t in enumerate(raw)
+        ]
+    else:
+        # Flat or near-flat hourly data — fall back to cosine
+        result = _cosine_outdoor_curve(high, low)
 
     return result
 
