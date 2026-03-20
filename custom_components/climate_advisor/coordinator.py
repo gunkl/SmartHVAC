@@ -866,43 +866,70 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         current_indoor = self._get_indoor_temp()
         forecast = await self._get_forecast_data()
 
-        # Extract today and tomorrow from forecast
-        # Forecast structure varies by integration; handle common patterns
+        # Extract today and tomorrow from forecast by matching dates.
+        # HA daily forecasts shift forward as the day progresses, so
+        # forecast[0] may be tonight or tomorrow — never assume index == day.
         today_high = current_outdoor
         today_low = current_outdoor
         tomorrow_high = current_outdoor
         tomorrow_low = current_outdoor
 
-        if forecast and len(forecast) >= 2:
-            today_fc = forecast[0]
-            tomorrow_fc = forecast[1]
+        today_fc = None
+        tomorrow_fc = None
+        if forecast:
+            now_date = dt_util.now().date()
+            tomorrow_date = now_date + timedelta(days=1)
+            for entry in forecast:
+                fc_dt = entry.get("datetime", "")
+                try:
+                    fc_date = datetime.fromisoformat(fc_dt).date()
+                except (ValueError, TypeError):
+                    continue
+                if fc_date == now_date and today_fc is None:
+                    today_fc = entry
+                elif fc_date == tomorrow_date and tomorrow_fc is None:
+                    tomorrow_fc = entry
+
+            # If today's entry is missing (late evening), use first entry
+            # as a fallback for "today" so we still have some data.
+            if today_fc is None and tomorrow_fc is None and len(forecast) >= 2:
+                today_fc = forecast[0]
+                tomorrow_fc = forecast[1]
+            elif today_fc is None and tomorrow_fc is not None and len(forecast) >= 1:
+                today_fc = forecast[0]
+
+        if today_fc:
             today_high = today_fc.get("temperature", today_fc.get("tempHigh", current_outdoor))
             today_low = today_fc.get("templow", today_fc.get("tempLow", current_outdoor - 15))
+        if tomorrow_fc:
             tomorrow_high = tomorrow_fc.get("temperature", tomorrow_fc.get("tempHigh", current_outdoor))
             tomorrow_low = tomorrow_fc.get("templow", tomorrow_fc.get("tempLow", current_outdoor - 15))
-        elif forecast and len(forecast) == 1:
-            today_fc = forecast[0]
-            today_high = today_fc.get("temperature", today_fc.get("tempHigh", current_outdoor))
-            today_low = today_fc.get("templow", today_fc.get("tempLow", current_outdoor - 15))
+
+        # The forecast API returns "remaining period" data — as the day
+        # progresses, today's high drops to the current temp and today's low
+        # becomes tonight's expected low (not this morning's actual low).
+        # Fix: use observed temperature history to capture the true daily
+        # high and low, so the classification stays stable all day.
+        if self._outdoor_temp_history:
+            observed_temps = [t for _, t in self._outdoor_temp_history]
+            observed_high = max(observed_temps)
+            observed_low = min(observed_temps)
+            today_high = max(today_high, observed_high)
+            today_low = min(today_low, observed_low)
 
         _LOGGER.debug(
-            "Forecast parse — entries=%d, today_high=%.1f, today_low=%.1f, "
-            "tomorrow_high=%.1f, tomorrow_low=%.1f (outdoor=%.1f)%s",
+            "Forecast parse — entries=%d, today_match=%s, tomorrow_match=%s, "
+            "today_high=%.1f, today_low=%.1f, tomorrow_high=%.1f, "
+            "tomorrow_low=%.1f (outdoor=%.1f)",
             len(forecast) if forecast else 0,
+            today_fc.get("datetime", "?") if today_fc else "NONE",
+            tomorrow_fc.get("datetime", "?") if tomorrow_fc else "NONE",
             today_high,
             today_low,
             tomorrow_high,
             tomorrow_low,
             current_outdoor,
-            " [USING DEFAULTS — forecast had <%d entries]" % (
-                len(forecast) if forecast else 0,
-            ) if not forecast or len(forecast) < 2 else "",
         )
-        if forecast and len(forecast) >= 1:
-            _LOGGER.debug(
-                "Forecast[0] keys: %s",
-                list(forecast[0].keys()) if isinstance(forecast[0], dict) else type(forecast[0]),
-            )
 
         return ForecastSnapshot(
             today_high=float(today_high),
@@ -1445,6 +1472,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "last_action_reason": ae._last_action_reason,
             "manual_override_active": ae._manual_override_active,
             "manual_override_mode": ae._manual_override_mode,
+            "manual_override_time": ae._manual_override_time,
+            "manual_grace_duration": ae.config.get(
+                CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS
+            ),
             "next_automation_action": self.data.get(ATTR_NEXT_AUTOMATION_ACTION, "") if self.data else "",
             "next_automation_time": self.data.get(ATTR_NEXT_AUTOMATION_TIME, "") if self.data else "",
         }

@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from .const import (
     API_AUTOMATION_STATE,
     API_BRIEFING,
+    API_CANCEL_OVERRIDE,
     API_CHART_DATA,
     API_CONFIG,
     API_FORCE_RECLASSIFY,
@@ -297,6 +298,46 @@ class ClimateAdvisorConfigView(HomeAssistantView):
         return self.json({"settings": settings})
 
 
+class ClimateAdvisorCancelOverrideView(HomeAssistantView):
+    """Cancel manual override and resume automated HVAC control."""
+
+    url = API_CANCEL_OVERRIDE
+    name = "api:climate_advisor:cancel_override"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            return self.json({"error": "Climate Advisor not loaded"}, status_code=503)
+
+        ae = coordinator.automation_engine
+        if not ae._manual_override_active:
+            return self.json({"status": "ok", "message": "No active override to cancel"})
+
+        # Clear override and cancel grace timers
+        ae.clear_manual_override()
+        ae._cancel_grace_timers()
+
+        # Schedule re-application of current classification after 10 seconds
+        from homeassistant.helpers.event import async_call_later
+        from homeassistant.core import callback
+
+        @callback
+        def _apply_after_delay(_now):
+            if coordinator._current_classification:
+                hass.async_create_task(
+                    ae.apply_classification(coordinator._current_classification)
+                )
+
+        async_call_later(hass, 10, _apply_after_delay)
+
+        return self.json({
+            "status": "ok",
+            "message": "Override cancelled. Automated control resumes in 10 seconds.",
+        })
+
+
 # All views to register
 API_VIEWS = [
     ClimateAdvisorStatusView,
@@ -308,4 +349,5 @@ API_VIEWS = [
     ClimateAdvisorSendBriefingView,
     ClimateAdvisorRespondSuggestionView,
     ClimateAdvisorConfigView,
+    ClimateAdvisorCancelOverrideView,
 ]

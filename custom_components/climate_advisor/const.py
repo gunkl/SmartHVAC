@@ -136,6 +136,7 @@ API_FORCE_RECLASSIFY = f"{API_BASE}/force_reclassify"
 API_SEND_BRIEFING = f"{API_BASE}/send_briefing"
 API_RESPOND_SUGGESTION = f"{API_BASE}/respond_suggestion"
 API_CONFIG = f"{API_BASE}/config"
+API_CANCEL_OVERRIDE = f"{API_BASE}/cancel_override"
 
 # Panel
 PANEL_URL = "/climate_advisor/frontend"

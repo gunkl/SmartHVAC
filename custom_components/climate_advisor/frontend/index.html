@@ -683,6 +683,11 @@
     await window.doAction('force_reclassify');
   };
 
+  window.cancelOverride = async function() {
+    await window.doAction('cancel_override');
+    loadAutomationState();
+  };
+
   window.respondSuggestion = async function(key, action) {
     try {
       await apiFetch('respond_suggestion', {
@@ -720,7 +725,14 @@
             <tr><td>Pending Debounce Timers</td><td>${(data.pending_debounce_timers || []).length}</td></tr>
             <tr><td>Last Action Time</td><td>${data.last_action_time ? new Date(data.last_action_time).toLocaleString() : 'N/A'}</td></tr>
             <tr><td>Last Action Reason</td><td>${data.last_action_reason || 'N/A'}</td></tr>
-            <tr><td>Manual Override</td><td>${data.manual_override_active ? data.manual_override_mode + ' (active)' : 'No'}</td></tr>
+            <tr><td>Manual Override</td><td>${data.manual_override_active ? (() => {
+              const startMs = new Date(data.manual_override_time).getTime();
+              const durationMs = (data.manual_grace_duration || 1800) * 1000;
+              const remainMs = (startMs + durationMs) - Date.now();
+              const remainMin = Math.max(0, Math.ceil(remainMs / 60000));
+              return data.manual_override_mode + ' (active, ' + remainMin + ' min remaining) '
+                + '<button onclick="cancelOverride()" style="margin-left:8px;padding:2px 10px;cursor:pointer;border-radius:4px;border:1px solid var(--border);background:var(--danger);color:#fff;font-size:0.8rem">Reset</button>';
+            })() : 'No'}</td></tr>
           </table>
         </div>
         ${sensorRows ? `
