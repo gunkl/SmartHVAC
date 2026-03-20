@@ -31,6 +31,8 @@ from .const import (
     ATTR_OCCUPANCY_MODE,
     ATTR_LAST_ACTION_TIME,
     ATTR_LAST_ACTION_REASON,
+    ATTR_FAN_STATUS,
+    ATTR_FAN_RUNTIME,
 )
 from .coordinator import ClimateAdvisorCoordinator
 
@@ -57,6 +59,7 @@ async def async_setup_entry(
         ClimateAdvisorOccupancySensor(coordinator, entry),
         ClimateAdvisorLastActionTimeSensor(coordinator, entry),
         ClimateAdvisorLastActionReasonSensor(coordinator, entry),
+        ClimateAdvisorFanStatusSensor(coordinator, entry),
     ]
 
     async_add_entities(entities)
@@ -275,4 +278,25 @@ class ClimateAdvisorLastActionReasonSensor(ClimateAdvisorBaseSensor):
         """Store the full reason text as an attribute."""
         return {
             "full_reason": self.coordinator.data.get(ATTR_LAST_ACTION_REASON, "") if self.coordinator.data else "",
+        }
+
+
+class ClimateAdvisorFanStatusSensor(ClimateAdvisorBaseSensor):
+    """Sensor showing the current fan status (active/inactive/override/disabled)."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(
+            coordinator, entry,
+            ATTR_FAN_STATUS, "Fan Status", "mdi:fan"
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose fan runtime and economizer phase as attributes."""
+        if not self.coordinator.data:
+            return {}
+        return {
+            "fan_runtime_minutes": round(
+                self.coordinator.data.get(ATTR_FAN_RUNTIME, 0.0), 1
+            ),
         }

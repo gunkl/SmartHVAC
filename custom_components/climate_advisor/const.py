@@ -122,6 +122,8 @@ ATTR_NEXT_AUTOMATION_TIME = "next_automation_time"
 ATTR_OCCUPANCY_MODE = "occupancy_mode"
 ATTR_LAST_ACTION_TIME = "last_action_time"
 ATTR_LAST_ACTION_REASON = "last_action_reason"
+ATTR_FAN_STATUS = "fan_status"
+ATTR_FAN_RUNTIME = "fan_runtime_minutes"
 
 # Revisit delay — follow-up check after any HVAC action (seconds)
 REVISIT_DELAY_SECONDS = 300  # 5 minutes

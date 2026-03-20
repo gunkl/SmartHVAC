@@ -170,6 +170,45 @@ Fans only activate during the economizer **maintain** phase (Phase 2 or savings-
 | `hvac_fan` | `climate.set_fan_mode` → `"on"` on the thermostat entity | `climate.set_fan_mode` → `"auto"` on the thermostat entity |
 | `both` | Both `whole_house_fan` and `hvac_fan` actions | Both deactivate actions |
 
+### 9a. Fan State Tracking
+
+The coordinator maintains five internal fields to manage fan state across activate/deactivate calls and detect user overrides:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `_fan_active` | `bool` | Whether the integration currently considers the fan on |
+| `_fan_on_since` | `datetime \| None` | Timestamp of when `_activate_fan()` last turned the fan on |
+| `_fan_override_active` | `bool` | Whether a user manual fan override is in effect |
+| `_fan_override_time` | `datetime \| None` | Timestamp of when the fan override was detected |
+| `_fan_command_pending` | `bool` | Set to `True` immediately before the integration issues a fan command; cleared immediately after |
+
+**`_activate_fan()`** sets `_fan_command_pending = True`, issues the fan-on service call, then sets `_fan_active = True` and records `_fan_on_since`. If `_fan_override_active` is `True` at activation time, the call is skipped so the integration does not fight the user's manual setting.
+
+**`_deactivate_fan()`** follows the same pattern in reverse: sets `_fan_command_pending = True`, issues the fan-off service call, then clears `_fan_active` and `_fan_on_since`. Override state is not checked on deactivation — the intent is always to stop the fan when the economizer or transition logic calls for it.
+
+### 9b. Fan Override Detection
+
+Fan override detection runs in two places:
+
+1. **`_async_fan_entity_changed()`** — a state-change listener registered on the `fan_entity` (for `fan_mode == whole_house_fan` or `both`). When the entity state changes, the listener checks whether `_fan_command_pending` is set. If the flag is clear, the state change was user-initiated, not integration-initiated, and a fan override is recorded: `_fan_override_active = True`, `_fan_override_time = utcnow()`.
+
+2. **`_async_thermostat_changed()`** — the existing thermostat state listener is extended to also inspect the thermostat's `fan_mode` attribute (for `fan_mode == hvac_fan` or `both`). If the fan_mode attribute changes while `_fan_command_pending` is clear, a fan override is recorded using the same fields.
+
+Fan override is **separate** from HVAC override. The two override states are tracked independently and do not interfere with each other. Fan override uses the same grace period duration as manual HVAC override (`DEFAULT_MANUAL_GRACE_SECONDS`), but the timers run independently.
+
+Fan override is **cleared** at transition points where the integration takes deliberate control of the fan (bedtime, morning wakeup — see Section 9c).
+
+### 9c. Fan Behavior at Transitions
+
+| Transition | Fan action | Override cleared? |
+|---|---|---|
+| Bedtime | `_deactivate_fan()` called; economizer also deactivated | Yes — `_fan_override_active` reset to `False` |
+| Morning wakeup | `_deactivate_fan()` called | Yes — `_fan_override_active` reset to `False` |
+
+At bedtime, both the fan and the economizer are explicitly shut down before the bedtime setpoints are applied. This ensures the overnight period starts with a clean fan state regardless of what the economizer was doing during the evening window. At morning wakeup, the fan is deactivated before comfort temperatures are restored, preventing carryover of an economizer fan session into the occupied-home daytime period.
+
+Clearing the override flag at these transitions means the integration will not skip fan activation during the next economizer cycle just because the user had manually adjusted the fan during the previous day.
+
 ---
 
 ## 10. Door/Window HVAC Pause
@@ -197,7 +236,35 @@ Both grace periods are cancelled and reset on HA restart. Only one grace timer o
 
 ---
 
-## 12. "Prefer Savings Over Comfort" (aggressive_savings)
+## 12. Revisit Mechanism
+
+After any HVAC action (mode change or temperature set), the coordinator calls `_schedule_revisit()`, which posts a delayed `async_request_refresh()` for 5 minutes later (`REVISIT_DELAY_SECONDS = 300`). When the refresh fires, the full automation evaluation runs again — including re-checking eligibility for the economizer, any pending pre-conditioning, and the current occupancy and time context.
+
+If that re-evaluation results in another HVAC action, `_schedule_revisit()` is called again, scheduling yet another follow-up 5 minutes out. The loop terminates naturally when an evaluation pass finds no action is needed. There is no explicit iteration cap; the exit condition is that the system has reached a stable state.
+
+This mechanism ensures that a multi-step transition (for example: economizer detects indoor temp still high after fan activation, then re-evaluates whether to switch to Phase 1 AC assist) converges without requiring a separate scheduling path for each step. It also catches edge cases where conditions change in the minutes immediately following an automated action (e.g., a window is closed just after the economizer activated).
+
+Only one pending revisit is active at a time. If `_schedule_revisit()` is called while a revisit is already scheduled, the previous scheduled call is cancelled and replaced by the new one.
+
+---
+
+## 13. Logging Level
+
+HVAC action log statements use `_LOGGER.warning()` rather than `_LOGGER.info()`. This applies to the following operations:
+
+- `_set_hvac_mode()` — mode changes (on, off, cool, heat)
+- `_set_temperature()` — setpoint changes
+- `_record_action()` — action history entries
+- `handle_manual_override()` — override detection and grace period start
+- `apply_classification()` — day classification application
+
+Home Assistant's default log level for custom components is `warning`. Using `_LOGGER.info()` for these calls would make them invisible in the HA log under default settings, which makes diagnosing automation behavior in production impossible without a config change. Promoting these calls to `warning` means they appear in the log out of the box, without requiring the user to add a `logger:` block to `configuration.yaml`.
+
+Routine diagnostic messages (coordinator polling, entity state reads, skip-due-to-grace-period notices) remain at `_LOGGER.debug()` and are suppressed under normal operation.
+
+---
+
+## 14. "Prefer Savings Over Comfort" (aggressive_savings)
 
 The `aggressive_savings` flag currently affects one system:
 
@@ -209,7 +276,7 @@ Future versions may extend `aggressive_savings` to apply more aggressive setback
 
 ---
 
-## 13. Defaults Reference
+## 15. Defaults Reference
 
 Complete list of all constants from `const.py` that affect runtime behavior.
 
@@ -245,6 +312,16 @@ Complete list of all constants from `const.py` that affect runtime behavior.
 | `COMPLIANCE_THRESHOLD_HIGH` | `0.8` | ratio | Learning engine: above 80% compliance means advice is working |
 | `DEFAULT_FAN_MODE` | `disabled` | — | Fan control default (no fan control) |
 
+**Fan state tracking fields** (runtime coordinator state, not configurable constants):
+
+| Field | Initial Value | Description |
+|---|---|---|
+| `_fan_active` | `False` | Whether the integration currently has the fan on |
+| `_fan_on_since` | `None` | UTC timestamp of last fan activation by the integration |
+| `_fan_override_active` | `False` | Whether a user manual fan override is in effect |
+| `_fan_override_time` | `None` | UTC timestamp of when the fan override was detected |
+| `_fan_command_pending` | `False` | Set during integration-issued fan commands to suppress false override detection |
+
 ---
 
-_Last Updated: 2026-03-19_
+_Last Updated: 2026-03-20_

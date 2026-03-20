@@ -517,6 +517,10 @@
           <div class="label">Automation Time</div>
           <div class="value">${data.next_automation_time || '\u2014'}</div>
         </div>
+        <div class="status-item">
+          <div class="label">Fan</div>
+          <div class="value">${data.fan_status || 'disabled'}</div>
+        </div>
       `;
       document.getElementById('status-loading').style.display = 'none';
       grid.style.display = 'grid';
@@ -746,6 +750,18 @@
             <table class="kv-table">${sensorRows}</table>
           </div>
         ` : ''}
+        <div class="debug-section">
+          <h3>Fan State</h3>
+          <table class="kv-table">
+            <tr><td>Fan Mode Config</td><td>${data.fan_mode_config || 'disabled'}</td></tr>
+            <tr><td>Fan Active</td><td>${data.fan_active ? 'Yes' : 'No'}</td></tr>
+            <tr><td>Fan On Since</td><td>${data.fan_on_since ? new Date(data.fan_on_since).toLocaleString() : 'N/A'}</td></tr>
+            <tr><td>Fan Runtime</td><td>${(data.fan_runtime_minutes || 0).toFixed(0)} min</td></tr>
+            <tr><td>Fan Override</td><td>${data.fan_override_active ? 'Active (since ' + new Date(data.fan_override_time).toLocaleString() + ')' : 'No'}</td></tr>
+            <tr><td>Economizer Active</td><td>${data.economizer_active ? 'Yes' : 'No'}</td></tr>
+            <tr><td>Economizer Phase</td><td>${data.economizer_phase || 'inactive'}</td></tr>
+          </table>
+        </div>
         ${data.classification ? `
           <div class="debug-section">
             <h3>Classification Details</h3>

@@ -96,11 +96,13 @@ graph TD
     C --> D[generate_briefing]
     D --> E[notify push + email]
 
-    F[6:30 AM - Wakeup\ndefault] --> G[clear_manual_override]
-    G --> H[Restore comfort temp\nheat: comfort_heat\ncool: comfort_cool]
+    F[6:30 AM - Wakeup\ndefault] --> G[clear_manual_override\n+ clear_fan_override]
+    G --> H[Deactivate fan\nif still running]
+    H --> HH[Restore comfort temp\nheat: comfort_heat\ncool: comfort_cool]
 
-    I[10:30 PM - Bedtime\ndefault] --> J[clear_manual_override]
-    J --> K{hvac_mode?}
+    I[10:30 PM - Bedtime\ndefault] --> J[clear_manual_override\n+ clear_fan_override]
+    J --> JJ[Deactivate fan + economizer\nif active]
+    JJ --> K{hvac_mode?}
     K -->|heat| L[Set temp:\ncomfort_heat - 4 + setback_modifier]
     K -->|cool| M[Set temp:\ncomfort_cool + 3]
 
@@ -167,7 +169,62 @@ graph TD
 
 ---
 
-## 6. Grace Period System
+## 6. Fan Override Detection
+
+Fan state changes are monitored by two listeners. A dedicated fan entity listener watches for direct on/off changes. The existing thermostat listener in `_async_thermostat_changed()` also detects `fan_mode` attribute changes. Both paths call `handle_fan_manual_override()` in the automation engine.
+
+Fan override is tracked separately from HVAC override — `_fan_override_active` is independent of `_manual_override_active`. Both can be active simultaneously.
+
+```mermaid
+graph TD
+    A[Fan entity state change\nfan listener] --> B{New state differs\nfrom previous?}
+    B -->|No| C[Ignore - no real change]
+    B -->|Yes| D[handle_fan_manual_override]
+
+    E[Thermostat state change\nthermostat listener] --> F{fan_mode attribute\nchanged?}
+    F -->|No| G[Continue HVAC override check]
+    F -->|Yes| D
+
+    D --> H[_fan_override_active = True\nRecord override time]
+    H --> I[Start fan grace period\ndefault manual_grace_seconds]
+    I --> J[Fan automation skips\nfan activation until cleared]
+    J --> K[Fan override cleared at:\nBedtime or Wakeup schedule boundary\nvia clear_fan_override]
+
+    L[clear_manual_override called\nat schedule boundary] --> M[clear_fan_override]
+    M --> N[_fan_override_active = False]
+```
+
+---
+
+## 7. Fan Behavior at Schedule Transitions
+
+Fan and economizer state are explicitly managed at the two main daily schedule boundaries: bedtime and morning wakeup. `clear_manual_override()` calls `clear_fan_override()` internally, so both override flags are cleared together at each boundary.
+
+```mermaid
+graph TD
+    A[10:30 PM - Bedtime fires] --> B[clear_manual_override]
+    B --> C[clear_fan_override\n_fan_override_active = False]
+    C --> D{Economizer currently active?}
+    D -->|Yes| E[_deactivate_economizer\nRestore normal AC mode]
+    D -->|No| F{Fan currently running\nvia automation?}
+    E --> F
+    F -->|Yes| G[Deactivate fan\nSet fan to auto/off]
+    F -->|No| H[No fan action needed]
+    G --> I[Apply bedtime setback temp]
+    H --> I
+
+    J[6:30 AM - Wakeup fires] --> K[clear_manual_override]
+    K --> L[clear_fan_override\n_fan_override_active = False]
+    L --> M{Fan currently running\nvia automation?}
+    M -->|Yes| N[Deactivate fan\nSet fan to auto/off]
+    M -->|No| O[No fan action needed]
+    N --> P[Restore comfort temp]
+    O --> P
+```
+
+---
+
+## 8. Grace Period System
 
 Two grace period types are managed by `_start_grace_period()` in `AutomationEngine`.
 
@@ -190,7 +247,7 @@ graph TD
 
 ---
 
-## 7. Occupancy State Machine
+## 9. Occupancy State Machine
 
 Four occupancy states with priority resolution via `_compute_occupancy_mode()` in the coordinator.
 
@@ -240,7 +297,7 @@ stateDiagram-v2
 
 ---
 
-## 8. Economizer — Window Cooling on Hot Days
+## 10. Economizer — Window Cooling on Hot Days
 
 `check_window_cooling_opportunity()` in `AutomationEngine` implements a two-phase window cooling strategy.
 
@@ -271,7 +328,7 @@ Time window check: morning 6:00–9:00 AM or evening 5:00 PM–midnight.
 
 ---
 
-## 9. Startup Safety
+## 11. Startup Safety
 
 First-run logic and weather entity backoff handled in `_async_update_data()`.
 
@@ -293,4 +350,4 @@ graph TD
 
 ---
 
-*Last Updated: 2026-03-19*
+*Last Updated: 2026-03-20*

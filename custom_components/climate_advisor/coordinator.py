@@ -70,6 +70,11 @@ from .const import (
     ECONOMIZER_TEMP_DELTA,
     ATTR_LAST_ACTION_TIME,
     ATTR_LAST_ACTION_REASON,
+    CONF_FAN_ENTITY,
+    CONF_FAN_MODE,
+    FAN_MODE_DISABLED,
+    ATTR_FAN_STATUS,
+    ATTR_FAN_RUNTIME,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -219,6 +224,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 self._async_thermostat_changed,
             )
         )
+
+        # Listeners: fan entity (for detecting manual fan overrides)
+        fan_entity = self.config.get(CONF_FAN_ENTITY)
+        if fan_entity:
+            self._unsub_listeners.append(
+                async_track_state_change_event(
+                    self.hass,
+                    fan_entity,
+                    self._async_fan_entity_changed,
+                )
+            )
 
         _LOGGER.info("Climate Advisor v%s coordinator setup complete", VERSION)
 
@@ -728,6 +744,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_OCCUPANCY_MODE: self._occupancy_mode,
             ATTR_LAST_ACTION_TIME: self.automation_engine._last_action_time,
             ATTR_LAST_ACTION_REASON: self.automation_engine._last_action_reason,
+            ATTR_FAN_STATUS: self._compute_fan_status(),
+            ATTR_FAN_RUNTIME: self.automation_engine._get_fan_runtime_minutes(),
         }
 
     def _get_outdoor_temp(self, weather_attrs: dict) -> float:
@@ -1268,6 +1286,60 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Possible manual override detected: %s -> %s", old_temp, new_temp)
             await self._async_save_state()
 
+        # Detect manual fan_mode attribute changes on thermostat (Issue #37)
+        new_fan_mode = new_state.attributes.get("fan_mode")
+        old_fan_mode = old_state.attributes.get("fan_mode")
+        if (
+            new_fan_mode is not None
+            and old_fan_mode is not None
+            and new_fan_mode != old_fan_mode
+            and not self.automation_engine._fan_command_pending
+            and not self.automation_engine._fan_override_active
+        ):
+            _LOGGER.info(
+                "Manual HVAC fan_mode change detected: %s -> %s",
+                old_fan_mode, new_fan_mode,
+            )
+            self.automation_engine.handle_fan_manual_override()
+
+    async def _async_fan_entity_changed(self, event: Event) -> None:
+        """Detect manual fan entity state changes (Issue #37)."""
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if not new_state or not old_state:
+            return
+
+        if new_state.state == old_state.state:
+            return
+
+        # Skip if this change was initiated by us
+        if self.automation_engine._fan_command_pending:
+            return
+
+        # Skip if fan override is already active
+        if self.automation_engine._fan_override_active:
+            return
+
+        on_states = {"on"}
+        off_states = {"off"}
+        was_on = old_state.state in on_states
+        is_on = new_state.state in on_states
+
+        if is_on and not self.automation_engine._fan_active:
+            # Fan turned on externally — manual override
+            _LOGGER.info(
+                "Manual fan override detected: %s -> %s (integration expected fan off)",
+                old_state.state, new_state.state,
+            )
+            self.automation_engine.handle_fan_manual_override()
+        elif not is_on and self.automation_engine._fan_active:
+            # Fan turned off externally — manual override
+            _LOGGER.info(
+                "Manual fan override detected: %s -> %s (integration expected fan on)",
+                old_state.state, new_state.state,
+            )
+            self.automation_engine.handle_fan_manual_override()
+
     def _compute_next_action(self, c: DayClassification | None) -> str:
         """Compute the next recommended human action for display."""
         if not c:
@@ -1316,6 +1388,18 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if self._occupancy_mode == OCCUPANCY_GUEST:
             return "active (guest)"
         return "active"
+
+    def _compute_fan_status(self) -> str:
+        """Compute the current fan status string."""
+        ae = self.automation_engine
+        fan_mode = ae.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
+        if fan_mode == FAN_MODE_DISABLED:
+            return "disabled"
+        if ae._fan_override_active:
+            return "override"
+        if ae._fan_active:
+            return "active"
+        return "inactive"
 
     def _compute_next_automation_action(
         self, c: DayClassification | None
@@ -1484,6 +1568,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ),
             "next_automation_action": self.data.get(ATTR_NEXT_AUTOMATION_ACTION, "") if self.data else "",
             "next_automation_time": self.data.get(ATTR_NEXT_AUTOMATION_TIME, "") if self.data else "",
+            # Fan state (Issue #37)
+            "fan_active": ae._fan_active,
+            "fan_on_since": ae._fan_on_since,
+            "fan_runtime_minutes": ae._get_fan_runtime_minutes(),
+            "fan_override_active": ae._fan_override_active,
+            "fan_override_time": ae._fan_override_time,
+            "fan_mode_config": ae.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED),
+            "economizer_active": ae._economizer_active,
+            "economizer_phase": ae._economizer_phase,
         }
 
     async def async_shutdown(self) -> None:

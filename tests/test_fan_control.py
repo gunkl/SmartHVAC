@@ -1,4 +1,4 @@
-"""Tests for whole-house fan control (Issue #18 Phase 4).
+"""Tests for whole-house fan control (Issue #18 Phase 4, Issue #37).
 
 Tests cover:
 - _activate_fan: whole_house_fan, hvac_fan, both, disabled
@@ -7,11 +7,20 @@ Tests cover:
 - dry_run mode skips all service calls
 - fan activation integrates with economizer maintain phase
 - fan deactivation integrates with economizer off
+- Fan state tracking (_fan_active, _fan_on_since, runtime) (Issue #37)
+- Fan override detection and handling (Issue #37)
+- Fan behavior at transitions (bedtime, wakeup) (Issue #37)
+- Fan state serialization (save/restore) (Issue #37)
 """
 from __future__ import annotations
 
+import sys
 import asyncio
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
+
+# Patch dt_util.now to return a real datetime (needed for isoformat() calls)
+sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 3, 19, 14, 30, 0)
 
 from custom_components.climate_advisor.automation import AutomationEngine
 from custom_components.climate_advisor.classifier import DayClassification
@@ -381,3 +390,304 @@ class TestFanEconomizerIntegration:
             if c[0][0] in ("fan", "switch")
         ]
         assert len(fan_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Fan state tracking (Issue #37)
+# ---------------------------------------------------------------------------
+
+class TestFanStateTracking:
+    """Tests for fan state tracking fields (_fan_active, _fan_on_since)."""
+
+    def test_activate_fan_sets_fan_active(self):
+        """_activate_fan sets _fan_active=True and _fan_on_since."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+        })
+
+        assert engine._fan_active is False
+        assert engine._fan_on_since is None
+
+        asyncio.run(engine._activate_fan(reason="test"))
+
+        assert engine._fan_active is True
+        assert engine._fan_on_since is not None
+
+    def test_deactivate_fan_clears_fan_active(self):
+        """_deactivate_fan clears _fan_active and _fan_on_since."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+        })
+        engine._fan_active = True
+        engine._fan_on_since = "2026-03-20T10:00:00"
+
+        asyncio.run(engine._deactivate_fan(reason="test"))
+
+        assert engine._fan_active is False
+        assert engine._fan_on_since is None
+
+    def test_activate_fan_records_action(self):
+        """_activate_fan calls _record_action with fan-specific reason."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_HVAC,
+        })
+
+        asyncio.run(engine._activate_fan(reason="economizer maintain"))
+
+        assert engine._last_action_reason is not None
+        assert "Fan activated" in engine._last_action_reason
+
+    def test_deactivate_fan_records_action(self):
+        """_deactivate_fan calls _record_action."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_HVAC,
+        })
+        engine._fan_active = True
+
+        asyncio.run(engine._deactivate_fan(reason="economizer off"))
+
+        assert engine._last_action_reason is not None
+        assert "Fan deactivated" in engine._last_action_reason
+
+    def test_get_fan_runtime_minutes_when_inactive(self):
+        """_get_fan_runtime_minutes returns 0.0 when fan is inactive."""
+        engine = _make_automation_engine()
+
+        assert engine._get_fan_runtime_minutes() == 0.0
+
+    def test_get_fan_runtime_minutes_when_active(self):
+        """_get_fan_runtime_minutes returns positive value when fan is on."""
+        from datetime import timedelta
+        from unittest.mock import patch
+        import custom_components.climate_advisor.automation as auto_mod
+
+        engine = _make_automation_engine()
+        engine._fan_active = True
+
+        mock_now = datetime(2026, 3, 19, 14, 30, 0)
+        ten_min_before = mock_now - timedelta(minutes=10)
+        engine._fan_on_since = ten_min_before.isoformat()
+
+        # Patch dt_util directly on the automation module
+        mock_dt = MagicMock()
+        mock_dt.now = MagicMock(return_value=mock_now)
+        with patch.object(auto_mod, "dt_util", mock_dt):
+            runtime = engine._get_fan_runtime_minutes()
+        assert 9.0 <= runtime <= 11.0
+
+    def test_fan_command_pending_set_during_activate(self):
+        """_fan_command_pending is False after _activate_fan completes."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+        })
+
+        asyncio.run(engine._activate_fan(reason="test"))
+
+        # After completion, pending should be cleared
+        assert engine._fan_command_pending is False
+
+
+# ---------------------------------------------------------------------------
+# Fan override (Issue #37)
+# ---------------------------------------------------------------------------
+
+class TestFanOverride:
+    """Tests for fan manual override detection and handling."""
+
+    def test_handle_fan_manual_override_sets_flags(self):
+        """handle_fan_manual_override sets _fan_override_active and time."""
+        engine = _make_automation_engine()
+
+        engine.handle_fan_manual_override()
+
+        assert engine._fan_override_active is True
+        assert engine._fan_override_time is not None
+
+    def test_clear_fan_override_resets_flags(self):
+        """clear_fan_override resets _fan_override_active and time."""
+        engine = _make_automation_engine()
+        engine._fan_override_active = True
+        engine._fan_override_time = "2026-03-20T10:00:00"
+
+        engine.clear_fan_override()
+
+        assert engine._fan_override_active is False
+        assert engine._fan_override_time is None
+
+    def test_activate_fan_skips_when_override_active(self):
+        """_activate_fan does nothing when _fan_override_active is True."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+        })
+        engine._fan_override_active = True
+
+        asyncio.run(engine._activate_fan(reason="test"))
+
+        engine.hass.services.async_call.assert_not_called()
+        assert engine._fan_active is False
+
+    def test_deactivate_fan_skips_when_override_active(self):
+        """_deactivate_fan does nothing when _fan_override_active is True."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+        })
+        engine._fan_override_active = True
+        engine._fan_active = True
+
+        asyncio.run(engine._deactivate_fan(reason="test"))
+
+        engine.hass.services.async_call.assert_not_called()
+        assert engine._fan_active is True  # unchanged
+
+    def test_clear_manual_override_also_clears_fan_override(self):
+        """clear_manual_override clears both HVAC and fan overrides."""
+        engine = _make_automation_engine()
+        engine._manual_override_active = True
+        engine._manual_override_mode = "cool"
+        engine._manual_override_time = "2026-03-20T10:00:00"
+        engine._fan_override_active = True
+        engine._fan_override_time = "2026-03-20T10:00:00"
+
+        engine.clear_manual_override()
+
+        assert engine._manual_override_active is False
+        assert engine._fan_override_active is False
+        assert engine._fan_override_time is None
+
+
+# ---------------------------------------------------------------------------
+# Fan behavior at transitions (Issue #37)
+# ---------------------------------------------------------------------------
+
+class TestFanTransitions:
+    """Tests for fan deactivation at bedtime and morning wakeup."""
+
+    def test_bedtime_deactivates_fan(self):
+        """handle_bedtime deactivates fan if active."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+            "comfort_cool": 75,
+        })
+        engine._current_classification = _make_hot_classification()
+        engine._fan_active = True
+        engine._fan_on_since = "2026-03-20T18:00:00"
+
+        asyncio.run(engine.handle_bedtime())
+
+        assert engine._fan_active is False
+        fan_off_calls = _get_service_calls(engine, "fan", "turn_off")
+        assert len(fan_off_calls) == 1
+
+    def test_bedtime_deactivates_economizer(self):
+        """handle_bedtime deactivates economizer if active."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+            "comfort_cool": 75,
+        })
+        engine._current_classification = _make_hot_classification()
+        engine._economizer_active = True
+        engine._economizer_phase = "maintain"
+
+        asyncio.run(engine.handle_bedtime())
+
+        assert engine._economizer_active is False
+        assert engine._economizer_phase == "inactive"
+
+    def test_morning_wakeup_deactivates_fan(self):
+        """handle_morning_wakeup deactivates fan if still running."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+            "comfort_cool": 75,
+        })
+        engine._current_classification = _make_hot_classification()
+        engine._fan_active = True
+        engine._fan_on_since = "2026-03-20T06:00:00"
+
+        asyncio.run(engine.handle_morning_wakeup())
+
+        assert engine._fan_active is False
+
+    def test_morning_wakeup_clears_fan_override(self):
+        """handle_morning_wakeup clears fan override."""
+        engine = _make_automation_engine()
+        engine._current_classification = _make_hot_classification()
+        engine._fan_override_active = True
+        engine._fan_override_time = "2026-03-20T22:00:00"
+
+        asyncio.run(engine.handle_morning_wakeup())
+
+        assert engine._fan_override_active is False
+
+    def test_bedtime_clears_fan_override_then_deactivates(self):
+        """handle_bedtime clears fan override (transition point) and deactivates fan."""
+        engine = _make_automation_engine({
+            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+            CONF_FAN_ENTITY: "fan.attic",
+        })
+        engine._current_classification = _make_hot_classification()
+        engine._fan_active = True
+        engine._fan_override_active = True
+
+        asyncio.run(engine.handle_bedtime())
+
+        # Bedtime is a transition point — overrides are cleared, then fan deactivated
+        assert engine._fan_override_active is False
+        assert engine._fan_active is False
+
+
+# ---------------------------------------------------------------------------
+# Fan state serialization (Issue #37)
+# ---------------------------------------------------------------------------
+
+class TestFanSerialization:
+    """Tests for fan state persistence via get_serializable_state / restore_state."""
+
+    def test_serializable_state_includes_fan_fields(self):
+        """get_serializable_state includes all fan tracking fields."""
+        engine = _make_automation_engine()
+        engine._fan_active = True
+        engine._fan_on_since = "2026-03-20T10:00:00"
+        engine._fan_override_active = True
+        engine._fan_override_time = "2026-03-20T10:05:00"
+
+        state = engine.get_serializable_state()
+
+        assert state["fan_active"] is True
+        assert state["fan_on_since"] == "2026-03-20T10:00:00"
+        assert state["fan_override_active"] is True
+        assert state["fan_override_time"] == "2026-03-20T10:05:00"
+
+    def test_restore_state_loads_fan_fields(self):
+        """restore_state populates fan tracking fields from saved data."""
+        engine = _make_automation_engine()
+
+        engine.restore_state({
+            "fan_active": True,
+            "fan_on_since": "2026-03-20T10:00:00",
+            "fan_override_active": True,
+            "fan_override_time": "2026-03-20T10:05:00",
+        })
+
+        assert engine._fan_active is True
+        assert engine._fan_on_since == "2026-03-20T10:00:00"
+        assert engine._fan_override_active is True
+        assert engine._fan_override_time == "2026-03-20T10:05:00"
+
+    def test_restore_state_defaults_fan_fields(self):
+        """restore_state defaults fan fields to inactive when not present."""
+        engine = _make_automation_engine()
+
+        engine.restore_state({})
+
+        assert engine._fan_active is False
+        assert engine._fan_on_since is None
+        assert engine._fan_override_active is False
+        assert engine._fan_override_time is None

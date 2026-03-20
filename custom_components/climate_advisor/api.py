@@ -28,6 +28,7 @@ from .const import (
     ATTR_NEXT_AUTOMATION_TIME,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
+    ATTR_FAN_STATUS,
     CONFIG_METADATA,
     DOMAIN,
     VERSION,
@@ -74,6 +75,7 @@ class ClimateAdvisorStatusView(HomeAssistantView):
             "next_automation_time": data.get(ATTR_NEXT_AUTOMATION_TIME, ""),
             "automation_enabled": coordinator.automation_enabled,
             "occupancy_mode": coordinator._occupancy_mode,
+            "fan_status": data.get(ATTR_FAN_STATUS, "disabled"),
         })
 
 

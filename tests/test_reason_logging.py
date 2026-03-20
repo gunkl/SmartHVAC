@@ -1,7 +1,8 @@
 """Tests for plain-text reason logging on thermostat adjustments.
 
 Every call to _set_hvac_mode and _set_temperature must include a reason
-parameter that appears in the INFO-level log output.  These tests verify
+parameter that appears in the WARNING-level log output (Issue #37: elevated
+from INFO so actions are visible in HA's default log level).  These tests verify
 that each call site in AutomationEngine produces the expected reason string.
 
 See: GitHub Issue #16
@@ -94,7 +95,7 @@ class TestApplyClassificationLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.apply_classification(c))
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         # Should have mode + temperature info logs
         mode_msgs = [m for m in messages if "Set HVAC mode" in m]
         temp_msgs = [m for m in messages if "Set temperature" in m]
@@ -114,7 +115,7 @@ class TestApplyClassificationLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.apply_classification(c))
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) >= 1
         assert "pre-cool offset" in temp_msgs[0]
@@ -126,7 +127,7 @@ class TestApplyClassificationLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.apply_classification(c))
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         mode_msgs = [m for m in messages if "Set HVAC mode" in m]
         assert len(mode_msgs) == 1
         assert "HVAC not needed" in mode_msgs[0]
@@ -153,7 +154,7 @@ class TestDoorWindowLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_door_window_open("binary_sensor.kitchen_window"))
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         mode_msgs = [m for m in messages if "Set HVAC mode" in m]
         assert len(mode_msgs) == 1
         assert "door/window open" in mode_msgs[0]
@@ -171,7 +172,7 @@ class TestDoorWindowLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_all_doors_windows_closed())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         mode_msgs = [m for m in messages if "Set HVAC mode" in m]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(mode_msgs) >= 1
@@ -198,7 +199,7 @@ class TestOccupancyLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_occupancy_away())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) == 1
         assert "occupancy away" in temp_msgs[0]
@@ -216,7 +217,7 @@ class TestOccupancyLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_occupancy_away())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) == 1
         assert "occupancy away" in temp_msgs[0]
@@ -232,7 +233,7 @@ class TestOccupancyLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_occupancy_home())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) == 1
         assert "occupancy home" in temp_msgs[0]
@@ -256,7 +257,7 @@ class TestBedtimeLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_bedtime())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) == 1
         assert "bedtime" in temp_msgs[0]
@@ -272,7 +273,7 @@ class TestBedtimeLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_bedtime())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) == 1
         assert "bedtime" in temp_msgs[0]
@@ -295,7 +296,7 @@ class TestMorningWakeupLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_morning_wakeup())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) == 1
         assert "morning wake-up" in temp_msgs[0]
@@ -309,7 +310,7 @@ class TestMorningWakeupLogging:
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.handle_morning_wakeup())
 
-        messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         temp_msgs = [m for m in messages if "Set temperature" in m]
         assert len(temp_msgs) == 1
         assert "morning wake-up" in temp_msgs[0]

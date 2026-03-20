@@ -97,6 +97,13 @@ class AutomationEngine:
         self._manual_override_mode: str | None = None
         self._manual_override_time: str | None = None
 
+        # Fan state tracking (Issue #37)
+        self._fan_active: bool = False
+        self._fan_on_since: str | None = None  # ISO timestamp
+        self._fan_override_active: bool = False
+        self._fan_override_time: str | None = None
+        self._fan_command_pending: bool = False  # transient: distinguishes integration vs manual changes
+
     async def _notify(self, message: str, title: str) -> None:
         """Send a notification via the configured service, plus email if enabled."""
         if self.dry_run:
@@ -124,7 +131,7 @@ class AutomationEngine:
         """Record an HVAC action with timestamp and reason, and schedule a revisit."""
         self._last_action_time = dt_util.now().isoformat()
         self._last_action_reason = f"{action} — {reason}"
-        _LOGGER.info("Action recorded: %s", self._last_action_reason)
+        _LOGGER.warning("Action recorded: %s", self._last_action_reason)
         self._schedule_revisit()
 
     def _schedule_revisit(self) -> None:
@@ -159,6 +166,47 @@ class AutomationEngine:
             self._manual_override_active = False
             self._manual_override_mode = None
             self._manual_override_time = None
+        self.clear_fan_override()
+
+    def _get_fan_runtime_minutes(self) -> float:
+        """Return how many minutes the fan has been running, or 0.0 if inactive."""
+        if not self._fan_active or not self._fan_on_since:
+            return 0.0
+        try:
+            from datetime import datetime as _dt_cls
+            from datetime import timezone as _tz
+            on_since = _dt_cls.fromisoformat(self._fan_on_since)
+            if on_since.tzinfo is None:
+                on_since = on_since.replace(tzinfo=_tz.utc)
+            now = dt_util.now()
+            if not isinstance(now, _dt_cls):
+                return 0.0
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=_tz.utc)
+            delta = (now - on_since).total_seconds() / 60.0
+            return max(0.0, delta)
+        except Exception:
+            return 0.0
+
+    def handle_fan_manual_override(self) -> None:
+        """Handle a manual fan state change — sets fan override flag + grace."""
+        self._fan_override_active = True
+        self._fan_override_time = dt_util.now().isoformat()
+        _LOGGER.warning(
+            "Fan manual override activated at %s",
+            self._fan_override_time,
+        )
+        self._start_grace_period("manual")
+
+    def clear_fan_override(self) -> None:
+        """Clear the fan override flag (called at transition points)."""
+        if self._fan_override_active:
+            _LOGGER.info(
+                "Clearing fan manual override (since %s)",
+                self._fan_override_time,
+            )
+            self._fan_override_active = False
+            self._fan_override_time = None
 
     def handle_manual_override(self) -> None:
         """Handle a manual thermostat change (outside of door/window pause).
@@ -170,7 +218,7 @@ class AutomationEngine:
         self._manual_override_active = True
         self._manual_override_mode = state.state if state else "unknown"
         self._manual_override_time = dt_util.now().isoformat()
-        _LOGGER.info(
+        _LOGGER.warning(
             "Manual override activated: mode=%s",
             self._manual_override_mode,
         )
@@ -193,7 +241,7 @@ class AutomationEngine:
             )
             return
 
-        _LOGGER.info(
+        _LOGGER.warning(
             "Applying classification: %s (trend: %s %s°F)",
             classification.day_type,
             classification.trend_direction,
@@ -230,7 +278,7 @@ class AutomationEngine:
             "set_hvac_mode",
             {"entity_id": self.climate_entity, "hvac_mode": mode},
         )
-        _LOGGER.info("Set HVAC mode to %s — %s", mode, reason)
+        _LOGGER.warning("Set HVAC mode to %s — %s", mode, reason)
         self._record_action(f"Set HVAC to {mode}", reason)
 
     async def _set_temperature(self, temperature: float, *, reason: str) -> None:
@@ -243,7 +291,7 @@ class AutomationEngine:
             "set_temperature",
             {"entity_id": self.climate_entity, "temperature": temperature},
         )
-        _LOGGER.info("Set temperature to %s°F — %s", temperature, reason)
+        _LOGGER.warning("Set temperature to %s°F — %s", temperature, reason)
         self._record_action(f"Set temp to {temperature}°F", reason)
 
     async def _set_temperature_for_mode(
@@ -490,6 +538,13 @@ class AutomationEngine:
     async def handle_bedtime(self) -> None:
         """Apply bedtime setback."""
         self.clear_manual_override()
+
+        # Deactivate fan at bedtime (fan running overnight is noisy/wasteful)
+        if self._fan_active and not self._fan_override_active:
+            await self._deactivate_fan(reason="bedtime — fan off for night")
+        if self._economizer_active:
+            await self._deactivate_economizer(outdoor_temp=0)
+
         c = self._current_classification
         if not c:
             return
@@ -512,6 +567,11 @@ class AutomationEngine:
     async def handle_morning_wakeup(self) -> None:
         """Restore comfort for morning wake-up."""
         self.clear_manual_override()
+
+        # Deactivate fan if still running from overnight
+        if self._fan_active:
+            await self._deactivate_fan(reason="morning wakeup — resetting fan state")
+
         c = self._current_classification
         if not c:
             return
@@ -533,26 +593,37 @@ class AutomationEngine:
         if fan_mode == FAN_MODE_DISABLED:
             return
 
+        if self._fan_override_active:
+            _LOGGER.info("Fan override active — skipping fan activation")
+            return
+
         if self.dry_run:
             _LOGGER.info("[DRY RUN] Would activate fan — %s", reason)
             return
 
-        if fan_mode in (FAN_MODE_WHOLE_HOUSE, FAN_MODE_BOTH):
-            fan_entity = self.config.get(CONF_FAN_ENTITY)
-            if fan_entity:
-                # Detect domain from entity_id
-                domain = fan_entity.split(".")[0]  # "fan" or "switch"
-                await self.hass.services.async_call(
-                    domain, "turn_on", {"entity_id": fan_entity}
-                )
-                _LOGGER.info("Activated %s fan (%s) — %s", domain, fan_entity, reason)
+        self._fan_command_pending = True
+        try:
+            if fan_mode in (FAN_MODE_WHOLE_HOUSE, FAN_MODE_BOTH):
+                fan_entity = self.config.get(CONF_FAN_ENTITY)
+                if fan_entity:
+                    domain = fan_entity.split(".")[0]  # "fan" or "switch"
+                    await self.hass.services.async_call(
+                        domain, "turn_on", {"entity_id": fan_entity}
+                    )
+                    _LOGGER.warning("Activated %s fan (%s) — %s", domain, fan_entity, reason)
 
-        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
-            await self.hass.services.async_call(
-                "climate", "set_fan_mode",
-                {"entity_id": self.climate_entity, "fan_mode": "on"},
-            )
-            _LOGGER.info("Activated HVAC fan — %s", reason)
+            if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+                await self.hass.services.async_call(
+                    "climate", "set_fan_mode",
+                    {"entity_id": self.climate_entity, "fan_mode": "on"},
+                )
+                _LOGGER.warning("Activated HVAC fan — %s", reason)
+
+            self._fan_active = True
+            self._fan_on_since = dt_util.now().isoformat()
+            self._record_action("Fan activated", reason)
+        finally:
+            self._fan_command_pending = False
 
     async def _deactivate_fan(self, *, reason: str) -> None:
         """Deactivate fan based on configured fan_mode."""
@@ -560,25 +631,37 @@ class AutomationEngine:
         if fan_mode == FAN_MODE_DISABLED:
             return
 
+        if self._fan_override_active:
+            _LOGGER.info("Fan override active — skipping fan deactivation")
+            return
+
         if self.dry_run:
             _LOGGER.info("[DRY RUN] Would deactivate fan — %s", reason)
             return
 
-        if fan_mode in (FAN_MODE_WHOLE_HOUSE, FAN_MODE_BOTH):
-            fan_entity = self.config.get(CONF_FAN_ENTITY)
-            if fan_entity:
-                domain = fan_entity.split(".")[0]
-                await self.hass.services.async_call(
-                    domain, "turn_off", {"entity_id": fan_entity}
-                )
-                _LOGGER.info("Deactivated %s fan (%s) — %s", domain, fan_entity, reason)
+        self._fan_command_pending = True
+        try:
+            if fan_mode in (FAN_MODE_WHOLE_HOUSE, FAN_MODE_BOTH):
+                fan_entity = self.config.get(CONF_FAN_ENTITY)
+                if fan_entity:
+                    domain = fan_entity.split(".")[0]
+                    await self.hass.services.async_call(
+                        domain, "turn_off", {"entity_id": fan_entity}
+                    )
+                    _LOGGER.warning("Deactivated %s fan (%s) — %s", domain, fan_entity, reason)
 
-        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
-            await self.hass.services.async_call(
-                "climate", "set_fan_mode",
-                {"entity_id": self.climate_entity, "fan_mode": "auto"},
-            )
-            _LOGGER.info("Deactivated HVAC fan — %s", reason)
+            if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+                await self.hass.services.async_call(
+                    "climate", "set_fan_mode",
+                    {"entity_id": self.climate_entity, "fan_mode": "auto"},
+                )
+                _LOGGER.warning("Deactivated HVAC fan — %s", reason)
+
+            self._fan_active = False
+            self._fan_on_since = None
+            self._record_action("Fan deactivated", reason)
+        finally:
+            self._fan_command_pending = False
 
     async def check_window_cooling_opportunity(
         self,
@@ -726,16 +809,22 @@ class AutomationEngine:
         self._manual_override_active = state.get("manual_override_active", False)
         self._manual_override_mode = state.get("manual_override_mode")
         self._manual_override_time = state.get("manual_override_time")
+        self._fan_active = state.get("fan_active", False)
+        self._fan_on_since = state.get("fan_on_since")
+        self._fan_override_active = state.get("fan_override_active", False)
+        self._fan_override_time = state.get("fan_override_time")
         # Grace timers cannot be restored — clear on restart
         self._grace_active = False
         self._last_resume_source = None
         _LOGGER.info(
             "Restored automation state: paused=%s, pre_pause_mode=%s, "
-            "last_action=%s, manual_override=%s",
+            "last_action=%s, manual_override=%s, fan_active=%s, fan_override=%s",
             self._paused_by_door,
             self._pre_pause_mode,
             self._last_action_reason,
             self._manual_override_active,
+            self._fan_active,
+            self._fan_override_active,
         )
 
     def get_serializable_state(self) -> dict[str, Any]:
@@ -753,6 +842,10 @@ class AutomationEngine:
             "manual_override_active": self._manual_override_active,
             "manual_override_mode": self._manual_override_mode,
             "manual_override_time": self._manual_override_time,
+            "fan_active": self._fan_active,
+            "fan_on_since": self._fan_on_since,
+            "fan_override_active": self._fan_override_active,
+            "fan_override_time": self._fan_override_time,
             "current_classification": (
                 {
                     "day_type": self._current_classification.day_type,
