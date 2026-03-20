@@ -1348,8 +1348,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return
 
         on_states = {"on"}
-        off_states = {"off"}
-        was_on = old_state.state in on_states
         is_on = new_state.state in on_states
 
         if is_on and not self.automation_engine._fan_active:
