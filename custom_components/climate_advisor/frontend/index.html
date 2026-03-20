@@ -696,6 +696,7 @@
       el.innerHTML = `
         <div class="debug-section">
           <table class="kv-table">
+            <tr><td>Automation Enabled</td><td>${data.automation_enabled ? 'Yes' : 'No'}</td></tr>
             <tr><td>Paused by Door/Window</td><td>${data.paused_by_door ? 'Yes' : 'No'}</td></tr>
             <tr><td>Pre-Pause Mode</td><td>${data.pre_pause_mode || 'N/A'}</td></tr>
             <tr><td>Grace Period Active</td><td>${data.grace_active ? 'Yes' : 'No'}</td></tr>
