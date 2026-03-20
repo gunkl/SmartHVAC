@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -46,6 +47,8 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_NOTIFY_SERVICE_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 
 FAN_MODE_OPTIONS = [
     selector.SelectOptionDict(value=FAN_MODE_DISABLED, label="Disabled (no fan control)"),
@@ -100,13 +103,24 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._data.update(user_input)
-            _LOGGER.debug(
-                "Config flow — weather=%s, climate=%s",
-                user_input.get("weather_entity"),
-                user_input.get("climate_entity"),
-            )
-            return await self.async_step_temperature_sources()
+            # Validate notify_service format
+            notify_svc = user_input.get("notify_service", "")
+            if not _NOTIFY_SERVICE_RE.match(notify_svc):
+                errors["notify_service"] = "invalid_notify_service"
+            # Cross-field: setback must be more conservative than comfort
+            if user_input.get("setback_heat", 0) >= user_input.get("comfort_heat", 999):
+                errors["setback_heat"] = "setback_must_be_lower"
+            if user_input.get("setback_cool", 999) <= user_input.get("comfort_cool", 0):
+                errors["setback_cool"] = "setback_must_be_higher"
+
+            if not errors:
+                self._data.update(user_input)
+                _LOGGER.debug(
+                    "Config flow — weather=%s, climate=%s",
+                    user_input.get("weather_entity"),
+                    user_input.get("climate_entity"),
+                )
+                return await self.async_step_temperature_sources()
 
         return self.async_show_form(
             step_id="user",
@@ -389,9 +403,21 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Step 1: Core entities and temperature setpoints."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._updates.update(user_input)
-            return await self.async_step_temperature_sources()
+            # Validate notify_service format
+            notify_svc = user_input.get("notify_service", "")
+            if not _NOTIFY_SERVICE_RE.match(notify_svc):
+                errors["notify_service"] = "invalid_notify_service"
+            # Cross-field: setback must be more conservative than comfort
+            if user_input.get("setback_heat", 0) >= user_input.get("comfort_heat", 999):
+                errors["setback_heat"] = "setback_must_be_lower"
+            if user_input.get("setback_cool", 999) <= user_input.get("comfort_cool", 0):
+                errors["setback_cool"] = "setback_must_be_higher"
+
+            if not errors:
+                self._updates.update(user_input)
+                return await self.async_step_temperature_sources()
 
         current = self.config_entry.data
 
@@ -457,6 +483,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     ): selector.BooleanSelector(),
                 }
             ),
+            errors=errors,
         )
 
     async def async_step_temperature_sources(

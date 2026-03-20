@@ -44,6 +44,7 @@ _HA_MODULES = [
     "homeassistant.components.http",
     "homeassistant.components.repairs",
     "homeassistant.helpers.issue_registry",
+    "homeassistant.helpers.config_validation",
     "aiohttp",
     "aiohttp.web",
 ]

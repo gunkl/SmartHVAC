@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -95,6 +97,12 @@ class LearningEngine:
         if self._db_path.exists():
             try:
                 data = json.loads(self._db_path.read_text())
+                if not isinstance(data, dict):
+                    _LOGGER.warning(
+                        "Learning state is not a JSON object, starting fresh"
+                    )
+                    self._state = LearningState()
+                    return
                 _LOGGER.debug(
                     "Loaded learning state — %d records",
                     len(data.get("records", [])),
@@ -109,6 +117,9 @@ class LearningEngine:
         """Persist learning state to disk (blocking I/O — run via executor)."""
         try:
             self._db_path.write_text(json.dumps(asdict(self._state), indent=2))
+            # Restrict permissions — learning data contains behavior patterns
+            if sys.platform != "win32":
+                os.chmod(self._db_path, 0o600)
             _LOGGER.debug("Saved learning state — %d records", len(self._state.records))
         except OSError as err:
             _LOGGER.error("Failed to save learning state: %s", err)
@@ -315,6 +326,9 @@ class LearningEngine:
     def dismiss_suggestion(self, suggestion_key: str) -> None:
         """Mark a suggestion as dismissed so it won't reappear soon."""
         self._state.dismissed_suggestions.append(suggestion_key)
+        # Cap to prevent unbounded growth
+        if len(self._state.dismissed_suggestions) > 100:
+            self._state.dismissed_suggestions = self._state.dismissed_suggestions[-100:]
         _LOGGER.info("Learning suggestion dismissed — key=%s", suggestion_key)
 
     def accept_suggestion(self, suggestion_key: str) -> dict[str, Any]:
@@ -356,6 +370,9 @@ class LearningEngine:
             "suggestion": suggestion_key,
             "changes": changes,
         })
+        # Cap to prevent unbounded growth
+        if len(self._state.settings_history) > 200:
+            self._state.settings_history = self._state.settings_history[-200:]
 
         return changes
 

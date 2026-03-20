@@ -14,6 +14,8 @@ Usage:
 import argparse
 import logging
 import os
+import re
+import shlex
 import subprocess
 import sys
 import time
@@ -35,6 +37,8 @@ def setup_logging() -> Path:
     """Configure file logging. Returns the log file path."""
     global _log_path
     LOG_DIR.mkdir(exist_ok=True)
+    if sys.platform != "win32":
+        os.chmod(LOG_DIR, 0o700)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     _log_path = LOG_DIR / f"deploy-{timestamp}.log"
 
@@ -110,13 +114,43 @@ def load_config() -> dict[str, str]:
     return config
 
 
+def validate_config(config: dict[str, str]) -> list[str]:
+    """Validate deployment configuration values. Returns list of error messages."""
+    errors = []
+    # Port must be numeric 1-65535
+    try:
+        port = int(config["HA_SSH_PORT"])
+        if not 1 <= port <= 65535:
+            errors.append(f"HA_SSH_PORT out of range: {port}")
+    except ValueError:
+        errors.append(f"HA_SSH_PORT must be numeric, got: {config['HA_SSH_PORT']}")
+    # Hostname: alphanumeric, dots, hyphens only
+    if not re.match(r'^[a-zA-Z0-9._-]+$', config["HA_HOST"]):
+        errors.append(f"HA_HOST contains invalid characters: {config['HA_HOST']}")
+    # Config path must be absolute
+    if not config["HA_CONFIG_PATH"].startswith("/"):
+        errors.append(f"HA_CONFIG_PATH must be absolute, got: {config['HA_CONFIG_PATH']}")
+    # SSH key must exist if specified
+    key = config.get("HA_SSH_KEY", "")
+    if key and not Path(key).expanduser().exists():
+        errors.append(f"HA_SSH_KEY file not found: {key}")
+    return errors
+
+
 def ssh_args(config: dict[str, str]) -> list[str]:
     """Build SSH command-line arguments."""
     args = ["ssh", "-p", config["HA_SSH_PORT"],
-            "-o", "StrictHostKeyChecking=no",
+            "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=10"]
     if config["HA_SSH_KEY"]:
         args.extend(["-i", config["HA_SSH_KEY"]])
+    if config["HA_SSH_KEY"] and sys.platform != "win32":
+        key_path = Path(config["HA_SSH_KEY"])
+        if key_path.exists() and key_path.stat().st_mode & 0o077:
+            _log.warning(
+                "SSH key %s has permissive permissions (%s) — recommend chmod 600",
+                key_path, oct(key_path.stat().st_mode & 0o777),
+            )
     return args
 
 
@@ -127,7 +161,7 @@ def ssh_target(config: dict[str, str]) -> str:
 def scp_args(config: dict[str, str]) -> list[str]:
     """Build SCP command-line arguments."""
     args = ["scp", "-P", config["HA_SSH_PORT"],
-            "-o", "StrictHostKeyChecking=no", "-r"]
+            "-o", "StrictHostKeyChecking=accept-new", "-r"]
     if config["HA_SSH_KEY"]:
         args.extend(["-i", config["HA_SSH_KEY"]])
     return args
@@ -199,24 +233,28 @@ def create_backup(config: dict[str, str]) -> None:
         return
 
     BACKUP_DIR.mkdir(exist_ok=True)
+    if sys.platform != "win32":
+        os.chmod(BACKUP_DIR, 0o700)
     local_tar = BACKUP_DIR / f"climate_advisor-{timestamp}.tar.gz"
     target = ssh_target(config)
     parent = f"{config['HA_CONFIG_PATH']}/custom_components"
 
     # Tar+gzip the remote directory and download it locally
-    rc, output = run_ssh(config, f"tar czf /tmp/ca_backup.tar.gz -C '{parent}' climate_advisor")
-    if rc != 0:
-        fail(f"Remote tar failed: {output}")
-        return
+    try:
+        rc, output = run_ssh(config, f"tar czf /tmp/ca_backup.tar.gz -C '{parent}' climate_advisor")
+        if rc != 0:
+            fail(f"Remote tar failed: {output}")
+            return
 
-    cmd = scp_args(config) + [f"{target}:/tmp/ca_backup.tar.gz", str(local_tar)]
-    rc, output = run_local(cmd)
-    if rc != 0:
-        fail(f"Backup download failed: {output}")
-        return
+        cmd = scp_args(config) + [f"{target}:/tmp/ca_backup.tar.gz", str(local_tar)]
+        rc, output = run_local(cmd)
+        if rc != 0:
+            fail(f"Backup download failed: {output}")
+            return
 
-    run_ssh(config, "rm -f /tmp/ca_backup.tar.gz")
-    ok(f"Backup saved: {local_tar}")
+        ok(f"Backup saved: {local_tar}")
+    finally:
+        run_ssh(config, "rm -f /tmp/ca_backup.tar.gz")
 
 
 def prune_backups(config: dict[str, str]) -> None:
@@ -240,14 +278,15 @@ def clean_legacy_backups(config: dict[str, str]) -> None:
     loader to discover them as duplicate integrations, breaking import.
     """
     rpath = remote_path(config)
-    rc, output = run_ssh(config, f"ls -1d {rpath}.bak.* 2>/dev/null")
+    rc, output = run_ssh(config, f"ls -1d {shlex.quote(rpath)}.bak.* 2>/dev/null")
     if rc != 0 or not output.strip():
         return
 
     dirs = [d.strip() for d in output.splitlines() if d.strip()]
     if dirs:
         step(f"Removing {len(dirs)} legacy backup dir(s) from custom_components/")
-        run_ssh(config, f"rm -rf {rpath}.bak.*")
+        for d in dirs:
+            run_ssh(config, f"rm -rf {shlex.quote(d)}")
         ok(f"Removed {len(dirs)} legacy backup dir(s)")
 
 
@@ -381,6 +420,11 @@ def do_rollback(config: dict[str, str]) -> None:
         fail(f"Upload failed: {output}")
         sys.exit(1)
 
+    resp = input(f"   This will DELETE the current installation and restore from {latest.name}. Continue? [y/N] ")
+    if resp.strip().lower() != "y":
+        info("Rollback cancelled.")
+        return
+
     run_ssh(config, f"rm -rf '{rpath}' && tar xzf /tmp/ca_restore.tar.gz -C '{parent}'")
     run_ssh(config, "rm -f /tmp/ca_restore.tar.gz")
     ok("Backup restored")
@@ -416,6 +460,11 @@ def main() -> None:
     setup_logging()
 
     config = load_config()
+    config_errors = validate_config(config)
+    if config_errors:
+        for e in config_errors:
+            fail(e)
+        sys.exit(1)
     rpath = remote_path(config)
 
     _log.info("Config: host=%s port=%s user=%s target=%s",

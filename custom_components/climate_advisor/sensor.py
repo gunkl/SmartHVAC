@@ -216,7 +216,6 @@ class ClimateAdvisorComplianceSensor(ClimateAdvisorBaseSensor):
         suggestions = data.get(ATTR_LEARNING_SUGGESTIONS, [])
         return {
             "pending_suggestions": len(suggestions),
-            "suggestions": suggestions,
         }
 
 

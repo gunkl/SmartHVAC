@@ -13,10 +13,13 @@ import json
 import logging
 from pathlib import Path
 
+import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+import homeassistant.helpers.config_validation as cv
 
 from .api import API_VIEWS
 from .const import (
@@ -246,6 +249,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Set up sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    RESPOND_SUGGESTION_SCHEMA = vol.Schema({
+        vol.Required("action"): vol.In(["accept", "dismiss"]),
+        vol.Required("suggestion_key"): cv.string,
+    })
+
     # Register service for accepting/dismissing learning suggestions
     async def handle_suggestion_response(call):
         """Handle user response to a learning suggestion."""
@@ -267,6 +275,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         "respond_to_suggestion",
         handle_suggestion_response,
+        schema=RESPOND_SUGGESTION_SCHEMA,
     )
 
     # Register debug services
@@ -308,9 +317,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             json.dumps(diag, indent=2, default=str),
         )
 
-    hass.services.async_register(DOMAIN, "force_reclassify", handle_force_reclassify)
-    hass.services.async_register(DOMAIN, "resend_briefing", handle_resend_briefing)
-    hass.services.async_register(DOMAIN, "dump_diagnostics", handle_dump_diagnostics)
+    hass.services.async_register(DOMAIN, "force_reclassify", handle_force_reclassify, schema=vol.Schema({}))
+    hass.services.async_register(DOMAIN, "resend_briefing", handle_resend_briefing, schema=vol.Schema({}))
+    hass.services.async_register(DOMAIN, "dump_diagnostics", handle_dump_diagnostics, schema=vol.Schema({}))
+
 
     # Register REST API views for the dashboard panel
     for view_cls in API_VIEWS:

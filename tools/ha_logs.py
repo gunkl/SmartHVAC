@@ -17,6 +17,7 @@ Usage:
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime
@@ -56,7 +57,7 @@ def ssh_args(config: dict[str, str]) -> list[str]:
     """Build SSH command-line arguments."""
     args = [
         "ssh", "-p", config["HA_SSH_PORT"],
-        "-o", "StrictHostKeyChecking=no",
+        "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=10",
     ]
     if config["HA_SSH_KEY"]:
@@ -87,14 +88,14 @@ def fetch_logs(
     if full_dump:
         remote_cmd = "ha core logs"
     elif component_filter:
-        remote_cmd = f"ha core logs 2>/dev/null | grep -i '{component_filter}'"
+        remote_cmd = f"ha core logs 2>/dev/null | grep -i {shlex.quote(component_filter)}"
         if extra_filter:
-            remote_cmd += f" | grep -i '{extra_filter}'"
+            remote_cmd += f" | grep -i {shlex.quote(extra_filter)}"
         remote_cmd += f" | tail -n {lines}"
     else:
         remote_cmd = "ha core logs 2>/dev/null"
         if extra_filter:
-            remote_cmd += f" | grep -i '{extra_filter}'"
+            remote_cmd += f" | grep -i {shlex.quote(extra_filter)}"
         remote_cmd += f" | tail -n {lines}"
 
     cmd = ssh_args(config) + [ssh_target(config), remote_cmd]

@@ -117,6 +117,11 @@
           "briefing_time": "When to deliver the daily climate briefing notification with the day's forecast and HVAC plan."
         }
       }
+    },
+    "error": {
+      "invalid_notify_service": "Must be in domain.service format (e.g. notify.mobile_app_phone)",
+      "setback_must_be_lower": "Setback heating temp must be lower than comfort heating temp",
+      "setback_must_be_higher": "Setback cooling temp must be higher than comfort cooling temp"
     }
   },
   "options": {
@@ -233,6 +238,11 @@
           "aggressive_savings": "When enabled, Climate Advisor favors energy savings over comfort \u2014 for example, using wider temperature swings and earlier setbacks."
         }
       }
+    },
+    "error": {
+      "invalid_notify_service": "Must be in domain.service format (e.g. notify.mobile_app_phone)",
+      "setback_must_be_lower": "Setback heating temp must be lower than comfort heating temp",
+      "setback_must_be_higher": "Setback cooling temp must be higher than comfort cooling temp"
     }
   },
   "issues": {

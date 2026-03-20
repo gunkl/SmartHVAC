@@ -41,6 +41,8 @@ SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 
 SECRET_PATTERNS = [
     re.compile(r"""['"]([^'"]*(?:password|token|api_key|secret|credential)[^'"]*)['"]""", re.IGNORECASE),
+    re.compile(r"""['"]([^'"]*(?:private_key|ssh_key|bearer|authorization)[^'"]*)['"]""", re.IGNORECASE),
+    re.compile(r"""https?://[^'"\s]+:[^'"\s@]+@[^'"\s]+""", re.IGNORECASE),
 ]
 
 verbose = "--verbose" in sys.argv

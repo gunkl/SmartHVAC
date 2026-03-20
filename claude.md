@@ -66,6 +66,40 @@ The briefing is the main way users interact with Climate Advisor. When making ch
 - Out-of-scope writes can cause data loss, config corruption, or security issues
 - This rule makes the integration safe to install, update, and uninstall cleanly
 
+### Security Requirements (CRITICAL)
+
+**Decision**: All code written for Climate Advisor MUST follow these security rules. They apply to the integration, deployment tools, and tests.
+
+#### Input Validation
+- **All HA service registrations** MUST include a `vol.Schema` — no unvalidated service parameters
+- **All config flow text fields** MUST validate format before accepting (regex or `cv.*` validator)
+- **Cross-field validation** is required when fields have logical relationships (e.g., setback < comfort)
+- **Use HA's built-in validators** (`vol.*`, `cv.*` from `homeassistant.helpers.config_validation`) — do NOT write custom validation when an HA utility exists
+- **Entity selectors** handle entity ID validation at the UI layer — but always validate existence at runtime if the entity is critical
+
+#### Shell Command Safety
+- **NEVER** interpolate variables directly into shell command strings — always use `shlex.quote()` for user-supplied or config-derived values
+- **NEVER** use `StrictHostKeyChecking=no` in SSH commands — use `accept-new` at minimum
+- **All deployment config values** must be validated before use (hostname format, port range, path safety)
+
+#### Data Exposure
+- **Sensor entity attributes** MUST NOT expose raw user behavior data (suggestions, overrides, patterns) — expose counts/summaries only
+- **API responses** MUST redact values that could reveal personal information (notify service names, entity IDs that contain names)
+- **Log statements** MUST NOT include credentials, tokens, full SSH commands with key paths, or infrastructure topology details
+
+#### File & Data Safety
+- **JSON files read from disk** MUST be type-validated (`isinstance(data, dict)`) before accessing fields — never assume structure
+- **Persisted data files** (learning DB, state) should have restrictive permissions (`0o600`) on non-Windows platforms
+- **Lists that grow over time** (history, dismissed items) MUST have a cap to prevent unbounded memory/disk growth
+- **Atomic writes** (write to .tmp, then `os.replace`) are required for state files to prevent corruption on crash
+
+#### Secrets & Credentials
+- **NEVER** hardcode passwords, API keys, tokens, or secrets in source code
+- **`tools/validate.py`** runs a secrets scan before deployment — keep its patterns up to date when new secret types are introduced
+- **`.gitignore`** must exclude all secret/credential files — verify before adding new config files
+
+**Violation protocol**: Same as HA Boundary Rule — stop, flag, and ask before proceeding if a proposed change would violate any of these rules.
+
 ### Project Memory
 
 Claude Code's built-in memory system stores project context, tooling locations, and hard-won facts so they don't have to be re-discovered every session. Claude reads memory automatically at session start.
