@@ -29,6 +29,8 @@ from .const import (
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
     ATTR_FAN_STATUS,
+    ATTR_CURRENT_SETPOINT,
+    ATTR_INDOOR_TEMP,
     CONFIG_METADATA,
     DOMAIN,
     VERSION,
@@ -62,12 +64,21 @@ class ClimateAdvisorStatusView(HomeAssistantView):
         climate_state = hass.states.get(coordinator.config.get("climate_entity", ""))
         hvac_mode = climate_state.state if climate_state else "unknown"
 
+        # Set point: only include when HVAC is actively running
+        setpoint = None
+        if climate_state and hvac_mode != "off":
+            setpoint = climate_state.attributes.get("temperature")
+
+        indoor_temp = coordinator._get_indoor_temp()
+
         return self.json({
             "version": VERSION,
             "day_type": data.get(ATTR_DAY_TYPE, "unknown"),
             "trend_direction": data.get(ATTR_TREND, "unknown"),
             "trend_magnitude": data.get(ATTR_TREND_MAGNITUDE, 0),
             "hvac_mode": hvac_mode,
+            ATTR_CURRENT_SETPOINT: setpoint,
+            ATTR_INDOOR_TEMP: indoor_temp,
             "automation_status": data.get(ATTR_AUTOMATION_STATUS, "unknown"),
             "compliance_score": data.get(ATTR_COMPLIANCE_SCORE, 1.0),
             "next_action": data.get(ATTR_NEXT_ACTION, ""),
@@ -178,6 +189,8 @@ class ClimateAdvisorLearningView(HomeAssistantView):
 
         return self.json({
             "today_record": today_record,
+            "yesterday_record": coordinator.yesterday_record,
+            "tomorrow_plan": coordinator.tomorrow_plan,
             "suggestions": coordinator.learning.generate_suggestions(),
             "compliance": coordinator.learning.get_compliance_summary(),
         })

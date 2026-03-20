@@ -1500,6 +1500,53 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         """Return today's learning record."""
         return self._today_record
 
+    @property
+    def yesterday_record(self) -> dict | None:
+        """Return yesterday's learning record, if available."""
+        yesterday_str = (dt_util.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        return self.learning.get_record_by_date(yesterday_str)
+
+    @property
+    def tomorrow_plan(self) -> dict | None:
+        """Return a projected plan for tomorrow based on current classification."""
+        c = self._current_classification
+        if not c:
+            return None
+
+        tomorrow_str = (dt_util.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # Classify tomorrow by swapping tomorrow's temps into "today" position.
+        # Trend will show as "stable" since we lack the day-after-tomorrow forecast.
+        tomorrow_forecast = ForecastSnapshot(
+            today_high=c.tomorrow_high,
+            today_low=c.tomorrow_low,
+            tomorrow_high=c.tomorrow_high,
+            tomorrow_low=c.tomorrow_low,
+            current_outdoor_temp=c.today_low,
+        )
+        tomorrow_class = classify_day(tomorrow_forecast)
+
+        return {
+            "date": tomorrow_str,
+            "day_type": tomorrow_class.day_type,
+            "trend_direction": tomorrow_class.trend_direction,
+            "hvac_mode": tomorrow_class.hvac_mode,
+            "windows_recommended": tomorrow_class.windows_recommended,
+            "window_open_time": (
+                tomorrow_class.window_open_time.isoformat()
+                if tomorrow_class.window_open_time
+                else None
+            ),
+            "window_close_time": (
+                tomorrow_class.window_close_time.isoformat()
+                if tomorrow_class.window_close_time
+                else None
+            ),
+            "pre_condition": tomorrow_class.pre_condition,
+            "expected_high": c.tomorrow_high,
+            "expected_low": c.tomorrow_low,
+        }
+
     def get_chart_data(self) -> dict[str, Any]:
         """Build chart data for the dashboard panel.
 

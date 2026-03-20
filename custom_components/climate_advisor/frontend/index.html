@@ -267,6 +267,9 @@
     word-break: break-word;
     white-space: normal;
   }
+  @media (max-width: 768px) {
+    #daily-record { grid-template-columns: 1fr !important; }
+  }
 </style>
 </head>
 <body>
@@ -348,9 +351,20 @@
   </div>
 
   <div class="card">
-    <h2>Today's Record</h2>
-    <div id="today-record">
-      <div class="loading">Loading...</div>
+    <h2>Daily Record</h2>
+    <div id="daily-record" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px;">
+      <div>
+        <h3 style="margin-bottom:8px;font-size:0.95rem">Yesterday</h3>
+        <div id="yesterday-record"><div class="loading">Loading...</div></div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px;font-size:0.95rem">Today</h3>
+        <div id="today-record"><div class="loading">Loading...</div></div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px;font-size:0.95rem">Tomorrow's Plan</h3>
+        <div id="tomorrow-plan"><div class="loading">Loading...</div></div>
+      </div>
     </div>
   </div>
 </div>
@@ -491,11 +505,11 @@
         </div>
         <div class="status-item">
           <div class="label">HVAC Mode</div>
-          <div class="value">${data.hvac_mode || 'unknown'}</div>
+          <div class="value">${data.hvac_mode || 'unknown'}${data.current_setpoint != null ? ' @ ' + data.current_setpoint + '\u00b0F' : ''}</div>
         </div>
         <div class="status-item">
           <div class="label">Status</div>
-          <div class="value">${data.automation_status || 'unknown'}</div>
+          <div class="value">${data.automation_status || 'unknown'}${data.indoor_temp != null ? ' | ' + data.indoor_temp.toFixed(1) + '\u00b0F' : ''}</div>
         </div>
         <div class="status-item">
           <div class="label">Occupancy</div>
@@ -788,11 +802,44 @@
     }
   }
 
+  function renderRecord(rec) {
+    if (!rec) return '<p style="color:var(--text-secondary);font-size:0.85rem">No data available.</p>';
+    return `
+      <table class="kv-table">
+        <tr><td>Date</td><td>${rec.date}</td></tr>
+        <tr><td>Day Type</td><td>${rec.day_type}</td></tr>
+        <tr><td>Trend</td><td>${rec.trend_direction}</td></tr>
+        <tr><td>Windows Rec.</td><td>${rec.windows_recommended ? 'Yes' : 'No'}</td></tr>
+        <tr><td>Windows Opened</td><td>${rec.windows_opened ? 'Yes' : 'No'}</td></tr>
+        <tr><td>HVAC Runtime</td><td>${(rec.hvac_runtime_minutes || 0).toFixed(0)} min</td></tr>
+        <tr><td>Manual Overrides</td><td>${rec.manual_overrides || 0}</td></tr>
+        <tr><td>Door/Window Pauses</td><td>${rec.door_window_pause_events || 0}</td></tr>
+        <tr><td>Comfort Violations</td><td>${(rec.comfort_violations_minutes || 0).toFixed(0)} min</td></tr>
+      </table>
+    `;
+  }
+
+  function renderTomorrowPlan(plan) {
+    if (!plan) return '<p style="color:var(--text-secondary);font-size:0.85rem">No forecast data yet.</p>';
+    return `
+      <table class="kv-table">
+        <tr><td>Date</td><td>${plan.date}</td></tr>
+        <tr><td>Expected Day Type</td><td>${plan.day_type}</td></tr>
+        <tr><td>Expected HVAC</td><td>${plan.hvac_mode}</td></tr>
+        <tr><td>Expected High</td><td>${plan.expected_high}\u00b0F</td></tr>
+        <tr><td>Expected Low</td><td>${plan.expected_low}\u00b0F</td></tr>
+        <tr><td>Windows Rec.</td><td>${plan.windows_recommended ? 'Yes' : 'No'}</td></tr>
+        <tr><td>Window Open</td><td>${plan.window_open_time || '\u2014'}</td></tr>
+        <tr><td>Window Close</td><td>${plan.window_close_time || '\u2014'}</td></tr>
+        <tr><td>Pre-Condition</td><td>${plan.pre_condition ? 'Yes' : 'No'}</td></tr>
+      </table>
+    `;
+  }
+
   async function loadLearning() {
     try {
       const data = await apiFetch('learning');
       const sugEl = document.getElementById('suggestions-container');
-      const recEl = document.getElementById('today-record');
 
       // Suggestions
       const suggestions = data.suggestions || [];
@@ -816,30 +863,25 @@
         }).join('');
       }
 
-      // Today's record
-      const rec = data.today_record;
-      if (!rec) {
-        recEl.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem">No record yet today (created at briefing time).</p>';
+      // Daily record — three columns
+      const todayEl = document.getElementById('today-record');
+      const yesterdayEl = document.getElementById('yesterday-record');
+      const tomorrowEl = document.getElementById('tomorrow-plan');
+
+      yesterdayEl.innerHTML = renderRecord(data.yesterday_record);
+
+      if (!data.today_record) {
+        todayEl.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem">No record yet today (created at briefing time).</p>';
       } else {
-        recEl.innerHTML = `
-          <table class="kv-table">
-            <tr><td>Date</td><td>${rec.date}</td></tr>
-            <tr><td>Day Type</td><td>${rec.day_type}</td></tr>
-            <tr><td>Trend</td><td>${rec.trend_direction}</td></tr>
-            <tr><td>Windows Recommended</td><td>${rec.windows_recommended ? 'Yes' : 'No'}</td></tr>
-            <tr><td>Windows Opened</td><td>${rec.windows_opened ? 'Yes' : 'No'}</td></tr>
-            <tr><td>HVAC Runtime</td><td>${rec.hvac_runtime_minutes.toFixed(0)} min</td></tr>
-            <tr><td>Manual Overrides</td><td>${rec.manual_overrides}</td></tr>
-            <tr><td>Door/Window Pauses</td><td>${rec.door_window_pause_events}</td></tr>
-            <tr><td>Comfort Violations</td><td>${rec.comfort_violations_minutes.toFixed(0)} min</td></tr>
-          </table>
-        `;
+        todayEl.innerHTML = renderRecord(data.today_record);
       }
 
-      // Compliance summary
+      tomorrowEl.innerHTML = renderTomorrowPlan(data.tomorrow_plan);
+
+      // Compliance summary (below today's column)
       const comp = data.compliance || {};
       if (comp.status === 'active') {
-        recEl.innerHTML += `
+        todayEl.innerHTML += `
           <div class="debug-section" style="margin-top:12px">
             <h3>Compliance Summary</h3>
             <table class="kv-table">
@@ -856,6 +898,8 @@
       document.getElementById('suggestions-container').innerHTML =
         '<p style="color:var(--danger)">Failed to load: ' + e.message + '</p>';
       document.getElementById('today-record').innerHTML = '';
+      document.getElementById('yesterday-record').innerHTML = '';
+      document.getElementById('tomorrow-plan').innerHTML = '';
     }
   }
 

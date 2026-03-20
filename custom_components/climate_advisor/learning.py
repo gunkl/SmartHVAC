@@ -138,6 +138,13 @@ class LearningEngine:
             len(self._state.records),
         )
 
+    def get_record_by_date(self, date_str: str) -> dict | None:
+        """Return a record dict for the given date, or None."""
+        for rec in reversed(self._state.records):
+            if rec.get("date") == date_str:
+                return rec
+        return None
+
     def generate_suggestions(self) -> list[str]:
         """Analyze recent patterns and generate improvement suggestions.
 
