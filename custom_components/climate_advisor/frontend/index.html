@@ -784,10 +784,26 @@
               <tr><td>HVAC Mode</td><td>${data.classification.hvac_mode || 'N/A'}</td></tr>
               <tr><td>Trend</td><td>${data.classification.trend_direction || 'N/A'} (${(data.classification.trend_magnitude || 0).toFixed(1)}\u00b0F)</td></tr>
               <tr><td>Windows Recommended</td><td>${data.classification.windows_recommended ? 'Yes' : 'No'}<span class="kv-desc">Open windows instead of HVAC</span></td></tr>
-              <tr><td>Window Open Time</td><td>${data.classification.window_open_time || 'N/A'}</td></tr>
-              <tr><td>Window Close Time</td><td>${data.classification.window_close_time || 'N/A'}</td></tr>
-              <tr><td>Morning Window Opportunity</td><td>${data.classification.window_opportunity_morning ? 'Yes (' + (data.classification.window_opportunity_morning_start || '') + ' – ' + (data.classification.window_opportunity_morning_end || '') + ')' : 'No'}<span class="kv-desc">Today low ≤ 80°F</span></td></tr>
-              <tr><td>Evening Window Opportunity</td><td>${data.classification.window_opportunity_evening ? 'Yes (' + (data.classification.window_opportunity_evening_start || '') + '+)' : 'No'}<span class="kv-desc">Tomorrow low ≤ 80°F</span></td></tr>
+              ${(() => {
+                const dt = (data.classification.day_type || '').toLowerCase();
+                const c = data.classification;
+                if (dt === 'hot') {
+                  const morn = c.window_opportunity_morning
+                    ? 'Yes (' + (c.window_opportunity_morning_start || '') + ' \u2013 ' + (c.window_opportunity_morning_end || '') + ')'
+                    : 'No';
+                  const eve = c.window_opportunity_evening
+                    ? 'Yes (' + (c.window_opportunity_evening_start || '') + '+)'
+                    : 'No';
+                  return '<tr><td>Morning Window Opportunity</td><td>' + morn + '<span class="kv-desc">Today low \u2264 80\u00b0F</span></td></tr>'
+                       + '<tr><td>Evening Window Opportunity</td><td>' + eve + '<span class="kv-desc">Tomorrow low \u2264 80\u00b0F</span></td></tr>';
+                } else if (dt === 'warm' || dt === 'mild') {
+                  return '<tr><td>Window Open Time</td><td>' + (c.window_open_time || 'N/A') + '<span class="kv-desc">Recommended open time</span></td></tr>'
+                       + '<tr><td>Window Close Time</td><td>' + (c.window_close_time || 'N/A') + '<span class="kv-desc">Recommended close time</span></td></tr>';
+                } else if (dt === 'cool' || dt === 'cold') {
+                  return '<tr><td>Window Schedule</td><td>No window ventilation today<span class="kv-desc">Too cool for natural ventilation</span></td></tr>';
+                }
+                return '';
+              })()}
               <tr><td>Pre-Condition</td><td>${data.classification.pre_condition ? 'Yes (' + data.classification.pre_condition_target + '\u00b0F)' : 'No'}<span class="kv-desc">Pre-heat/cool before peak</span></td></tr>
               <tr><td>Setback Modifier</td><td>${data.classification.setback_modifier || 0}\u00b0F<span class="kv-desc">Trend-based setpoint adjust</span></td></tr>
               <tr><td>Today Low</td><td>${data.classification.today_low != null ? data.classification.today_low.toFixed(1) + '°F' : 'N/A'}</td></tr>
