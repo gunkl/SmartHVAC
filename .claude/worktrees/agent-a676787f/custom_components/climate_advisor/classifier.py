@@ -6,17 +6,17 @@ from dataclasses import dataclass
 from datetime import datetime, time
 
 from .const import (
-    DAY_TYPE_HOT,
-    DAY_TYPE_WARM,
-    DAY_TYPE_MILD,
-    DAY_TYPE_COOL,
     DAY_TYPE_COLD,
-    THRESHOLD_HOT,
-    THRESHOLD_WARM,
-    THRESHOLD_MILD,
+    DAY_TYPE_COOL,
+    DAY_TYPE_HOT,
+    DAY_TYPE_MILD,
+    DAY_TYPE_WARM,
     THRESHOLD_COOL,
-    TREND_THRESHOLD_SIGNIFICANT,
+    THRESHOLD_HOT,
+    THRESHOLD_MILD,
+    THRESHOLD_WARM,
     TREND_THRESHOLD_MODERATE,
+    TREND_THRESHOLD_SIGNIFICANT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,9 +79,7 @@ class DayClassification:
             self.windows_recommended = True
             self.window_open_time = time(10, 0)
             self.window_close_time = time(17, 0)
-        elif self.day_type == DAY_TYPE_COOL:
-            self.hvac_mode = "heat"
-        elif self.day_type == DAY_TYPE_COLD:
+        elif self.day_type == DAY_TYPE_COOL or self.day_type == DAY_TYPE_COLD:
             self.hvac_mode = "heat"
 
         # Trend modifiers

@@ -26,7 +26,6 @@ from custom_components.climate_advisor.const import (
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
 )
 
-
 # ---------------------------------------------------------------------------
 # Replicate coordinator logic for unit testing
 # ---------------------------------------------------------------------------

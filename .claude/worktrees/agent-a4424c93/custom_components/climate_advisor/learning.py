@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .const import (
+    COMPLIANCE_THRESHOLD_LOW,
     LEARNING_DB_FILE,
     MIN_DATA_POINTS_FOR_SUGGESTION,
-    COMPLIANCE_THRESHOLD_LOW,
 )
 
 _LOGGER = logging.getLogger(__name__)

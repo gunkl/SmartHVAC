@@ -3,10 +3,11 @@
 Manages the creation and dynamic adjustment of Home Assistant automations
 based on the day classification and learning state.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -27,10 +28,10 @@ from .const import (
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
-    ECONOMIZER_MORNING_END_HOUR,
-    ECONOMIZER_MORNING_START_HOUR,
     ECONOMIZER_EVENING_END_HOUR,
     ECONOMIZER_EVENING_START_HOUR,
+    ECONOMIZER_MORNING_END_HOUR,
+    ECONOMIZER_MORNING_START_HOUR,
     ECONOMIZER_TEMP_DELTA,
     FAN_MODE_BOTH,
     FAN_MODE_DISABLED,
@@ -116,18 +117,10 @@ class AutomationEngine:
         if self.dry_run:
             _LOGGER.info("[DRY RUN] Would send notification: %s — %s", title, message)
             return
-        service_name = (
-            self.notify_service.split(".")[-1]
-            if "." in self.notify_service
-            else self.notify_service
-        )
-        await self.hass.services.async_call(
-            "notify", service_name, {"message": message, "title": title}
-        )
+        service_name = self.notify_service.split(".")[-1] if "." in self.notify_service else self.notify_service
+        await self.hass.services.async_call("notify", service_name, {"message": message, "title": title})
         if self.config.get(CONF_EMAIL_NOTIFY, True):
-            await self.hass.services.async_call(
-                "notify", "send_email", {"message": message, "title": title}
-            )
+            await self.hass.services.async_call("notify", "send_email", {"message": message, "title": title})
 
     @property
     def is_paused_by_door(self) -> bool:
@@ -158,9 +151,7 @@ class AutomationEngine:
             _LOGGER.info("Revisit check triggered (5-min follow-up after action)")
             self.hass.async_create_task(revisit_cb())
 
-        self._revisit_cancel = async_call_later(
-            self.hass, REVISIT_DELAY_SECONDS, _revisit_fired
-        )
+        self._revisit_cancel = async_call_later(self.hass, REVISIT_DELAY_SECONDS, _revisit_fired)
 
     def clear_manual_override(self) -> None:
         """Clear the manual override flag (called at transition points)."""
@@ -182,15 +173,15 @@ class AutomationEngine:
             return 0.0
         try:
             from datetime import datetime as _dt_cls
-            from datetime import timezone as _tz
+
             on_since = _dt_cls.fromisoformat(self._fan_on_since)
             if on_since.tzinfo is None:
-                on_since = on_since.replace(tzinfo=_tz.utc)
+                on_since = on_since.replace(tzinfo=UTC)
             now = dt_util.now()
             if not isinstance(now, _dt_cls):
                 return 0.0
             if now.tzinfo is None:
-                now = now.replace(tzinfo=_tz.utc)
+                now = now.replace(tzinfo=UTC)
             delta = (now - on_since).total_seconds() / 60.0
             return max(0.0, delta)
         except Exception:
@@ -242,8 +233,7 @@ class AutomationEngine:
 
         if self._manual_override_active:
             _LOGGER.info(
-                "Manual override active (mode=%s since %s) — skipping "
-                "HVAC mode change",
+                "Manual override active (mode=%s since %s) — skipping HVAC mode change",
                 self._manual_override_mode,
                 self._manual_override_time,
             )
@@ -258,9 +248,8 @@ class AutomationEngine:
 
         # Set the base HVAC mode
         cls_reason = (
-            "daily classification — %s day, trend %s %s°F"
-            % (classification.day_type, classification.trend_direction,
-               classification.trend_magnitude)
+            f"daily classification — {classification.day_type} day,"
+            f" trend {classification.trend_direction} {classification.trend_magnitude}°F"
         )
         if classification.hvac_mode in ("heat", "cool"):
             await self._set_hvac_mode(classification.hvac_mode, reason=cls_reason)
@@ -268,8 +257,7 @@ class AutomationEngine:
         elif classification.hvac_mode == "off":
             await self._set_hvac_mode(
                 "off",
-                reason="daily classification — %s day, HVAC not needed"
-                % classification.day_type,
+                reason=f"daily classification — {classification.day_type} day, HVAC not needed",
             )
 
         # Handle pre-conditioning
@@ -307,9 +295,7 @@ class AutomationEngine:
         _LOGGER.warning("Set temperature to %s°F — %s", temperature, reason)
         self._record_action(f"Set temp to {temperature}°F", reason)
 
-    async def _set_temperature_for_mode(
-        self, c: DayClassification, *, reason: str
-    ) -> None:
+    async def _set_temperature_for_mode(self, c: DayClassification, *, reason: str) -> None:
         """Set temperature based on the classification and current period."""
         if c.hvac_mode == "heat":
             target = self.config["comfort_heat"]
@@ -318,7 +304,7 @@ class AutomationEngine:
             if c.pre_condition and c.pre_condition_target and c.pre_condition_target < 0:
                 # Pre-cool: target is below comfort
                 target = target + c.pre_condition_target
-                reason = "%s (pre-cool offset %s°F)" % (reason, c.pre_condition_target)
+                reason = f"{reason} (pre-cool offset {c.pre_condition_target}°F)"
         else:
             return
 
@@ -370,14 +356,11 @@ class AutomationEngine:
             self._paused_by_door = True
             await self._set_hvac_mode(
                 "off",
-                reason="door/window open — %s, was %s mode"
-                % (entity_id, self._pre_pause_mode),
+                reason=f"door/window open — {entity_id}, was {self._pre_pause_mode} mode",
             )
 
             # Notify
-            debounce_minutes = self.config.get(
-                CONF_SENSOR_DEBOUNCE, DEFAULT_SENSOR_DEBOUNCE_SECONDS
-            ) // 60
+            debounce_minutes = self.config.get(CONF_SENSOR_DEBOUNCE, DEFAULT_SENSOR_DEBOUNCE_SECONDS) // 60
             friendly_name = entity_id.split(".")[-1].replace("_", " ").title()
             await self._notify(
                 f"🚪 HVAC paused — {friendly_name} has been open for "
@@ -395,8 +378,7 @@ class AutomationEngine:
         if self._pre_pause_mode:
             await self._set_hvac_mode(
                 self._pre_pause_mode,
-                reason="door/window closed — restoring %s mode"
-                % self._pre_pause_mode,
+                reason=f"door/window closed — restoring {self._pre_pause_mode} mode",
             )
             if self._current_classification:
                 await self._set_temperature_for_mode(
@@ -467,14 +449,10 @@ class AutomationEngine:
         self._cancel_grace_timers()
 
         if source == "manual":
-            duration = self.config.get(
-                CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS
-            )
+            duration = self.config.get(CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS)
             should_notify = self.config.get(CONF_MANUAL_GRACE_NOTIFY, False)
         else:
-            duration = self.config.get(
-                CONF_AUTOMATION_GRACE_PERIOD, DEFAULT_AUTOMATION_GRACE_SECONDS
-            )
+            duration = self.config.get(CONF_AUTOMATION_GRACE_PERIOD, DEFAULT_AUTOMATION_GRACE_SECONDS)
             should_notify = self.config.get(CONF_AUTOMATION_GRACE_NOTIFY, True)
 
         if duration <= 0:
@@ -547,8 +525,7 @@ class AutomationEngine:
                 reason="grace expired — door/window still open, re-pausing",
             )
             await self._notify(
-                "Grace period expired but a door/window is still open. "
-                "HVAC has been paused again.",
+                "Grace period expired but a door/window is still open. HVAC has been paused again.",
                 "Climate Advisor",
             )
         elif state and state.state == "off":
@@ -565,15 +542,19 @@ class AutomationEngine:
             setback = self.config["setback_heat"] + c.setback_modifier
             await self._set_temperature(
                 setback,
-                reason="occupancy away — heat setback (base %s + modifier %s)"
-                % (self.config["setback_heat"], c.setback_modifier),
+                reason=(
+                    f"occupancy away — heat setback"
+                    f" (base {self.config['setback_heat']} + modifier {c.setback_modifier})"
+                ),
             )
         elif c.hvac_mode == "cool":
             setback = self.config["setback_cool"] - c.setback_modifier
             await self._set_temperature(
                 setback,
-                reason="occupancy away — cool setback (base %s - modifier %s)"
-                % (self.config["setback_cool"], c.setback_modifier),
+                reason=(
+                    f"occupancy away — cool setback"
+                    f" (base {self.config['setback_cool']} - modifier {c.setback_modifier})"
+                ),
             )
 
     async def handle_occupancy_home(self) -> None:
@@ -583,9 +564,7 @@ class AutomationEngine:
             return
 
         if c.hvac_mode in ("heat", "cool"):
-            await self._set_temperature_for_mode(
-                c, reason="occupancy home — restoring %s comfort" % c.hvac_mode
-            )
+            await self._set_temperature_for_mode(c, reason=f"occupancy home — restoring {c.hvac_mode} comfort")
 
         # Notify with estimated recovery time
         await self._notify(
@@ -603,15 +582,21 @@ class AutomationEngine:
             setback = self.config["setback_heat"] + c.setback_modifier - VACATION_SETBACK_EXTRA
             await self._set_temperature(
                 setback,
-                reason="vacation mode — deep heat setback (base %s + modifier %s - vacation %s)"
-                % (self.config["setback_heat"], c.setback_modifier, VACATION_SETBACK_EXTRA),
+                reason=(
+                    f"vacation mode — deep heat setback"
+                    f" (base {self.config['setback_heat']} + modifier {c.setback_modifier}"
+                    f" - vacation {VACATION_SETBACK_EXTRA})"
+                ),
             )
         elif c.hvac_mode == "cool":
             setback = self.config["setback_cool"] - c.setback_modifier + VACATION_SETBACK_EXTRA
             await self._set_temperature(
                 setback,
-                reason="vacation mode — deep cool setback (base %s - modifier %s + vacation %s)"
-                % (self.config["setback_cool"], c.setback_modifier, VACATION_SETBACK_EXTRA),
+                reason=(
+                    f"vacation mode — deep cool setback"
+                    f" (base {self.config['setback_cool']} - modifier {c.setback_modifier}"
+                    f" + vacation {VACATION_SETBACK_EXTRA})"
+                ),
             )
 
     async def handle_bedtime(self) -> None:
@@ -632,15 +617,16 @@ class AutomationEngine:
             bedtime_target = self.config["comfort_heat"] - 4 + c.setback_modifier
             await self._set_temperature(
                 bedtime_target,
-                reason="bedtime — heat setback (comfort %s - 4 + modifier %s)"
-                % (self.config["comfort_heat"], c.setback_modifier),
+                reason=(
+                    f"bedtime — heat setback"
+                    f" (comfort {self.config['comfort_heat']} - 4 + modifier {c.setback_modifier})"
+                ),
             )
         elif c.hvac_mode == "cool":
             bedtime_target = self.config["comfort_cool"] + 3
             await self._set_temperature(
                 bedtime_target,
-                reason="bedtime — cool setback (comfort %s + 3)"
-                % self.config["comfort_cool"],
+                reason="bedtime — cool setback (comfort {} + 3)".format(self.config["comfort_cool"]),
             )
 
     async def handle_morning_wakeup(self) -> None:
@@ -686,14 +672,13 @@ class AutomationEngine:
                 fan_entity = self.config.get(CONF_FAN_ENTITY)
                 if fan_entity:
                     domain = fan_entity.split(".")[0]  # "fan" or "switch"
-                    await self.hass.services.async_call(
-                        domain, "turn_on", {"entity_id": fan_entity}
-                    )
+                    await self.hass.services.async_call(domain, "turn_on", {"entity_id": fan_entity})
                     _LOGGER.warning("Activated %s fan (%s) — %s", domain, fan_entity, reason)
 
             if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
                 await self.hass.services.async_call(
-                    "climate", "set_fan_mode",
+                    "climate",
+                    "set_fan_mode",
                     {"entity_id": self.climate_entity, "fan_mode": "on"},
                 )
                 _LOGGER.warning("Activated HVAC fan — %s", reason)
@@ -724,14 +709,13 @@ class AutomationEngine:
                 fan_entity = self.config.get(CONF_FAN_ENTITY)
                 if fan_entity:
                     domain = fan_entity.split(".")[0]
-                    await self.hass.services.async_call(
-                        domain, "turn_off", {"entity_id": fan_entity}
-                    )
+                    await self.hass.services.async_call(domain, "turn_off", {"entity_id": fan_entity})
                     _LOGGER.warning("Deactivated %s fan (%s) — %s", domain, fan_entity, reason)
 
             if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
                 await self.hass.services.async_call(
-                    "climate", "set_fan_mode",
+                    "climate",
+                    "set_fan_mode",
                     {"entity_id": self.climate_entity, "fan_mode": "auto"},
                 )
                 _LOGGER.warning("Deactivated HVAC fan — %s", reason)
@@ -779,17 +763,12 @@ class AutomationEngine:
             # Default: allow (caller didn't pass hour, skip time gate)
             in_window = True
         else:
-            in_window = (
-                (ECONOMIZER_MORNING_START_HOUR <= current_hour < ECONOMIZER_MORNING_END_HOUR)
-                or (ECONOMIZER_EVENING_START_HOUR <= current_hour < ECONOMIZER_EVENING_END_HOUR)
+            in_window = (ECONOMIZER_MORNING_START_HOUR <= current_hour < ECONOMIZER_MORNING_END_HOUR) or (
+                ECONOMIZER_EVENING_START_HOUR <= current_hour < ECONOMIZER_EVENING_END_HOUR
             )
 
         # Conditions for economizer eligibility
-        eligible = (
-            windows_physically_open
-            and outdoor_temp <= comfort_cool + delta
-            and in_window
-        )
+        eligible = windows_physically_open and outdoor_temp <= comfort_cool + delta and in_window
 
         if not eligible:
             if self._economizer_active:
@@ -805,12 +784,9 @@ class AutomationEngine:
                 self._economizer_phase = "maintain"
                 await self._set_hvac_mode(
                     "off",
-                    reason="economizer (savings) — outdoor %.0f°F, ventilation only"
-                    % outdoor_temp,
+                    reason=f"economizer (savings) — outdoor {outdoor_temp:.0f}°F, ventilation only",
                 )
-                await self._activate_fan(
-                    reason="economizer maintain — fan assists ventilation"
-                )
+                await self._activate_fan(reason="economizer maintain — fan assists ventilation")
                 _LOGGER.info(
                     "Economizer (savings): ventilation only, outdoor=%.0f°F",
                     outdoor_temp,
@@ -824,17 +800,18 @@ class AutomationEngine:
                 self._economizer_phase = "cool-down"
                 await self._set_hvac_mode(
                     "cool",
-                    reason="economizer cool-down — indoor %.0f°F > comfort %s°F, "
-                    "outdoor %.0f°F assisting" % (indoor_temp, comfort_cool, outdoor_temp),
+                    reason=f"economizer cool-down — indoor {indoor_temp:.0f}°F > comfort {comfort_cool}°F, "
+                    f"outdoor {outdoor_temp:.0f}°F assisting",
                 )
                 await self._set_temperature(
                     comfort_cool,
-                    reason="economizer cool-down — target comfort %s°F"
-                    % comfort_cool,
+                    reason=f"economizer cool-down — target comfort {comfort_cool}°F",
                 )
                 _LOGGER.info(
                     "Economizer phase=cool-down: indoor=%.0f°F, target=%s°F, outdoor=%.0f°F",
-                    indoor_temp, comfort_cool, outdoor_temp,
+                    indoor_temp,
+                    comfort_cool,
+                    outdoor_temp,
                 )
             return True
         else:
@@ -846,9 +823,7 @@ class AutomationEngine:
                     reason="economizer maintain — indoor %.0f°F at comfort, "
                     "ventilation holding" % (indoor_temp if indoor_temp is not None else 0),
                 )
-                await self._activate_fan(
-                    reason="economizer maintain — fan assists ventilation"
-                )
+                await self._activate_fan(reason="economizer maintain — fan assists ventilation")
                 _LOGGER.info(
                     "Economizer phase=maintain: indoor=%.0f°F, AC off",
                     indoor_temp if indoor_temp is not None else 0,
@@ -864,8 +839,7 @@ class AutomationEngine:
         if c and c.hvac_mode == "cool":
             await self._set_hvac_mode(
                 "cool",
-                reason="economizer off — resuming normal AC (outdoor %.0f°F)"
-                % outdoor_temp,
+                reason=f"economizer off — resuming normal AC (outdoor {outdoor_temp:.0f}°F)",
             )
             await self._set_temperature_for_mode(
                 c,

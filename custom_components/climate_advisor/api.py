@@ -1,11 +1,11 @@
 """REST API views for the Climate Advisor dashboard panel."""
+
 from __future__ import annotations
 
 import logging
 from dataclasses import asdict
 
 from aiohttp import web
-
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
@@ -13,27 +13,27 @@ from .const import (
     API_AUTOMATION_STATE,
     API_BRIEFING,
     API_CANCEL_OVERRIDE,
-    API_RESUME_FROM_PAUSE,
-    API_TOGGLE_AUTOMATION,
     API_CHART_DATA,
     API_CONFIG,
     API_FORCE_RECLASSIFY,
     API_LEARNING,
     API_RESPOND_SUGGESTION,
+    API_RESUME_FROM_PAUSE,
     API_SEND_BRIEFING,
     API_STATUS,
+    API_TOGGLE_AUTOMATION,
     ATTR_AUTOMATION_STATUS,
     ATTR_COMPLIANCE_SCORE,
+    ATTR_CONTACT_STATUS,
+    ATTR_CURRENT_SETPOINT,
     ATTR_DAY_TYPE,
+    ATTR_FAN_STATUS,
+    ATTR_INDOOR_TEMP,
     ATTR_NEXT_ACTION,
     ATTR_NEXT_AUTOMATION_ACTION,
     ATTR_NEXT_AUTOMATION_TIME,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
-    ATTR_FAN_STATUS,
-    ATTR_CONTACT_STATUS,
-    ATTR_CURRENT_SETPOINT,
-    ATTR_INDOOR_TEMP,
     CONFIG_METADATA,
     DOMAIN,
     VERSION,
@@ -74,25 +74,27 @@ class ClimateAdvisorStatusView(HomeAssistantView):
 
         indoor_temp = coordinator._get_indoor_temp()
 
-        return self.json({
-            "version": VERSION,
-            "day_type": data.get(ATTR_DAY_TYPE, "unknown"),
-            "trend_direction": data.get(ATTR_TREND, "unknown"),
-            "trend_magnitude": data.get(ATTR_TREND_MAGNITUDE, 0),
-            "hvac_mode": hvac_mode,
-            ATTR_CURRENT_SETPOINT: setpoint,
-            ATTR_INDOOR_TEMP: indoor_temp,
-            "automation_status": data.get(ATTR_AUTOMATION_STATUS, "unknown"),
-            "compliance_score": data.get(ATTR_COMPLIANCE_SCORE, 1.0),
-            "next_action": data.get(ATTR_NEXT_ACTION, ""),
-            "next_automation_action": data.get(ATTR_NEXT_AUTOMATION_ACTION, ""),
-            "next_automation_time": data.get(ATTR_NEXT_AUTOMATION_TIME, ""),
-            "automation_enabled": coordinator.automation_enabled,
-            "occupancy_mode": coordinator._occupancy_mode,
-            "fan_status": data.get(ATTR_FAN_STATUS, "disabled"),
-            "contact_status": data.get(ATTR_CONTACT_STATUS, "no sensors"),
-            "contact_sensors": coordinator._compute_contact_details(),
-        })
+        return self.json(
+            {
+                "version": VERSION,
+                "day_type": data.get(ATTR_DAY_TYPE, "unknown"),
+                "trend_direction": data.get(ATTR_TREND, "unknown"),
+                "trend_magnitude": data.get(ATTR_TREND_MAGNITUDE, 0),
+                "hvac_mode": hvac_mode,
+                ATTR_CURRENT_SETPOINT: setpoint,
+                ATTR_INDOOR_TEMP: indoor_temp,
+                "automation_status": data.get(ATTR_AUTOMATION_STATUS, "unknown"),
+                "compliance_score": data.get(ATTR_COMPLIANCE_SCORE, 1.0),
+                "next_action": data.get(ATTR_NEXT_ACTION, ""),
+                "next_automation_action": data.get(ATTR_NEXT_AUTOMATION_ACTION, ""),
+                "next_automation_time": data.get(ATTR_NEXT_AUTOMATION_TIME, ""),
+                "automation_enabled": coordinator.automation_enabled,
+                "occupancy_mode": coordinator._occupancy_mode,
+                "fan_status": data.get(ATTR_FAN_STATUS, "disabled"),
+                "contact_status": data.get(ATTR_CONTACT_STATUS, "no sensors"),
+                "contact_sensors": coordinator._compute_contact_details(),
+            }
+        )
 
 
 class ClimateAdvisorBriefingView(HomeAssistantView):
@@ -136,11 +138,13 @@ class ClimateAdvisorBriefingView(HomeAssistantView):
                     verbosity,
                 )
 
-        return self.json({
-            "briefing": briefing,
-            "briefing_sent_today": coordinator._briefing_sent_today,
-            "verbosity": verbosity,
-        })
+        return self.json(
+            {
+                "briefing": briefing,
+                "briefing_sent_today": coordinator._briefing_sent_today,
+                "verbosity": verbosity,
+            }
+        )
 
 
 class ClimateAdvisorChartDataView(HomeAssistantView):
@@ -192,13 +196,15 @@ class ClimateAdvisorLearningView(HomeAssistantView):
         if coordinator.today_record:
             today_record = asdict(coordinator.today_record)
 
-        return self.json({
-            "today_record": today_record,
-            "yesterday_record": coordinator.yesterday_record,
-            "tomorrow_plan": coordinator.tomorrow_plan,
-            "suggestions": coordinator.learning.generate_suggestions(),
-            "compliance": coordinator.learning.get_compliance_summary(),
-        })
+        return self.json(
+            {
+                "today_record": today_record,
+                "yesterday_record": coordinator.yesterday_record,
+                "tomorrow_plan": coordinator.tomorrow_plan,
+                "suggestions": coordinator.learning.generate_suggestions(),
+                "compliance": coordinator.learning.get_compliance_summary(),
+            }
+        )
 
 
 class ClimateAdvisorForceReclassifyView(HomeAssistantView):
@@ -233,6 +239,7 @@ class ClimateAdvisorSendBriefingView(HomeAssistantView):
 
         coordinator._briefing_sent_today = False
         from homeassistant.util import dt as dt_util
+
         await coordinator._async_send_briefing(dt_util.now())
         return self.json({"status": "ok", "message": "Briefing sent"})
 
@@ -307,13 +314,15 @@ class ClimateAdvisorConfigView(HomeAssistantView):
             if transform == "seconds_to_minutes" and isinstance(value, (int, float)):
                 value = value // 60
 
-            settings.append({
-                "key": key,
-                "value": value,
-                "label": meta["label"],
-                "description": meta["description"],
-                "category": meta["category"],
-            })
+            settings.append(
+                {
+                    "key": key,
+                    "value": value,
+                    "label": meta["label"],
+                    "description": meta["description"],
+                    "category": meta["category"],
+                }
+            )
 
         return self.json({"settings": settings})
 
@@ -340,22 +349,22 @@ class ClimateAdvisorCancelOverrideView(HomeAssistantView):
         ae._cancel_grace_timers()
 
         # Schedule re-application of current classification after 10 seconds
-        from homeassistant.helpers.event import async_call_later
         from homeassistant.core import callback
+        from homeassistant.helpers.event import async_call_later
 
         @callback
         def _apply_after_delay(_now):
             if coordinator._current_classification:
-                hass.async_create_task(
-                    ae.apply_classification(coordinator._current_classification)
-                )
+                hass.async_create_task(ae.apply_classification(coordinator._current_classification))
 
         async_call_later(hass, 10, _apply_after_delay)
 
-        return self.json({
-            "status": "ok",
-            "message": "Override cancelled. Automated control resumes in 10 seconds.",
-        })
+        return self.json(
+            {
+                "status": "ok",
+                "message": "Override cancelled. Automated control resumes in 10 seconds.",
+            }
+        )
 
 
 class ClimateAdvisorResumeFromPauseView(HomeAssistantView):
@@ -376,12 +385,13 @@ class ClimateAdvisorResumeFromPauseView(HomeAssistantView):
             return self.json({"status": "ok", "message": "Not currently paused"})
 
         restored_mode = await ae.resume_from_pause()
-        return self.json({
-            "status": "ok",
-            "message": f"Resumed from pause. HVAC set to {restored_mode or 'N/A'}. "
-                       f"Manual grace period started.",
-            "restored_mode": restored_mode,
-        })
+        return self.json(
+            {
+                "status": "ok",
+                "message": f"Resumed from pause. HVAC set to {restored_mode or 'N/A'}. Manual grace period started.",
+                "restored_mode": restored_mode,
+            }
+        )
 
 
 class ClimateAdvisorToggleAutomationView(HomeAssistantView):
@@ -400,11 +410,13 @@ class ClimateAdvisorToggleAutomationView(HomeAssistantView):
         new_state = not coordinator.automation_enabled
         coordinator.set_automation_enabled(new_state)
 
-        return self.json({
-            "status": "ok",
-            "automation_enabled": new_state,
-            "message": f"Automation {'enabled' if new_state else 'disabled'}.",
-        })
+        return self.json(
+            {
+                "status": "ok",
+                "automation_enabled": new_state,
+                "message": f"Automation {'enabled' if new_state else 'disabled'}.",
+            }
+        )
 
 
 # All views to register

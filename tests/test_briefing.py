@@ -4,19 +4,20 @@ The briefing generator is pure logic with no Home Assistant dependencies,
 so no mocking is required. Tests assert on content (temperatures, times,
 action items) rather than exact formatting, so they survive tone rewrites.
 """
+
 from __future__ import annotations
 
 from datetime import time
 
 import pytest
 
+from custom_components.climate_advisor.briefing import _generate_tldr_table, generate_briefing
 from custom_components.climate_advisor.classifier import DayClassification
-from custom_components.climate_advisor.briefing import generate_briefing, _generate_tldr_table
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_classification(
     day_type: str,
@@ -57,13 +58,14 @@ def _generate(classification: DayClassification, **kwargs) -> str:
         setback_cool=kwargs.get("setback_cool", SETBACK_COOL),
         wake_time=kwargs.get("wake_time", DEFAULT_WAKE),
         sleep_time=kwargs.get("sleep_time", DEFAULT_SLEEP),
-        learning_suggestions=kwargs.get("learning_suggestions", None),
+        learning_suggestions=kwargs.get("learning_suggestions"),
     )
 
 
 # ---------------------------------------------------------------------------
 # Header tests
 # ---------------------------------------------------------------------------
+
 
 class TestBriefingHeader:
     """The structured header should always contain key weather data."""
@@ -75,8 +77,7 @@ class TestBriefingHeader:
         assert "72" in result
 
     def test_contains_tomorrow_temps(self):
-        c = _make_classification("mild", today_high=68, today_low=48,
-                                  tomorrow_high=78, tomorrow_low=58)
+        c = _make_classification("mild", today_high=68, today_low=48, tomorrow_high=78, tomorrow_low=58)
         result = _generate(c)
         assert "78" in result
         assert "58" in result
@@ -88,9 +89,15 @@ class TestBriefingHeader:
             assert day_type.lower() in result.lower()
 
     def test_contains_trend_info(self):
-        c = _make_classification("mild", today_high=68, today_low=48,
-                                  tomorrow_high=78, tomorrow_low=58,
-                                  trend_direction="warming", trend_magnitude=10)
+        c = _make_classification(
+            "mild",
+            today_high=68,
+            today_low=48,
+            tomorrow_high=78,
+            tomorrow_low=58,
+            trend_direction="warming",
+            trend_magnitude=10,
+        )
         result = _generate(c)
         assert "warm" in result.lower()
 
@@ -98,6 +105,7 @@ class TestBriefingHeader:
 # ---------------------------------------------------------------------------
 # Day-type content tests
 # ---------------------------------------------------------------------------
+
 
 class TestHotDayBriefing:
     """Hot day briefings should mention pre-cooling, sealed house, AC setpoint."""
@@ -299,7 +307,13 @@ class TestMildDayBriefing:
         c = _make_classification("mild", today_high=68, today_low=48)
         result = _generate(c)
         low = result.lower()
-        assert "no hvac" in low or "hvac" not in low or "off" in low or "sweet spot" in low or "takes care of itself" in low
+        assert (
+            "no hvac" in low
+            or "hvac" not in low
+            or "off" in low
+            or "sweet spot" in low
+            or "takes care of itself" in low
+        )
 
 
 class TestCoolDayBriefing:
@@ -342,17 +356,22 @@ class TestColdDayBriefing:
         assert "curtain" in result.lower()
 
     def test_preheat_on_cooling_trend(self):
-        c = _make_classification("cold", today_high=38, today_low=22,
-                                  tomorrow_high=28, tomorrow_low=12,
-                                  trend_direction="cooling", trend_magnitude=10)
+        c = _make_classification(
+            "cold",
+            today_high=38,
+            today_low=22,
+            tomorrow_high=28,
+            tomorrow_low=12,
+            trend_direction="cooling",
+            trend_magnitude=10,
+        )
         result = _generate(c)
         # Should mention pre-heating / banking heat
         low = result.lower()
         assert "pre-heat" in low or "bank" in low or "extra heat" in low or "extra warm" in low
 
     def test_no_preheat_on_stable_trend(self):
-        c = _make_classification("cold", today_high=38, today_low=22,
-                                  trend_direction="stable", trend_magnitude=1)
+        c = _make_classification("cold", today_high=38, today_low=22, trend_direction="stable", trend_magnitude=1)
         result = _generate(c)
         # Should NOT mention pre-heating
         assert "pre-heat" not in result.lower() or "bank extra heat" not in result.lower()
@@ -361,6 +380,7 @@ class TestColdDayBriefing:
 # ---------------------------------------------------------------------------
 # Universal section tests
 # ---------------------------------------------------------------------------
+
 
 class TestLeavingHomeSection:
     """Leaving home info should be present for all HVAC modes."""
@@ -460,23 +480,41 @@ class TestTonightPreview:
     """Tonight/tomorrow preview should mention tomorrow's conditions."""
 
     def test_warming_trend(self):
-        c = _make_classification("mild", today_high=68, today_low=48,
-                                  tomorrow_high=80, tomorrow_low=60,
-                                  trend_direction="warming", trend_magnitude=10)
+        c = _make_classification(
+            "mild",
+            today_high=68,
+            today_low=48,
+            tomorrow_high=80,
+            tomorrow_low=60,
+            trend_direction="warming",
+            trend_magnitude=10,
+        )
         result = _generate(c)
         assert "80" in result  # tomorrow_high
 
     def test_cooling_trend(self):
-        c = _make_classification("cool", today_high=55, today_low=35,
-                                  tomorrow_high=45, tomorrow_low=25,
-                                  trend_direction="cooling", trend_magnitude=10)
+        c = _make_classification(
+            "cool",
+            today_high=55,
+            today_low=35,
+            tomorrow_high=45,
+            tomorrow_low=25,
+            trend_direction="cooling",
+            trend_magnitude=10,
+        )
         result = _generate(c)
         assert "45" in result  # tomorrow_high
 
     def test_stable_trend(self):
-        c = _make_classification("mild", today_high=68, today_low=48,
-                                  tomorrow_high=69, tomorrow_low=49,
-                                  trend_direction="stable", trend_magnitude=1)
+        c = _make_classification(
+            "mild",
+            today_high=68,
+            today_low=48,
+            tomorrow_high=69,
+            tomorrow_low=49,
+            trend_direction="stable",
+            trend_magnitude=1,
+        )
         result = _generate(c)
         assert "69" in result  # tomorrow_high
 
@@ -484,6 +522,7 @@ class TestTonightPreview:
 # ---------------------------------------------------------------------------
 # Learning suggestions tests
 # ---------------------------------------------------------------------------
+
 
 class TestLearningSuggestions:
     """Learning suggestions should appear when provided."""
@@ -512,16 +551,20 @@ class TestLearningSuggestions:
 # Non-empty output tests
 # ---------------------------------------------------------------------------
 
+
 class TestBriefingNotEmpty:
     """Every day type should produce a non-trivial briefing."""
 
-    @pytest.mark.parametrize("day_type,high", [
-        ("hot", 95),
-        ("warm", 80),
-        ("mild", 68),
-        ("cool", 55),
-        ("cold", 38),
-    ])
+    @pytest.mark.parametrize(
+        "day_type,high",
+        [
+            ("hot", 95),
+            ("warm", 80),
+            ("mild", 68),
+            ("cool", 55),
+            ("cold", 38),
+        ],
+    )
     def test_produces_output(self, day_type, high):
         c = _make_classification(day_type, today_high=high)
         result = _generate(c)
@@ -532,16 +575,20 @@ class TestBriefingNotEmpty:
 # Conversational tone tests
 # ---------------------------------------------------------------------------
 
+
 class TestConversationalTone:
     """Verify the briefing uses conversational prose, not structured headers."""
 
-    @pytest.mark.parametrize("day_type,high", [
-        ("hot", 95),
-        ("warm", 80),
-        ("mild", 68),
-        ("cool", 55),
-        ("cold", 38),
-    ])
+    @pytest.mark.parametrize(
+        "day_type,high",
+        [
+            ("hot", 95),
+            ("warm", 80),
+            ("mild", 68),
+            ("cool", 55),
+            ("cold", 38),
+        ],
+    )
     def test_no_section_header_dashes(self, day_type, high):
         """Body text should not have lines that are just dashes (old header style)."""
         c = _make_classification(day_type, today_high=high)
@@ -556,29 +603,33 @@ class TestConversationalTone:
                 # Lines of just dashes indicate old header format
                 assert line.strip() != "-" * 40, f"Found header dash line in {day_type} briefing"
 
-    @pytest.mark.parametrize("day_type,high", [
-        ("hot", 95),
-        ("warm", 80),
-        ("mild", 68),
-        ("cool", 55),
-        ("cold", 38),
-    ])
+    @pytest.mark.parametrize(
+        "day_type,high",
+        [
+            ("hot", 95),
+            ("warm", 80),
+            ("mild", 68),
+            ("cool", 55),
+            ("cold", 38),
+        ],
+    )
     def test_first_person_voice(self, day_type, high):
         """Body should use first-person voice (I'll, I'm, I've)."""
         c = _make_classification(day_type, today_high=high)
         result = _generate(c)
         low = result.lower()
-        assert "i'll" in low or "i'm" in low or "i've" in low, (
-            f"Expected first-person voice in {day_type} briefing"
-        )
+        assert "i'll" in low or "i'm" in low or "i've" in low, f"Expected first-person voice in {day_type} briefing"
 
-    @pytest.mark.parametrize("day_type,high", [
-        ("hot", 95),
-        ("warm", 80),
-        ("mild", 68),
-        ("cool", 55),
-        ("cold", 38),
-    ])
+    @pytest.mark.parametrize(
+        "day_type,high",
+        [
+            ("hot", 95),
+            ("warm", 80),
+            ("mild", 68),
+            ("cool", 55),
+            ("cold", 38),
+        ],
+    )
     def test_no_checkbox_markers(self, day_type, high):
         """Body should not use old-style checkbox markers."""
         c = _make_classification(day_type, today_high=high)
@@ -589,13 +640,16 @@ class TestConversationalTone:
         if "Suggestions" not in body:
             assert "✅" not in body, f"Found checkbox marker in {day_type} briefing body"
 
-    @pytest.mark.parametrize("day_type,high", [
-        ("hot", 95),
-        ("warm", 80),
-        ("mild", 68),
-        ("cool", 55),
-        ("cold", 38),
-    ])
+    @pytest.mark.parametrize(
+        "day_type,high",
+        [
+            ("hot", 95),
+            ("warm", 80),
+            ("mild", 68),
+            ("cool", 55),
+            ("cold", 38),
+        ],
+    )
     def test_no_system_third_person(self, day_type, high):
         """Should say 'I'll' not 'the system will'."""
         c = _make_classification(day_type, today_high=high)
@@ -607,6 +661,7 @@ class TestConversationalTone:
 # ---------------------------------------------------------------------------
 # Grace period section tests
 # ---------------------------------------------------------------------------
+
 
 class TestGracePeriodSection:
     """Grace period section should only appear when a grace period is active."""
@@ -697,6 +752,7 @@ class TestGracePeriodSection:
 # ---------------------------------------------------------------------------
 # TLDR table tests
 # ---------------------------------------------------------------------------
+
 
 def _make_config(
     comfort_heat: float = COMFORT_HEAT,
@@ -823,9 +879,13 @@ class TestTldrTable:
 
     def test_tldr_contains_tomorrow_trend(self):
         c = _make_classification(
-            "mild", today_high=68, today_low=48,
-            tomorrow_high=80, tomorrow_low=60,
-            trend_direction="warming", trend_magnitude=12,
+            "mild",
+            today_high=68,
+            today_low=48,
+            tomorrow_high=80,
+            tomorrow_low=60,
+            trend_direction="warming",
+            trend_magnitude=12,
         )
         rows = _generate_tldr_table(c, _make_config())
         table = "\n".join(rows)
@@ -833,9 +893,15 @@ class TestTldrTable:
         assert "warm" in table.lower()
 
     def test_tldr_stable_tomorrow(self):
-        c = _make_classification("mild", today_high=68, today_low=48,
-                                  tomorrow_high=69, tomorrow_low=49,
-                                  trend_direction="stable", trend_magnitude=1)
+        c = _make_classification(
+            "mild",
+            today_high=68,
+            today_low=48,
+            tomorrow_high=69,
+            tomorrow_low=49,
+            trend_direction="stable",
+            trend_magnitude=1,
+        )
         rows = _generate_tldr_table(c, _make_config())
         table = "\n".join(rows)
         assert "Stable" in table
@@ -855,6 +921,7 @@ class TestTldrTable:
 # ---------------------------------------------------------------------------
 # Verbosity parameter tests
 # ---------------------------------------------------------------------------
+
 
 class TestVerbosity:
     """generate_briefing() verbosity parameter should control output length/content."""
@@ -988,16 +1055,20 @@ class TestVerbosity:
 # TLDR length guard (Issue #34)
 # ---------------------------------------------------------------------------
 
+
 class TestTldrLength:
     """Verify tldr_only briefings stay short enough for push notifications."""
 
-    @pytest.mark.parametrize("day_type,high,low", [
-        ("hot", 95, 72),
-        ("warm", 80, 60),
-        ("mild", 72, 55),
-        ("cool", 55, 40),
-        ("cold", 30, 15),
-    ])
+    @pytest.mark.parametrize(
+        "day_type,high,low",
+        [
+            ("hot", 95, 72),
+            ("warm", 80, 60),
+            ("mild", 72, 55),
+            ("cool", 55, 40),
+            ("cold", 30, 15),
+        ],
+    )
     def test_tldr_under_300_chars(self, day_type, high, low):
         """tldr_only output must stay under 300 chars for all day types."""
         c = _make_classification(day_type, today_high=high, today_low=low)
@@ -1011,9 +1082,7 @@ class TestTldrLength:
             sleep_time=DEFAULT_SLEEP,
             verbosity="tldr_only",
         )
-        assert len(result) <= 250, (
-            f"tldr_only for {day_type} is {len(result)} chars (max 250)"
-        )
+        assert len(result) <= 250, f"tldr_only for {day_type} is {len(result)} chars (max 250)"
 
     def test_tldr_contains_day_type_table(self):
         """tldr_only should include the TLDR table with Day Type row."""
@@ -1062,24 +1131,31 @@ class TestTldrLength:
 # No markdown in briefing output (Issue #21)
 # ---------------------------------------------------------------------------
 
+
 class TestNoMarkdownInBriefing:
     """Verify briefing output contains no markdown syntax."""
 
-    @pytest.mark.parametrize("day_type,high,low", [
-        ("hot", 95, 72),
-        ("warm", 80, 60),
-        ("mild", 72, 55),
-        ("cool", 55, 40),
-        ("cold", 30, 15),
-    ])
+    @pytest.mark.parametrize(
+        "day_type,high,low",
+        [
+            ("hot", 95, 72),
+            ("warm", 80, 60),
+            ("mild", 72, 55),
+            ("cool", 55, 40),
+            ("cold", 30, 15),
+        ],
+    )
     def test_no_pipe_table_in_tldr(self, day_type, high, low):
         """TLDR table rows must not contain markdown pipe table syntax."""
         c = _make_classification(day_type, today_high=high, today_low=low)
         result = generate_briefing(
             classification=c,
-            comfort_heat=COMFORT_HEAT, comfort_cool=COMFORT_COOL,
-            setback_heat=SETBACK_HEAT, setback_cool=SETBACK_COOL,
-            wake_time=DEFAULT_WAKE, sleep_time=DEFAULT_SLEEP,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
             verbosity="tldr_only",
         )
         # Check table lines (indented with 2 spaces) don't use pipe syntax
@@ -1095,9 +1171,12 @@ class TestNoMarkdownInBriefing:
         c = _make_classification("hot", today_high=95, today_low=72)
         result = generate_briefing(
             classification=c,
-            comfort_heat=COMFORT_HEAT, comfort_cool=COMFORT_COOL,
-            setback_heat=SETBACK_HEAT, setback_cool=SETBACK_COOL,
-            wake_time=DEFAULT_WAKE, sleep_time=DEFAULT_SLEEP,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
             occupancy_mode=occupancy,
         )
         assert "**" not in result, f"Bold markers found in output: {result}"

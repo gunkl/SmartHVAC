@@ -7,6 +7,7 @@ current state.
 
 See: GitHub Issue #42
 """
+
 from __future__ import annotations
 
 import sys
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock
 # ── HA module stubs (must happen before importing climate_advisor) ──
 if "homeassistant" not in sys.modules:
     from conftest import _install_ha_stubs
+
     _install_ha_stubs()
 
 # Patch dt_util.now to return a real datetime (needed for isoformat() calls)
@@ -24,10 +26,10 @@ sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 3, 20, 7, 0, 0
 from custom_components.climate_advisor.classifier import DayClassification  # noqa: E402
 from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_classification(**overrides):
     """Build a DayClassification bypassing __post_init__."""
@@ -93,6 +95,7 @@ def _make_coordinator():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestStartupOverride:
     """Verify that first-run override is only set when HVAC mode mismatches."""

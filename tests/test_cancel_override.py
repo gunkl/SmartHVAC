@@ -5,6 +5,7 @@ to resume, and that get_debug_state() exposes the new override time/duration fie
 
 See: GitHub Issue #41
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,6 +27,7 @@ sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 3, 19, 14, 30,
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides=None):
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -78,8 +80,8 @@ def _make_classification(
     obj.pre_condition = pre_condition
     obj.pre_condition_target = pre_condition_target
     obj.windows_recommended = kwargs.get("windows_recommended", False)
-    obj.window_open_time = kwargs.get("window_open_time", None)
-    obj.window_close_time = kwargs.get("window_close_time", None)
+    obj.window_open_time = kwargs.get("window_open_time")
+    obj.window_close_time = kwargs.get("window_close_time")
     obj.setback_modifier = setback_modifier
     return obj
 
@@ -87,6 +89,7 @@ def _make_classification(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestCancelOverride:
     """Verify that cancelling manual override clears state and allows automation to resume."""
@@ -190,9 +193,7 @@ class TestDebugStateOverrideFields:
             "manual_override_active": engine._manual_override_active,
             "manual_override_mode": engine._manual_override_mode,
             "manual_override_time": engine._manual_override_time,
-            "manual_grace_duration": engine.config.get(
-                CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS
-            ),
+            "manual_grace_duration": engine.config.get(CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS),
         }
 
         assert debug["manual_override_active"] is True
@@ -203,18 +204,12 @@ class TestDebugStateOverrideFields:
         """Grace duration should come from config, falling back to default."""
         # Default config (no manual_grace_seconds key)
         engine_default = _make_automation_engine()
-        duration_default = engine_default.config.get(
-            CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS
-        )
+        duration_default = engine_default.config.get(CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS)
         assert duration_default == DEFAULT_MANUAL_GRACE_SECONDS  # 1800
 
         # Custom config
-        engine_custom = _make_automation_engine(
-            config_overrides={"manual_grace_seconds": 900}
-        )
-        duration_custom = engine_custom.config.get(
-            CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS
-        )
+        engine_custom = _make_automation_engine(config_overrides={"manual_grace_seconds": 900})
+        duration_custom = engine_custom.config.get(CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS)
         assert duration_custom == 900
 
     def test_debug_state_override_time_none_when_inactive(self):

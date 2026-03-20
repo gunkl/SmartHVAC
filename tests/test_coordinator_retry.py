@@ -4,6 +4,7 @@ When the weather entity is unavailable at startup, the coordinator
 should schedule retries with exponential backoff rather than waiting
 the full 30-minute interval.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -22,9 +23,7 @@ def _should_retry(states: dict, weather_entity: str) -> bool:
     weather_state = states.get(weather_entity)
     if weather_state is None:
         return True
-    if weather_state.state in ("unavailable", "unknown"):
-        return True
-    return False
+    return weather_state.state in ("unavailable", "unknown")
 
 
 class TestGetForecastRetry:

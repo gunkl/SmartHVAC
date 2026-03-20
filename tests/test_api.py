@@ -1,33 +1,34 @@
 """Tests for the Climate Advisor REST API module."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from custom_components.climate_advisor.const import (
-    DOMAIN,
-    ATTR_DAY_TYPE,
-    API_STATUS,
-    API_BRIEFING,
-    API_CHART_DATA,
-    API_AUTOMATION_STATE,
-    API_LEARNING,
-    API_FORCE_RECLASSIFY,
-    API_SEND_BRIEFING,
-    API_RESPOND_SUGGESTION,
-    API_CONFIG,
-    API_CANCEL_OVERRIDE,
-    API_TOGGLE_AUTOMATION,
-    CONFIG_METADATA,
-    CONF_SENSOR_DEBOUNCE,
-    CONF_MANUAL_GRACE_PERIOD,
-    CONF_AUTOMATION_GRACE_PERIOD,
-    DEFAULT_SENSOR_DEBOUNCE_SECONDS,
-    DEFAULT_MANUAL_GRACE_SECONDS,
-    DEFAULT_AUTOMATION_GRACE_SECONDS,
-)
 from custom_components.climate_advisor.api import (
-    _get_coordinator,
     API_VIEWS,
+    _get_coordinator,
+)
+from custom_components.climate_advisor.const import (
+    API_AUTOMATION_STATE,
+    API_BRIEFING,
+    API_CANCEL_OVERRIDE,
+    API_CHART_DATA,
+    API_CONFIG,
+    API_FORCE_RECLASSIFY,
+    API_LEARNING,
+    API_RESPOND_SUGGESTION,
+    API_SEND_BRIEFING,
+    API_STATUS,
+    API_TOGGLE_AUTOMATION,
+    ATTR_DAY_TYPE,
+    CONF_AUTOMATION_GRACE_PERIOD,
+    CONF_MANUAL_GRACE_PERIOD,
+    CONF_SENSOR_DEBOUNCE,
+    CONFIG_METADATA,
+    DEFAULT_AUTOMATION_GRACE_SECONDS,
+    DEFAULT_MANUAL_GRACE_SECONDS,
+    DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    DOMAIN,
 )
 from custom_components.climate_advisor.learning import DailyRecord
 
@@ -157,9 +158,8 @@ class TestCoordinatorDataContract:
     def test_daily_record_serializable(self):
         """DailyRecord should be serializable for the learning endpoint."""
         from dataclasses import asdict
-        record = DailyRecord(
-            date="2026-03-18", day_type="warm", trend_direction="stable"
-        )
+
+        record = DailyRecord(date="2026-03-18", day_type="warm", trend_direction="stable")
         data = asdict(record)
         assert data["date"] == "2026-03-18"
         assert data["day_type"] == "warm"
@@ -196,14 +196,9 @@ class TestConfigViewDisplayTransform:
 
     def test_transform_not_applied_to_non_time_keys(self):
         """Non-time settings should not have a display_transform."""
-        non_time_keys = [
-            k for k in CONFIG_METADATA
-            if k not in self.SECONDS_KEYS
-        ]
+        non_time_keys = [k for k in CONFIG_METADATA if k not in self.SECONDS_KEYS]
         for key in non_time_keys:
-            assert "display_transform" not in CONFIG_METADATA[key], (
-                f"{key} should not have display_transform"
-            )
+            assert "display_transform" not in CONFIG_METADATA[key], f"{key} should not have display_transform"
 
     def test_none_value_safe_with_transform(self):
         """Seconds-to-minutes transform should not crash on None values."""

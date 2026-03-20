@@ -43,9 +43,7 @@ def setup_logging() -> Path:
     _log_path = LOG_DIR / f"deploy-{timestamp}.log"
 
     handler = logging.FileHandler(_log_path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
-    ))
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
     _log.setLevel(logging.DEBUG)
     _log.addHandler(handler)
     _log.info("Deploy log started: %s", _log_path)
@@ -55,6 +53,7 @@ def setup_logging() -> Path:
 # ---------------------------------------------------------------------------
 # Terminal colors (works on Windows 10+ with ANSI support)
 # ---------------------------------------------------------------------------
+
 
 class Color:
     CYAN = "\033[96m"
@@ -91,6 +90,7 @@ def gray(msg: str) -> None:
 # Configuration
 # ---------------------------------------------------------------------------
 
+
 def load_config() -> dict[str, str]:
     """Load deploy configuration from .deploy.env with defaults."""
     config = {
@@ -125,7 +125,7 @@ def validate_config(config: dict[str, str]) -> list[str]:
     except ValueError:
         errors.append(f"HA_SSH_PORT must be numeric, got: {config['HA_SSH_PORT']}")
     # Hostname: alphanumeric, dots, hyphens only
-    if not re.match(r'^[a-zA-Z0-9._-]+$', config["HA_HOST"]):
+    if not re.match(r"^[a-zA-Z0-9._-]+$", config["HA_HOST"]):
         errors.append(f"HA_HOST contains invalid characters: {config['HA_HOST']}")
     # Config path must be absolute
     if not config["HA_CONFIG_PATH"].startswith("/"):
@@ -139,9 +139,7 @@ def validate_config(config: dict[str, str]) -> list[str]:
 
 def ssh_args(config: dict[str, str]) -> list[str]:
     """Build SSH command-line arguments."""
-    args = ["ssh", "-p", config["HA_SSH_PORT"],
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "ConnectTimeout=10"]
+    args = ["ssh", "-p", config["HA_SSH_PORT"], "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"]
     if config["HA_SSH_KEY"]:
         args.extend(["-i", config["HA_SSH_KEY"]])
     if config["HA_SSH_KEY"] and sys.platform != "win32":
@@ -149,7 +147,8 @@ def ssh_args(config: dict[str, str]) -> list[str]:
         if key_path.exists() and key_path.stat().st_mode & 0o077:
             _log.warning(
                 "SSH key %s has permissive permissions (%s) — recommend chmod 600",
-                key_path, oct(key_path.stat().st_mode & 0o777),
+                key_path,
+                oct(key_path.stat().st_mode & 0o777),
             )
     return args
 
@@ -160,8 +159,7 @@ def ssh_target(config: dict[str, str]) -> str:
 
 def scp_args(config: dict[str, str]) -> list[str]:
     """Build SCP command-line arguments."""
-    args = ["scp", "-P", config["HA_SSH_PORT"],
-            "-o", "StrictHostKeyChecking=accept-new", "-r"]
+    args = ["scp", "-P", config["HA_SSH_PORT"], "-o", "StrictHostKeyChecking=accept-new", "-r"]
     if config["HA_SSH_KEY"]:
         args.extend(["-i", config["HA_SSH_KEY"]])
     return args
@@ -175,13 +173,13 @@ def remote_path(config: dict[str, str]) -> str:
 # SSH helpers
 # ---------------------------------------------------------------------------
 
+
 def run_ssh(config: dict[str, str], command: str) -> tuple[int, str]:
     """Run a command on the remote server via SSH. Returns (returncode, output)."""
     cmd = ssh_args(config) + [ssh_target(config), command]
     _log.debug("SSH cmd: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
-    _log.debug("SSH rc=%d stdout=%r stderr=%r", result.returncode,
-               result.stdout.strip(), result.stderr.strip())
+    _log.debug("SSH rc=%d stdout=%r stderr=%r", result.returncode, result.stdout.strip(), result.stderr.strip())
     output = (result.stdout + result.stderr).strip()
     return result.returncode, output
 
@@ -190,8 +188,7 @@ def run_local(command: list[str]) -> tuple[int, str]:
     """Run a local command. Returns (returncode, output)."""
     _log.debug("Local cmd: %s", " ".join(command))
     result = subprocess.run(command, capture_output=True, text=True)
-    _log.debug("Local rc=%d stdout=%r stderr=%r", result.returncode,
-               result.stdout.strip(), result.stderr.strip())
+    _log.debug("Local rc=%d stdout=%r stderr=%r", result.returncode, result.stdout.strip(), result.stderr.strip())
     output = (result.stdout + result.stderr).strip()
     return result.returncode, output
 
@@ -199,6 +196,7 @@ def run_local(command: list[str]) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 # Deploy steps
 # ---------------------------------------------------------------------------
+
 
 def test_ssh(config: dict[str, str]) -> bool:
     step(f"Testing SSH connection to {config['HA_HOST']}:{config['HA_SSH_PORT']}")
@@ -326,15 +324,13 @@ def deploy_files(config: dict[str, str]) -> bool:
     run_ssh(config, f"mkdir -p '{rpath}'")
 
     # Copy files and subdirectories (e.g. brand/), excluding __pycache__
-    local_items = [str(f) for f in COMPONENT_DIR.iterdir()
-                   if (f.is_file() or f.is_dir()) and f.name != "__pycache__"]
+    local_items = [str(f) for f in COMPONENT_DIR.iterdir() if (f.is_file() or f.is_dir()) and f.name != "__pycache__"]
     local_count = len(local_items)
 
     cmd = scp_args(config) + local_items + [f"{target}:{rpath}/"]
     _log.debug("SCP cmd: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
-    _log.debug("SCP rc=%d stdout=%r stderr=%r", result.returncode,
-               result.stdout.strip(), result.stderr.strip())
+    _log.debug("SCP rc=%d stdout=%r stderr=%r", result.returncode, result.stdout.strip(), result.stderr.strip())
     if result.returncode != 0:
         _log.error("SCP failed: rc=%d stderr=%s", result.returncode, result.stderr.strip())
         fail("File copy failed")
@@ -446,6 +442,7 @@ def do_rollback(config: dict[str, str]) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     # Enable ANSI colors on Windows
     if sys.platform == "win32":
@@ -467,9 +464,13 @@ def main() -> None:
         sys.exit(1)
     rpath = remote_path(config)
 
-    _log.info("Config: host=%s port=%s user=%s target=%s",
-              config["HA_HOST"], config["HA_SSH_PORT"],
-              config["HA_SSH_USER"], remote_path(config))
+    _log.info(
+        "Config: host=%s port=%s user=%s target=%s",
+        config["HA_HOST"],
+        config["HA_SSH_PORT"],
+        config["HA_SSH_USER"],
+        remote_path(config),
+    )
 
     print(f"{Color.CYAN}============================================{Color.RESET}")
     print(f"{Color.CYAN}  Climate Advisor Deployment Tool{Color.RESET}")

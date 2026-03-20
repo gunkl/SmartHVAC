@@ -3,11 +3,11 @@
 Verifies that LearningEngine no longer performs file I/O implicitly —
 callers must explicitly invoke load_state() / save_state().
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-
 
 from custom_components.climate_advisor.const import LEARNING_DB_FILE
 from custom_components.climate_advisor.learning import (
@@ -15,10 +15,10 @@ from custom_components.climate_advisor.learning import (
     LearningEngine,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_record(date: str = "2026-03-18", **overrides) -> DailyRecord:
     defaults = dict(day_type="mild", trend_direction="stable")
@@ -42,13 +42,16 @@ class TestInitNoIO:
     def test_ignores_existing_file_until_load(self, tmp_path: Path):
         """A pre-existing DB file should not be read until load_state()."""
         db_path = tmp_path / LEARNING_DB_FILE
-        db_path.write_text(json.dumps({
-            "records": [{"date": "2026-03-01", "day_type": "hot",
-                         "trend_direction": "warming"}],
-            "active_suggestions": [],
-            "dismissed_suggestions": [],
-            "settings_history": [],
-        }))
+        db_path.write_text(
+            json.dumps(
+                {
+                    "records": [{"date": "2026-03-01", "day_type": "hot", "trend_direction": "warming"}],
+                    "active_suggestions": [],
+                    "dismissed_suggestions": [],
+                    "settings_history": [],
+                }
+            )
+        )
 
         engine = LearningEngine(tmp_path)
         # State is empty — file not read yet
@@ -63,17 +66,19 @@ class TestLoadState:
 
     def test_loads_records(self, tmp_path: Path):
         db_path = tmp_path / LEARNING_DB_FILE
-        db_path.write_text(json.dumps({
-            "records": [
-                {"date": "2026-03-01", "day_type": "hot",
-                 "trend_direction": "warming"},
-                {"date": "2026-03-02", "day_type": "mild",
-                 "trend_direction": "stable"},
-            ],
-            "active_suggestions": [],
-            "dismissed_suggestions": [],
-            "settings_history": [],
-        }))
+        db_path.write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {"date": "2026-03-01", "day_type": "hot", "trend_direction": "warming"},
+                        {"date": "2026-03-02", "day_type": "mild", "trend_direction": "stable"},
+                    ],
+                    "active_suggestions": [],
+                    "dismissed_suggestions": [],
+                    "settings_history": [],
+                }
+            )
+        )
 
         engine = LearningEngine(tmp_path)
         engine.load_state()

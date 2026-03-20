@@ -1,0 +1,32 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: validate
+        name: Climate Advisor validation
+        entry: py -3 tools/validate.py
+        language: system
+        pass_filenames: false
+        files: ^custom_components/climate_advisor/
+
+      - id: pytest
+        name: pytest
+        entry: py -3 -m pytest tests/ -x --tb=short -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true

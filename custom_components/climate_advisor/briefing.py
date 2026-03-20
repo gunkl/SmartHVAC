@@ -8,6 +8,7 @@ Voice rules for the conversational body:
 - Numerals for all temps and times
 - No emoji in body text (emoji only in the structured header and learning section)
 """
+
 from __future__ import annotations
 
 import logging
@@ -77,8 +78,7 @@ def generate_briefing(
     lines: list[str] = []
 
     _LOGGER.debug(
-        "Generating briefing — day_type=%s, trend=%s, "
-        "comfort_heat=%.0f°F, comfort_cool=%.0f°F, verbosity=%s",
+        "Generating briefing — day_type=%s, trend=%s, comfort_heat=%.0f°F, comfort_cool=%.0f°F, verbosity=%s",
         c.day_type,
         c.trend_direction,
         comfort_heat,
@@ -170,10 +170,7 @@ def generate_briefing(
         len(learning_suggestions) if learning_suggestions else 0,
     )
     if len(briefing_text) > 250:
-        _LOGGER.debug(
-            "Briefing exceeds 250-char sensor state limit — "
-            "full text available in sensor attribute"
-        )
+        _LOGGER.debug("Briefing exceeds 250-char sensor state limit — full text available in sensor attribute")
     return briefing_text
 
 
@@ -338,8 +335,7 @@ def _hot_day_plan(c, comfort_cool, setback_cool, wake_time, sleep_time, fan_mode
     if fan_mode != FAN_MODE_DISABLED and (has_morning or has_evening):
         lines.append("")
         lines.append(
-            "When ventilation windows open, I'll use the fan to help"
-            " pull that cool outdoor air through the house."
+            "When ventilation windows open, I'll use the fan to help pull that cool outdoor air through the house."
         )
     return lines
 
@@ -358,9 +354,7 @@ def _warm_day_plan(c, comfort_cool, wake_time, sleep_time, fan_mode: str = FAN_M
         lines.append("HVAC is off this morning — no action needed.")
 
     if fan_mode != FAN_MODE_DISABLED:
-        lines.append(
-            "I'll use the fan to boost cross-ventilation when windows are open."
-        )
+        lines.append("I'll use the fan to boost cross-ventilation when windows are open.")
 
     lines.append("")
 
@@ -414,8 +408,7 @@ def _cool_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time) -> list
         f" through the morning, ease back a couple degrees midday to ride any solar"
         f" gain, then return to {comfort_heat:.0f}°F as the sun drops.",
         "",
-        f"At bedtime I'll set back to {comfort_heat - 4:.0f}°F — most people sleep"
-        f" better a little cooler.",
+        f"At bedtime I'll set back to {comfort_heat - 4:.0f}°F — most people sleep better a little cooler.",
     ]
 
 
@@ -517,9 +510,7 @@ def _fresh_air_section(
     Uses the configured debounce duration so the timing matches actual behavior.
     """
     debounce_minutes = max(1, debounce_seconds // 60)
-    debounce_desc = (
-        f"{debounce_minutes} minute" if debounce_minutes == 1 else f"{debounce_minutes} minutes"
-    )
+    debounce_desc = f"{debounce_minutes} minute" if debounce_minutes == 1 else f"{debounce_minutes} minutes"
 
     if c.hvac_mode == "cool":
         return [
@@ -573,9 +564,7 @@ def _grace_period_section(
 
     if grace_source == "manual":
         grace_minutes = max(1, manual_grace_seconds // 60)
-        grace_desc = (
-            f"{grace_minutes} minute" if grace_minutes == 1 else f"{grace_minutes} minutes"
-        )
+        grace_desc = f"{grace_minutes} minute" if grace_minutes == 1 else f"{grace_minutes} minutes"
         return [
             f"One heads-up for this morning: you manually turned the HVAC back on"
             f" earlier, so I'm in a {grace_desc} hands-off window right now. During"
@@ -586,9 +575,7 @@ def _grace_period_section(
     else:
         # automation grace
         grace_minutes = max(1, automation_grace_seconds // 60)
-        grace_desc = (
-            f"{grace_minutes} minute" if grace_minutes == 1 else f"{grace_minutes} minutes"
-        )
+        grace_desc = f"{grace_minutes} minute" if grace_minutes == 1 else f"{grace_minutes} minutes"
         return [
             f"One heads-up: I just resumed the HVAC after all the doors and windows"
             f" closed, so I'm in a {grace_desc} settling period. During that time,"

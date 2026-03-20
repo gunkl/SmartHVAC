@@ -8,6 +8,7 @@ the logic inline and test it directly.
 For debounce and grace period tests, we test the AutomationEngine directly
 with mocked HA dependencies.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,10 +28,10 @@ from custom_components.climate_advisor.const import (
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
 )
 
-
 # ---------------------------------------------------------------------------
 # Replicate coordinator logic for unit testing
 # ---------------------------------------------------------------------------
+
 
 def _resolve_monitored_sensors(
     door_window_sensors: list[str],
@@ -78,6 +79,7 @@ def _states_getter(state_map: dict[str, MagicMock]):
 # Group resolution tests
 # ---------------------------------------------------------------------------
 
+
 class TestResolveMonitoredSensors:
     """Tests for sensor resolution logic.
 
@@ -115,6 +117,7 @@ class TestResolveMonitoredSensors:
 # Polarity tests
 # ---------------------------------------------------------------------------
 
+
 class TestIsSensorOpen:
     """Tests for polarity-aware sensor open check."""
 
@@ -147,41 +150,50 @@ class TestIsSensorOpen:
 # All-closed logic tests
 # ---------------------------------------------------------------------------
 
+
 class TestAllClosedCheck:
     """Tests for the all-closed check across multiple sensors with polarity."""
 
     def test_all_closed_standard(self):
-        get = _states_getter({
-            "binary_sensor.a": _make_state("off"),
-            "binary_sensor.b": _make_state("off"),
-        })
+        get = _states_getter(
+            {
+                "binary_sensor.a": _make_state("off"),
+                "binary_sensor.b": _make_state("off"),
+            }
+        )
         sensors = ["binary_sensor.a", "binary_sensor.b"]
         all_closed = all(not _is_sensor_open(get, s, False) for s in sensors)
         assert all_closed is True
 
     def test_one_open_standard(self):
-        get = _states_getter({
-            "binary_sensor.a": _make_state("off"),
-            "binary_sensor.b": _make_state("on"),
-        })
+        get = _states_getter(
+            {
+                "binary_sensor.a": _make_state("off"),
+                "binary_sensor.b": _make_state("on"),
+            }
+        )
         sensors = ["binary_sensor.a", "binary_sensor.b"]
         all_closed = all(not _is_sensor_open(get, s, False) for s in sensors)
         assert all_closed is False
 
     def test_all_closed_inverted(self):
-        get = _states_getter({
-            "binary_sensor.a": _make_state("on"),
-            "binary_sensor.b": _make_state("on"),
-        })
+        get = _states_getter(
+            {
+                "binary_sensor.a": _make_state("on"),
+                "binary_sensor.b": _make_state("on"),
+            }
+        )
         sensors = ["binary_sensor.a", "binary_sensor.b"]
         all_closed = all(not _is_sensor_open(get, s, True) for s in sensors)
         assert all_closed is True
 
     def test_one_open_inverted(self):
-        get = _states_getter({
-            "binary_sensor.a": _make_state("on"),
-            "binary_sensor.b": _make_state("off"),  # off = open when inverted
-        })
+        get = _states_getter(
+            {
+                "binary_sensor.a": _make_state("on"),
+                "binary_sensor.b": _make_state("off"),  # off = open when inverted
+            }
+        )
         sensors = ["binary_sensor.a", "binary_sensor.b"]
         all_closed = all(not _is_sensor_open(get, s, True) for s in sensors)
         assert all_closed is False
@@ -190,6 +202,7 @@ class TestAllClosedCheck:
 # ---------------------------------------------------------------------------
 # Config migration tests
 # ---------------------------------------------------------------------------
+
 
 class TestConfigMigration:
     """Tests for v2->v3 config migration defaults."""
@@ -232,14 +245,17 @@ class TestConfigMigration:
 # Helpers for AutomationEngine tests
 # ---------------------------------------------------------------------------
 
+
 def _make_automation_engine(config_overrides: dict | None = None) -> AutomationEngine:
     """Create an AutomationEngine with mocked HA dependencies."""
     hass = MagicMock()
     hass.services = MagicMock()
     hass.services.async_call = AsyncMock()
+
     def _consume_coroutine(coro):
         """Close coroutine to prevent 'never awaited' warnings."""
         coro.close()
+
     hass.async_create_task = MagicMock(side_effect=_consume_coroutine)
     hass.states = MagicMock()
 
@@ -268,6 +284,7 @@ def _make_automation_engine(config_overrides: dict | None = None) -> AutomationE
 # Debounce constant/config tests
 # ---------------------------------------------------------------------------
 
+
 class TestSensorDebounceConfig:
     """Tests for debounce configuration defaults and values."""
 
@@ -290,6 +307,7 @@ class TestSensorDebounceConfig:
 # ---------------------------------------------------------------------------
 # Grace period — AutomationEngine tests
 # ---------------------------------------------------------------------------
+
 
 class TestGracePeriodState:
     """Tests for grace period state management on the AutomationEngine."""
@@ -329,9 +347,7 @@ class TestHandleDoorWindowOpenWithGrace:
         engine = _make_automation_engine()
         engine.hass.states.get.return_value = _make_state("heat")
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         assert engine._paused_by_door is True
@@ -354,9 +370,7 @@ class TestHandleAllDoorsWindowsClosed:
         engine._paused_by_door = True
         engine._pre_pause_mode = "heat"
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ) as mock_call_later:
+        with patch("custom_components.climate_advisor.automation.async_call_later") as mock_call_later:
             mock_call_later.return_value = MagicMock()  # cancel callback
             asyncio.run(engine.handle_all_doors_windows_closed())
 
@@ -427,9 +441,7 @@ class TestGracePeriodDuration:
         engine = _make_automation_engine({CONF_MANUAL_GRACE_PERIOD: 600})
         engine._paused_by_door = True
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ) as mock_call_later:
+        with patch("custom_components.climate_advisor.automation.async_call_later") as mock_call_later:
             mock_call_later.return_value = MagicMock()
             asyncio.run(engine.handle_manual_override_during_pause())
 
@@ -443,9 +455,7 @@ class TestGracePeriodDuration:
         engine._paused_by_door = True
         engine._pre_pause_mode = "heat"
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ) as mock_call_later:
+        with patch("custom_components.climate_advisor.automation.async_call_later") as mock_call_later:
             mock_call_later.return_value = MagicMock()
             asyncio.run(engine.handle_all_doors_windows_closed())
 
@@ -457,9 +467,7 @@ class TestGracePeriodDuration:
         engine = _make_automation_engine({CONF_MANUAL_GRACE_PERIOD: 0})
         engine._paused_by_door = True
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ) as mock_call_later:
+        with patch("custom_components.climate_advisor.automation.async_call_later") as mock_call_later:
             asyncio.run(engine.handle_manual_override_during_pause())
 
         # Should not have started a timer
@@ -497,6 +505,7 @@ class TestGracePeriodNotifications:
 # ---------------------------------------------------------------------------
 # Timer cleanup tests
 # ---------------------------------------------------------------------------
+
 
 class TestTimerCleanup:
     """Tests for timer cleanup on engine disposal."""
@@ -538,6 +547,7 @@ class TestTimerCleanup:
 # Grace period expiry callback tests (Issue #38)
 # ---------------------------------------------------------------------------
 
+
 class TestGracePeriodExpiry:
     """Tests for the grace period expiry callback behavior.
 
@@ -553,8 +563,7 @@ class TestGracePeriodExpiry:
 
     def _run_close_and_capture_callback(self, engine):
         """Run handle_all_doors_windows_closed and return the grace expiry callback."""
-        with patch(self._PATCHES[0]) as mock_call_later, \
-             patch(self._PATCHES[1], side_effect=lambda f: f):
+        with patch(self._PATCHES[0]) as mock_call_later, patch(self._PATCHES[1], side_effect=lambda f: f):
             mock_call_later.return_value = MagicMock()
             asyncio.run(engine.handle_all_doors_windows_closed())
             assert mock_call_later.call_count == 1
@@ -564,10 +573,12 @@ class TestGracePeriodExpiry:
 
     def test_grace_expiry_callback_clears_state(self):
         """When the grace timer fires, _grace_active resets and manual override clears."""
-        engine = _make_automation_engine({
-            CONF_AUTOMATION_GRACE_PERIOD: 300,
-            CONF_AUTOMATION_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_AUTOMATION_GRACE_PERIOD: 300,
+                CONF_AUTOMATION_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
         engine._pre_pause_mode = "cool"
 
@@ -590,10 +601,12 @@ class TestGracePeriodExpiry:
 
     def test_grace_expiry_sends_notification_when_enabled(self):
         """When automation grace notify is on, expiry dispatches a notification."""
-        engine = _make_automation_engine({
-            CONF_AUTOMATION_GRACE_PERIOD: 300,
-            CONF_AUTOMATION_GRACE_NOTIFY: True,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_AUTOMATION_GRACE_PERIOD: 300,
+                CONF_AUTOMATION_GRACE_NOTIFY: True,
+            }
+        )
         engine._paused_by_door = True
         engine._pre_pause_mode = "cool"
 
@@ -607,10 +620,12 @@ class TestGracePeriodExpiry:
 
     def test_grace_expiry_skips_notification_when_disabled(self):
         """When automation grace notify is off, expiry sends no notification."""
-        engine = _make_automation_engine({
-            CONF_AUTOMATION_GRACE_PERIOD: 300,
-            CONF_AUTOMATION_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_AUTOMATION_GRACE_PERIOD: 300,
+                CONF_AUTOMATION_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
         engine._pre_pause_mode = "cool"
 
@@ -644,10 +659,12 @@ class TestGracePeriodExpiry:
 
     def test_door_open_after_grace_expires_triggers_pause(self):
         """After grace expires, a new door open correctly pauses HVAC."""
-        engine = _make_automation_engine({
-            CONF_AUTOMATION_GRACE_PERIOD: 300,
-            CONF_AUTOMATION_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_AUTOMATION_GRACE_PERIOD: 300,
+                CONF_AUTOMATION_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
         engine._pre_pause_mode = "cool"
 
@@ -672,6 +689,7 @@ class TestGracePeriodExpiry:
 # ---------------------------------------------------------------------------
 # Config migration v3 → v4 tests
 # ---------------------------------------------------------------------------
+
 
 class TestConfigMigrationV3ToV4:
     """Tests for v3->v4 config migration defaults."""
@@ -724,6 +742,7 @@ class TestConfigMigrationV3ToV4:
 # Email notification tests
 # ---------------------------------------------------------------------------
 
+
 class TestEmailNotifications:
     """Tests for dual-channel notification (primary + email via _notify helper)."""
 
@@ -764,9 +783,7 @@ class TestEmailNotifications:
         engine = _make_automation_engine({CONF_EMAIL_NOTIFY: True})
         engine.hass.states.get.return_value = _make_state("heat")
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         # Should have: set_hvac_mode("off") + primary notify + email notify = 3 calls
@@ -780,9 +797,7 @@ class TestEmailNotifications:
         engine = _make_automation_engine({CONF_EMAIL_NOTIFY: False})
         engine.hass.states.get.return_value = _make_state("heat")
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         calls = engine.hass.services.async_call.call_args_list
@@ -794,6 +809,7 @@ class TestEmailNotifications:
         engine = _make_automation_engine({CONF_EMAIL_NOTIFY: True})
         # Need a classification for occupancy_home to proceed
         from custom_components.climate_advisor.classifier import DayClassification
+
         engine._current_classification = DayClassification(
             day_type="mild",
             today_high=72,
@@ -821,6 +837,7 @@ class TestEmailNotifications:
 # ---------------------------------------------------------------------------
 # Config migration v4 → v5 tests
 # ---------------------------------------------------------------------------
+
 
 class TestConfigMigrationV4ToV5:
     """Tests for v4->v5 config migration adding email_notify default."""
@@ -850,6 +867,7 @@ class TestConfigMigrationV4ToV5:
 # Debounce / grace interaction tests (Issue #13)
 # ---------------------------------------------------------------------------
 
+
 class TestDebounceGraceInteraction:
     """Tests for the interaction between debounce timers and grace periods."""
 
@@ -861,22 +879,17 @@ class TestDebounceGraceInteraction:
         After the fix: any non-off/unavailable/unknown new_state triggers detection.
         """
         is_paused_by_door = True
-        old_state_value = "cool"   # thermostat was already in "cool", never hit "off"
-        new_state_value = "cool"   # changed to "cool" again (or any active mode)
+        old_state_value = "cool"  # thermostat was already in "cool", never hit "off"
+        new_state_value = "cool"  # changed to "cool" again (or any active mode)
 
         # Old (broken) logic — would NOT detect the override
         old_logic_detected = (
-            is_paused_by_door
-            and old_state_value == "off"
-            and new_state_value not in ("off", "unavailable", "unknown")
+            is_paused_by_door and old_state_value == "off" and new_state_value not in ("off", "unavailable", "unknown")
         )
         assert old_logic_detected is False
 
         # New (fixed) logic — detects override regardless of old_state
-        new_logic_detected = (
-            is_paused_by_door
-            and new_state_value not in ("off", "unavailable", "unknown")
-        )
+        new_logic_detected = is_paused_by_door and new_state_value not in ("off", "unavailable", "unknown")
         assert new_logic_detected is True
 
     def test_manual_override_cancels_debounce_timers(self):
@@ -903,9 +916,7 @@ class TestDebounceGraceInteraction:
         engine.hass.states.get.return_value = _make_state("heat")
 
         # Step 1: door opens — engine pauses HVAC
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         assert engine._paused_by_door is True
@@ -935,9 +946,7 @@ class TestDebounceGraceInteraction:
 
         sensor = "binary_sensor.front_door"
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open(sensor))
 
         assert engine._paused_by_door is True
@@ -963,9 +972,7 @@ class TestDebounceGraceInteraction:
         engine.hass.states.get.return_value = _make_state("heat")
 
         # Sensor A fires first
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.sensor_a"))
 
         assert engine._paused_by_door is True
@@ -998,9 +1005,7 @@ class TestDebounceGraceInteraction:
         engine._last_resume_source = None
         engine._paused_by_door = False
 
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         assert engine._paused_by_door is True
@@ -1011,17 +1016,13 @@ class TestDebounceGraceInteraction:
         engine.hass.states.get.return_value = _make_state("heat")
 
         # First open — pauses HVAC
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         assert engine._paused_by_door is True
 
         # Manual override with zero-duration grace — grace should NOT activate
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ) as mock_call_later:
+        with patch("custom_components.climate_advisor.automation.async_call_later") as mock_call_later:
             asyncio.run(engine.handle_manual_override_during_pause())
 
         mock_call_later.assert_not_called()
@@ -1030,9 +1031,7 @@ class TestDebounceGraceInteraction:
 
         # Door opens again — should pause immediately (no grace blocking)
         engine.hass.services.async_call.reset_mock()
-        with patch(
-            "custom_components.climate_advisor.automation.async_call_later"
-        ):
+        with patch("custom_components.climate_advisor.automation.async_call_later"):
             asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         assert engine._paused_by_door is True
@@ -1041,6 +1040,7 @@ class TestDebounceGraceInteraction:
 # ---------------------------------------------------------------------------
 # Config minutes ↔ seconds conversion tests (Issue #13)
 # ---------------------------------------------------------------------------
+
 
 class TestConfigMinutesConversion:
     """Tests for the minutes-to-seconds conversion added in Issue #13.
@@ -1106,6 +1106,7 @@ class TestConfigMinutesConversion:
 # Physical window tracking on HOT days (Issue #18 — bug fix)
 # ---------------------------------------------------------------------------
 
+
 class TestPhysicalWindowTrackingOnHotDay:
     """On HOT days windows_recommended=False, but physical opens must still be recorded.
 
@@ -1130,6 +1131,7 @@ class TestPhysicalWindowTrackingOnHotDay:
     def _make_record(self):
         """Create a minimal DailyRecord for today."""
         from custom_components.climate_advisor.learning import DailyRecord
+
         return DailyRecord(date="2026-03-19", day_type="hot", trend_direction="stable")
 
     def test_physical_window_tracking_on_hot_day(self):

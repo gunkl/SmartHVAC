@@ -47,8 +47,7 @@ def load_config() -> dict[str, str]:
                 key, value = line.split("=", 1)
                 config[key.strip()] = value.strip()
     else:
-        print("ERROR: .deploy.env not found. Copy .deploy.env.sample and configure it.",
-              file=sys.stderr)
+        print("ERROR: .deploy.env not found. Copy .deploy.env.sample and configure it.", file=sys.stderr)
         sys.exit(1)
     return config
 
@@ -56,9 +55,13 @@ def load_config() -> dict[str, str]:
 def ssh_args(config: dict[str, str]) -> list[str]:
     """Build SSH command-line arguments."""
     args = [
-        "ssh", "-p", config["HA_SSH_PORT"],
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "ConnectTimeout=10",
+        "ssh",
+        "-p",
+        config["HA_SSH_PORT"],
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
     ]
     if config["HA_SSH_KEY"]:
         args.extend(["-i", config["HA_SSH_KEY"]])
@@ -115,16 +118,11 @@ def main() -> None:
         os.system("")  # enable ANSI
 
     parser = argparse.ArgumentParser(description="Fetch Home Assistant logs via SSH")
-    parser.add_argument("--lines", "-n", type=int, default=50,
-                        help="Number of log lines to fetch (default: 50)")
-    parser.add_argument("--all", action="store_true",
-                        help="Show all HA log lines, not just climate_advisor")
-    parser.add_argument("--filter", "-f", type=str, default="",
-                        help="Additional grep filter (e.g. 'ERROR', 'WARNING')")
-    parser.add_argument("--full", action="store_true",
-                        help="Dump the entire HA log (can be large)")
-    parser.add_argument("--save", "-s", action="store_true",
-                        help="Save output to logs/ directory")
+    parser.add_argument("--lines", "-n", type=int, default=50, help="Number of log lines to fetch (default: 50)")
+    parser.add_argument("--all", action="store_true", help="Show all HA log lines, not just climate_advisor")
+    parser.add_argument("--filter", "-f", type=str, default="", help="Additional grep filter (e.g. 'ERROR', 'WARNING')")
+    parser.add_argument("--full", action="store_true", help="Dump the entire HA log (can be large)")
+    parser.add_argument("--save", "-s", action="store_true", help="Save output to logs/ directory")
     args = parser.parse_args()
 
     config = load_config()

@@ -7,6 +7,7 @@ Tests for:
 - ClimateAdvisorContactStatusSensor class existence in sensor.py
 - API response includes contact fields
 """
+
 from __future__ import annotations
 
 import sys
@@ -14,18 +15,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ── HA module stubs (must happen before importing climate_advisor) ──
 if "homeassistant" not in sys.modules:
     from conftest import _install_ha_stubs
+
     _install_ha_stubs()
 
 from custom_components.climate_advisor.const import ATTR_CONTACT_STATUS
 
-
 # ---------------------------------------------------------------------------
 # Helpers — replicate coordinator logic for unit testing
 # ---------------------------------------------------------------------------
+
 
 def _make_state(state_value: str) -> MagicMock:
     """Create a mock HA state object."""
@@ -59,9 +60,7 @@ def _compute_contact_status(resolved_sensors: list[str], hass_states_get) -> str
     """
     if not resolved_sensors:
         return "no sensors"
-    open_count = sum(
-        1 for s in resolved_sensors if _is_sensor_open(hass_states_get, s)
-    )
+    open_count = sum(1 for s in resolved_sensors if _is_sensor_open(hass_states_get, s))
     if open_count == 0:
         return "all closed"
     return f"{open_count} open"
@@ -75,17 +74,20 @@ def _compute_contact_details(resolved_sensors: list[str], hass_states_get) -> li
     details = []
     for sensor_id in resolved_sensors:
         friendly = sensor_id.split(".")[-1].replace("_", " ").title()
-        details.append({
-            "entity_id": sensor_id,
-            "friendly_name": friendly,
-            "open": _is_sensor_open(hass_states_get, sensor_id),
-        })
+        details.append(
+            {
+                "entity_id": sensor_id,
+                "friendly_name": friendly,
+                "open": _is_sensor_open(hass_states_get, sensor_id),
+            }
+        )
     return details
 
 
 # ---------------------------------------------------------------------------
 # Tests: _compute_contact_status
 # ---------------------------------------------------------------------------
+
 
 class TestComputeContactStatus:
     """Tests for _compute_contact_status logic."""
@@ -103,9 +105,7 @@ class TestComputeContactStatus:
             "binary_sensor.back_door": _make_state("off"),
         }
         getter = _states_getter(states)
-        result = _compute_contact_status(
-            ["binary_sensor.front_door", "binary_sensor.back_door"], getter
-        )
+        result = _compute_contact_status(["binary_sensor.front_door", "binary_sensor.back_door"], getter)
         assert result == "all closed"
 
     def test_one_sensor_open_returns_1_open(self):
@@ -115,9 +115,7 @@ class TestComputeContactStatus:
             "binary_sensor.back_door": _make_state("off"),
         }
         getter = _states_getter(states)
-        result = _compute_contact_status(
-            ["binary_sensor.front_door", "binary_sensor.back_door"], getter
-        )
+        result = _compute_contact_status(["binary_sensor.front_door", "binary_sensor.back_door"], getter)
         assert result == "1 open"
 
     def test_multiple_sensors_open_returns_count(self):
@@ -180,6 +178,7 @@ class TestComputeContactStatus:
 # ---------------------------------------------------------------------------
 # Tests: _compute_contact_details
 # ---------------------------------------------------------------------------
+
 
 class TestComputeContactDetails:
     """Tests for _compute_contact_details logic."""
@@ -282,6 +281,7 @@ class TestComputeContactDetails:
 # Tests: Constant verification
 # ---------------------------------------------------------------------------
 
+
 class TestContactStatusConstant:
     """Verify the ATTR_CONTACT_STATUS constant value."""
 
@@ -294,6 +294,7 @@ class TestContactStatusConstant:
 # Tests: Sensor entity source verification
 # ---------------------------------------------------------------------------
 
+
 class TestContactStatusSensorSource:
     """Verify ClimateAdvisorContactStatusSensor exists in sensor.py via source inspection.
 
@@ -305,9 +306,9 @@ class TestContactStatusSensorSource:
     def _read_sensor_source(self):
         """Read sensor.py source once for all tests in this class."""
         import pathlib
+
         sensor_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "custom_components" / "climate_advisor" / "sensor.py"
+            pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "climate_advisor" / "sensor.py"
         )
         self.source = sensor_path.read_text()
 
@@ -346,6 +347,7 @@ class TestContactStatusSensorSource:
 # Tests: API response includes contact fields
 # ---------------------------------------------------------------------------
 
+
 class TestAPIContactFields:
     """Verify the status API response dict includes contact_status and contact_sensors."""
 
@@ -369,10 +371,8 @@ class TestAPIContactFields:
     def test_contact_status_defaults_to_no_sensors(self):
         """API uses 'no sensors' as the default when ATTR_CONTACT_STATUS is absent."""
         import pathlib
-        api_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "custom_components" / "climate_advisor" / "api.py"
-        )
+
+        api_path = pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "climate_advisor" / "api.py"
         source = api_path.read_text()
         # The default fallback value is in the source
         assert '"no sensors"' in source
@@ -380,20 +380,16 @@ class TestAPIContactFields:
     def test_api_source_includes_contact_status_key(self):
         """api.py builds the response with 'contact_status' key."""
         import pathlib
-        api_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "custom_components" / "climate_advisor" / "api.py"
-        )
+
+        api_path = pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "climate_advisor" / "api.py"
         source = api_path.read_text()
         assert '"contact_status"' in source
 
     def test_api_source_includes_contact_sensors_key(self):
         """api.py builds the response with 'contact_sensors' key."""
         import pathlib
-        api_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "custom_components" / "climate_advisor" / "api.py"
-        )
+
+        api_path = pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "climate_advisor" / "api.py"
         source = api_path.read_text()
         assert '"contact_sensors"' in source
 

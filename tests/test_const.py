@@ -1,4 +1,5 @@
 """Tests for Climate Advisor constants — validate internal consistency."""
+
 from __future__ import annotations
 
 from custom_components.climate_advisor.const import (
@@ -21,10 +22,10 @@ from custom_components.climate_advisor.const import (
     TREND_THRESHOLD_SIGNIFICANT,
 )
 
-
 # ---------------------------------------------------------------------------
 # Day type thresholds — ascending order
 # ---------------------------------------------------------------------------
+
 
 class TestDayTypeThresholds:
     """Thresholds must form a strict ascending chain: COOL < MILD < WARM < HOT."""
@@ -50,6 +51,7 @@ class TestDayTypeThresholds:
 # Setpoint values — sensible comfort / setback relationships
 # ---------------------------------------------------------------------------
 
+
 class TestSetpointValues:
     """Comfort and setback setpoints must satisfy physical/comfort constraints."""
 
@@ -72,14 +74,14 @@ class TestSetpointValues:
         assert DEFAULT_COMFORT_COOL > 0
 
     def test_all_setpoints_positive(self):
-        for sp in (DEFAULT_COMFORT_HEAT, DEFAULT_COMFORT_COOL,
-                   DEFAULT_SETBACK_HEAT, DEFAULT_SETBACK_COOL):
+        for sp in (DEFAULT_COMFORT_HEAT, DEFAULT_COMFORT_COOL, DEFAULT_SETBACK_HEAT, DEFAULT_SETBACK_COOL):
             assert sp > 0
 
 
 # ---------------------------------------------------------------------------
 # Trend thresholds — positive and ordered
 # ---------------------------------------------------------------------------
+
 
 class TestTrendThresholds:
     """Trend thresholds must be positive and moderate < significant."""
@@ -98,6 +100,7 @@ class TestTrendThresholds:
 # Timing values — positive
 # ---------------------------------------------------------------------------
 
+
 class TestTimingValues:
     """All timing constants must be positive numbers."""
 
@@ -114,6 +117,7 @@ class TestTimingValues:
 # ---------------------------------------------------------------------------
 # Learning system constants — sanity checks
 # ---------------------------------------------------------------------------
+
 
 class TestLearningConstants:
     """Learning system thresholds must be internally consistent."""

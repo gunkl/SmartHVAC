@@ -6,6 +6,7 @@ fields for each day type, matching the frontend's conditional branches.
 
 Issue: #44 — Consolidate window schedule display in Classification Details
 """
+
 from __future__ import annotations
 
 from datetime import time
@@ -28,10 +29,10 @@ from custom_components.climate_advisor.const import (
     THRESHOLD_WARM,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_forecast(
     today_high: float,
@@ -57,6 +58,7 @@ def _make_forecast(
 # HOT day — opportunity fields populated, open/close times are None
 # ---------------------------------------------------------------------------
 
+
 class TestHotDayWindowFields:
     """On hot days the dashboard shows morning/evening opportunity rows."""
 
@@ -73,18 +75,26 @@ class TestHotDayWindowFields:
         assert isinstance(c.window_opportunity_morning_end, time)
 
     def test_hot_day_evening_opportunity_when_tomorrow_low_moderate(self):
-        c = classify_day(_make_forecast(
-            today_high=THRESHOLD_HOT + 5, today_low=75,
-            tomorrow_high=THRESHOLD_HOT + 5, tomorrow_low=75,
-        ))
+        c = classify_day(
+            _make_forecast(
+                today_high=THRESHOLD_HOT + 5,
+                today_low=75,
+                tomorrow_high=THRESHOLD_HOT + 5,
+                tomorrow_low=75,
+            )
+        )
         assert c.window_opportunity_evening is True
         assert isinstance(c.window_opportunity_evening_start, time)
 
     def test_hot_day_no_opportunity_when_lows_too_high(self):
-        c = classify_day(_make_forecast(
-            today_high=THRESHOLD_HOT + 5, today_low=85,
-            tomorrow_high=THRESHOLD_HOT + 5, tomorrow_low=85,
-        ))
+        c = classify_day(
+            _make_forecast(
+                today_high=THRESHOLD_HOT + 5,
+                today_low=85,
+                tomorrow_high=THRESHOLD_HOT + 5,
+                tomorrow_low=85,
+            )
+        )
         assert c.window_opportunity_morning is False
         assert c.window_opportunity_evening is False
 
@@ -92,6 +102,7 @@ class TestHotDayWindowFields:
 # ---------------------------------------------------------------------------
 # WARM day — open/close times populated, opportunity fields are False
 # ---------------------------------------------------------------------------
+
 
 class TestWarmDayWindowFields:
     """On warm days the dashboard shows open/close time rows."""
@@ -113,6 +124,7 @@ class TestWarmDayWindowFields:
 # ---------------------------------------------------------------------------
 # MILD day — open/close times populated, opportunity fields are False
 # ---------------------------------------------------------------------------
+
 
 class TestMildDayWindowFields:
     """On mild days the dashboard shows open/close time rows."""
@@ -137,6 +149,7 @@ class TestMildDayWindowFields:
 # COOL day — all window fields at defaults
 # ---------------------------------------------------------------------------
 
+
 class TestCoolDayWindowFields:
     """On cool days the dashboard shows 'No window ventilation today'."""
 
@@ -153,6 +166,7 @@ class TestCoolDayWindowFields:
 # ---------------------------------------------------------------------------
 # COLD day — all window fields at defaults
 # ---------------------------------------------------------------------------
+
 
 class TestColdDayWindowFields:
     """On cold days the dashboard shows 'No window ventilation today'."""
@@ -171,16 +185,20 @@ class TestColdDayWindowFields:
 # Mutual exclusivity — open/close and opportunity never both populated
 # ---------------------------------------------------------------------------
 
+
 class TestWindowFieldMutualExclusivity:
     """Ensure the two window display modes never overlap."""
 
-    @pytest.mark.parametrize("high,expected_type", [
-        (THRESHOLD_HOT + 5, DAY_TYPE_HOT),
-        (THRESHOLD_WARM + 2, DAY_TYPE_WARM),
-        (THRESHOLD_MILD + 2, DAY_TYPE_MILD),
-        (THRESHOLD_COOL + 2, DAY_TYPE_COOL),
-        (THRESHOLD_COOL - 5, DAY_TYPE_COLD),
-    ])
+    @pytest.mark.parametrize(
+        "high,expected_type",
+        [
+            (THRESHOLD_HOT + 5, DAY_TYPE_HOT),
+            (THRESHOLD_WARM + 2, DAY_TYPE_WARM),
+            (THRESHOLD_MILD + 2, DAY_TYPE_MILD),
+            (THRESHOLD_COOL + 2, DAY_TYPE_COOL),
+            (THRESHOLD_COOL - 5, DAY_TYPE_COLD),
+        ],
+    )
     def test_no_overlap(self, high, expected_type):
         c = classify_day(_make_forecast(today_high=high, today_low=50))
         assert c.day_type == expected_type

@@ -1,4 +1,5 @@
 """Day type classification and forecast analysis for Climate Advisor."""
+
 from __future__ import annotations
 
 import logging
@@ -6,22 +7,22 @@ from dataclasses import dataclass
 from datetime import datetime, time
 
 from .const import (
-    DAY_TYPE_HOT,
-    DAY_TYPE_WARM,
-    DAY_TYPE_MILD,
-    DAY_TYPE_COOL,
     DAY_TYPE_COLD,
+    DAY_TYPE_COOL,
+    DAY_TYPE_HOT,
+    DAY_TYPE_MILD,
+    DAY_TYPE_WARM,
     DEFAULT_COMFORT_COOL,
+    ECONOMIZER_EVENING_START_HOUR,
     ECONOMIZER_MORNING_END_HOUR,
     ECONOMIZER_MORNING_START_HOUR,
-    ECONOMIZER_EVENING_START_HOUR,
     ECONOMIZER_TEMP_DELTA,
-    THRESHOLD_HOT,
-    THRESHOLD_WARM,
-    THRESHOLD_MILD,
     THRESHOLD_COOL,
-    TREND_THRESHOLD_SIGNIFICANT,
+    THRESHOLD_HOT,
+    THRESHOLD_MILD,
+    THRESHOLD_WARM,
     TREND_THRESHOLD_MODERATE,
+    TREND_THRESHOLD_SIGNIFICANT,
     WARM_WINDOW_CLOSE_HOUR,
     WARM_WINDOW_OPEN_HOUR,
 )
@@ -113,9 +114,7 @@ class DayClassification:
             self.windows_recommended = True
             self.window_open_time = time(10, 0)
             self.window_close_time = time(17, 0)
-        elif self.day_type == DAY_TYPE_COOL:
-            self.hvac_mode = "heat"
-        elif self.day_type == DAY_TYPE_COLD:
+        elif self.day_type == DAY_TYPE_COOL or self.day_type == DAY_TYPE_COLD:
             self.hvac_mode = "heat"
 
         _LOGGER.debug(
@@ -190,8 +189,7 @@ def classify_day(forecast: ForecastSnapshot) -> DayClassification:
     trend_magnitude = abs(avg_delta)
 
     _LOGGER.debug(
-        "Trend — high_delta=%.1f°F, low_delta=%.1f°F, avg=%.1f°F, "
-        "direction=%s, magnitude=%.1f°F",
+        "Trend — high_delta=%.1f°F, low_delta=%.1f°F, avg=%.1f°F, direction=%s, magnitude=%.1f°F",
         high_delta,
         low_delta,
         avg_delta,

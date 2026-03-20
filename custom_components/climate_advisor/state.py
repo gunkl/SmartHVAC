@@ -3,6 +3,7 @@
 Saves and restores runtime state (classification, weather, temp history,
 automation state, daily record, briefing) across HA restarts.
 """
+
 from __future__ import annotations
 
 import json

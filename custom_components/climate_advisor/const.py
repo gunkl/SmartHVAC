@@ -54,13 +54,13 @@ MAX_CONTINUOUS_RUNTIME_HOURS = 3
 ECONOMIZER_TEMP_DELTA = 3  # °F — activate when outdoor temp within this delta of comfort_cool
 
 # Economizer time boundaries for hot-day window cooling
-ECONOMIZER_MORNING_START_HOUR = 6   # 6:00 AM
-ECONOMIZER_MORNING_END_HOUR = 9     # 9:00 AM
+ECONOMIZER_MORNING_START_HOUR = 6  # 6:00 AM
+ECONOMIZER_MORNING_END_HOUR = 9  # 9:00 AM
 ECONOMIZER_EVENING_START_HOUR = 17  # 5:00 PM
-ECONOMIZER_EVENING_END_HOUR = 24    # midnight (end of day)
+ECONOMIZER_EVENING_END_HOUR = 24  # midnight (end of day)
 
 # Warm-day window timing — open early morning, close before outdoor temps climb
-WARM_WINDOW_OPEN_HOUR = 6    # 6:00 AM
+WARM_WINDOW_OPEN_HOUR = 6  # 6:00 AM
 WARM_WINDOW_CLOSE_HOUR = 10  # 10:00 AM
 
 # Occupancy toggle configuration
@@ -156,32 +156,49 @@ PANEL_FRONTEND_PATH = "climate-advisor"
 CONFIG_METADATA = {
     "weather_entity": {
         "label": "Weather Entity",
-        "description": "The weather integration used for forecast data. Determines day type classification and all downstream automation decisions.",
+        "description": (
+            "The weather integration used for forecast data."
+            " Determines day type classification and all downstream automation decisions."
+        ),
         "category": "core",
     },
     "climate_entity": {
         "label": "Thermostat Entity",
-        "description": "The climate entity Climate Advisor controls. All HVAC mode and temperature commands go to this entity.",
+        "description": (
+            "The climate entity Climate Advisor controls. All HVAC mode and temperature commands go to this entity."
+        ),
         "category": "core",
     },
     "comfort_heat": {
         "label": "Comfort Heat (°F)",
-        "description": "Target temperature when heating is active. Lowering saves energy but may feel cooler. Used for morning wake-up and occupancy-home restores.",
+        "description": (
+            "Target temperature when heating is active. Lowering saves energy but may feel cooler."
+            " Used for morning wake-up and occupancy-home restores."
+        ),
         "category": "core",
     },
     "comfort_cool": {
         "label": "Comfort Cool (°F)",
-        "description": "Target temperature when cooling is active. Raising saves energy but may feel warmer. The economizer uses this as the threshold for window cooling decisions.",
+        "description": (
+            "Target temperature when cooling is active. Raising saves energy but may feel warmer."
+            " The economizer uses this as the threshold for window cooling decisions."
+        ),
         "category": "core",
     },
     "setback_heat": {
         "label": "Setback Heat (°F)",
-        "description": "Temperature when heating and away from home. Lower values save more energy but take longer to recover when you return.",
+        "description": (
+            "Temperature when heating and away from home."
+            " Lower values save more energy but take longer to recover when you return."
+        ),
         "category": "core",
     },
     "setback_cool": {
         "label": "Setback Cool (°F)",
-        "description": "Temperature when cooling and away from home. Higher values save more energy but take longer to cool down when you return.",
+        "description": (
+            "Temperature when cooling and away from home."
+            " Higher values save more energy but take longer to cool down when you return."
+        ),
         "category": "core",
     },
     "notify_service": {
@@ -196,33 +213,51 @@ CONFIG_METADATA = {
     },
     "outdoor_temp_source": {
         "label": "Outdoor Temp Source",
-        "description": "Where outdoor temperature is read from: the weather service, a dedicated sensor, or an input_number helper.",
+        "description": (
+            "Where outdoor temperature is read from:"
+            " the weather service, a dedicated sensor, or an input_number helper."
+        ),
         "category": "sensors",
     },
     "indoor_temp_source": {
         "label": "Indoor Temp Source",
-        "description": "Where indoor temperature is read from: the thermostat's built-in sensor, a dedicated sensor, or an input_number helper.",
+        "description": (
+            "Where indoor temperature is read from:"
+            " the thermostat's built-in sensor, a dedicated sensor, or an input_number helper."
+        ),
         "category": "sensors",
     },
     "door_window_sensors": {
         "label": "Door/Window Sensors",
-        "description": "Binary sensors that detect open doors and windows. When open past the debounce period, HVAC pauses to avoid wasting energy.",
+        "description": (
+            "Binary sensors that detect open doors and windows."
+            " When open past the debounce period, HVAC pauses to avoid wasting energy."
+        ),
         "category": "sensors",
     },
     "sensor_polarity_inverted": {
         "label": "Sensor Polarity Inverted",
-        "description": "Enable if your sensors report 'off' when open (some reed switches work this way). Incorrect polarity means HVAC pauses when doors are closed.",
+        "description": (
+            "Enable if your sensors report 'off' when open (some reed switches work this way)."
+            " Incorrect polarity means HVAC pauses when doors are closed."
+        ),
         "category": "sensors",
     },
     "sensor_debounce_seconds": {
         "label": "Sensor Debounce (minutes)",
-        "description": "How long a door/window must stay open before HVAC pauses. Short values react faster but may cause unnecessary pauses for quick trips through a door.",
+        "description": (
+            "How long a door/window must stay open before HVAC pauses."
+            " Short values react faster but may cause unnecessary pauses for quick trips through a door."
+        ),
         "category": "sensors",
         "display_transform": "seconds_to_minutes",
     },
     "manual_grace_seconds": {
         "label": "Manual Grace Period (minutes)",
-        "description": "After you manually turn HVAC back on during a sensor pause, this grace window prevents re-pausing. Gives you time to close up without the system cycling.",
+        "description": (
+            "After you manually turn HVAC back on during a sensor pause, this grace window prevents re-pausing."
+            " Gives you time to close up without the system cycling."
+        ),
         "category": "sensors",
         "display_transform": "seconds_to_minutes",
     },
@@ -233,7 +268,10 @@ CONFIG_METADATA = {
     },
     "automation_grace_seconds": {
         "label": "Automation Grace Period (minutes)",
-        "description": "After Climate Advisor resumes HVAC (all doors/windows closed), this grace window prevents immediate re-pausing if a door opens briefly.",
+        "description": (
+            "After Climate Advisor resumes HVAC (all doors/windows closed),"
+            " this grace window prevents immediate re-pausing if a door opens briefly."
+        ),
         "category": "sensors",
         "display_transform": "seconds_to_minutes",
     },
@@ -244,17 +282,27 @@ CONFIG_METADATA = {
     },
     "fan_mode": {
         "label": "Fan Control Mode",
-        "description": "Controls how fans assist ventilation. 'Whole house fan' controls a dedicated entity. 'HVAC fan' uses the thermostat fan mode. 'Both' uses both. Fan activates during economizer maintain phase.",
+        "description": (
+            "Controls how fans assist ventilation. 'Whole house fan' controls a dedicated entity."
+            " 'HVAC fan' uses the thermostat fan mode. 'Both' uses both."
+            " Fan activates during economizer maintain phase."
+        ),
         "category": "fan",
     },
     "fan_entity": {
         "label": "Fan Entity",
-        "description": "The fan or switch entity to control for whole-house ventilation. Only used when fan mode is 'whole_house_fan' or 'both'.",
+        "description": (
+            "The fan or switch entity to control for whole-house ventilation."
+            " Only used when fan mode is 'whole_house_fan' or 'both'."
+        ),
         "category": "fan",
     },
     "home_toggle_entity": {
         "label": "Home/Away Toggle",
-        "description": "An entity that indicates whether someone is home. ON = home, OFF = away. Climate Advisor applies setback temperatures when away.",
+        "description": (
+            "An entity that indicates whether someone is home. ON = home, OFF = away."
+            " Climate Advisor applies setback temperatures when away."
+        ),
         "category": "occupancy",
     },
     "home_toggle_invert": {
@@ -264,7 +312,10 @@ CONFIG_METADATA = {
     },
     "vacation_toggle_entity": {
         "label": "Vacation Mode Toggle",
-        "description": "An entity that indicates vacation mode. When active, Climate Advisor applies a deeper temperature setback for extended energy savings.",
+        "description": (
+            "An entity that indicates vacation mode."
+            " When active, Climate Advisor applies a deeper temperature setback for extended energy savings."
+        ),
         "category": "occupancy",
     },
     "vacation_toggle_invert": {
@@ -274,7 +325,10 @@ CONFIG_METADATA = {
     },
     "guest_toggle_entity": {
         "label": "Guest Mode Toggle",
-        "description": "An entity that indicates guests are present. Overrides vacation and away modes — the house stays at comfort temperature while guests are visiting.",
+        "description": (
+            "An entity that indicates guests are present."
+            " Overrides vacation and away modes — the house stays at comfort temperature while guests are visiting."
+        ),
         "category": "occupancy",
     },
     "guest_toggle_invert": {
@@ -284,27 +338,43 @@ CONFIG_METADATA = {
     },
     "wake_time": {
         "label": "Wake Time",
-        "description": "When morning comfort temperatures are restored. Earlier times mean the house is comfortable when you get up but use more energy overnight.",
+        "description": (
+            "When morning comfort temperatures are restored."
+            " Earlier times mean the house is comfortable when you get up but use more energy overnight."
+        ),
         "category": "schedule",
     },
     "sleep_time": {
         "label": "Sleep Time",
-        "description": "When bedtime setbacks begin. The system sets back 4°F for heating or +3°F for cooling to save energy while you sleep.",
+        "description": (
+            "When bedtime setbacks begin."
+            " The system sets back 4°F for heating or +3°F for cooling to save energy while you sleep."
+        ),
         "category": "schedule",
     },
     "briefing_time": {
         "label": "Briefing Time",
-        "description": "When the daily climate briefing is generated and sent. Should be before wake_time so you see it when you get up.",
+        "description": (
+            "When the daily climate briefing is generated and sent."
+            " Should be before wake_time so you see it when you get up."
+        ),
         "category": "schedule",
     },
     "learning_enabled": {
         "label": "Learning Engine",
-        "description": "When enabled, Climate Advisor tracks patterns (manual overrides, window compliance, runtime) and generates adaptive suggestions over time.",
+        "description": (
+            "When enabled, Climate Advisor tracks patterns"
+            " (manual overrides, window compliance, runtime) and generates adaptive suggestions over time."
+        ),
         "category": "advanced",
     },
     "aggressive_savings": {
         "label": "Prefer Savings Over Comfort",
-        "description": "When enabled, favors energy savings: the economizer skips AC-assisted cooling (ventilation only when windows open), and setbacks may be more aggressive. When disabled, AC actively cools to comfort when outdoor temps drop.",
+        "description": (
+            "When enabled, favors energy savings: the economizer skips AC-assisted cooling"
+            " (ventilation only when windows open), and setbacks may be more aggressive."
+            " When disabled, AC actively cools to comfort when outdoor temps drop."
+        ),
         "category": "advanced",
     },
 }

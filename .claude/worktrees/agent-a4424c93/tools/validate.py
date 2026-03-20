@@ -92,7 +92,7 @@ def check_manifest(component_dir):
         return result
 
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             manifest = json.load(f)
     except json.JSONDecodeError as e:
         result.error(f"manifest.json is not valid JSON: {e}")
@@ -139,7 +139,7 @@ def check_imports(component_dir):
     for filename in sorted(py_files):
         filepath = os.path.join(component_dir, filename)
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 source = f.read()
             tree = ast.parse(source, filename=filepath)
         except SyntaxError:
@@ -172,7 +172,7 @@ def check_strings(component_dir):
         return result
 
     try:
-        with open(strings_path, "r", encoding="utf-8") as f:
+        with open(strings_path, encoding="utf-8") as f:
             strings = json.load(f)
     except json.JSONDecodeError as e:
         result.error(f"strings.json is not valid JSON: {e}")
@@ -197,7 +197,7 @@ def check_secrets(component_dir):
     for filename in sorted(py_files):
         filepath = os.path.join(component_dir, filename)
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 lines = f.readlines()
         except OSError:
             continue

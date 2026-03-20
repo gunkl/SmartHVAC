@@ -5,13 +5,7 @@ from pathlib import Path
 
 from custom_components.climate_advisor.const import VERSION
 
-
-MANIFEST_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "custom_components"
-    / "climate_advisor"
-    / "manifest.json"
-)
+MANIFEST_PATH = Path(__file__).resolve().parent.parent / "custom_components" / "climate_advisor" / "manifest.json"
 
 
 class TestVersionSync:

@@ -1,8 +1,8 @@
 """Shared pytest fixtures for Climate Advisor tests."""
 from __future__ import annotations
 
-import sys
 import os
+import sys
 from unittest.mock import MagicMock
 
 # Ensure the project root is on sys.path so imports from
@@ -54,6 +54,7 @@ if "voluptuous" not in sys.modules:
 
 # Now safe to import Climate Advisor modules
 import pytest  # noqa: E402
+
 from custom_components.climate_advisor.classifier import ForecastSnapshot  # noqa: E402
 
 

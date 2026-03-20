@@ -10,9 +10,8 @@ from datetime import time
 
 import pytest
 
-from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.briefing import generate_briefing
-
+from custom_components.climate_advisor.classifier import DayClassification
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,7 +56,7 @@ def _generate(classification: DayClassification, **kwargs) -> str:
         setback_cool=kwargs.get("setback_cool", SETBACK_COOL),
         wake_time=kwargs.get("wake_time", DEFAULT_WAKE),
         sleep_time=kwargs.get("sleep_time", DEFAULT_SLEEP),
-        learning_suggestions=kwargs.get("learning_suggestions", None),
+        learning_suggestions=kwargs.get("learning_suggestions"),
     )
 
 

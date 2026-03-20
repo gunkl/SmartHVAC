@@ -5,6 +5,7 @@ Tests for:
   and default closed-windows fallback.
 - Briefing notification split: push gets TLDR, email gets full (Issue #34).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,27 +13,26 @@ import sys
 from datetime import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
-
 # ── HA module stubs (must happen before importing climate_advisor) ──
 if "homeassistant" not in sys.modules:
     from conftest import _install_ha_stubs
+
     _install_ha_stubs()
 
 from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.const import (
     CONF_EMAIL_NOTIFY,
-    DAY_TYPE_HOT,
     DAY_TYPE_COLD,
-    ECONOMIZER_MORNING_END_HOUR,
+    DAY_TYPE_HOT,
     ECONOMIZER_EVENING_START_HOUR,
+    ECONOMIZER_MORNING_END_HOUR,
     ECONOMIZER_TEMP_DELTA,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_classification(**overrides):
     """Build a DayClassification bypassing __post_init__."""
@@ -90,6 +90,7 @@ def _compute_next_action(c: DayClassification | None, config: dict, now_time: ti
 # Tests: _compute_next_action
 # ---------------------------------------------------------------------------
 
+
 class TestComputeNextAction:
     """Tests for _compute_next_action logic in coordinator.py."""
 
@@ -108,8 +109,8 @@ class TestComputeNextAction:
         config = {"comfort_cool": 75}
         # Mock time: 7:30 AM — before ECONOMIZER_MORNING_END_HOUR (9:00 AM)
         result = _compute_next_action(c, config, time(7, 30))
-        assert "78" in result          # threshold = 75 + 3
-        assert "9:00 AM" in result     # ECONOMIZER_MORNING_END_HOUR formatted
+        assert "78" in result  # threshold = 75 + 3
+        assert "9:00 AM" in result  # ECONOMIZER_MORNING_END_HOUR formatted
 
     def test_next_action_hot_morning_at_exactly_morning_end_does_not_trigger(self):
         """HOT day, morning opportunity, at exactly 9:00 AM → morning branch not taken."""
@@ -133,7 +134,7 @@ class TestComputeNextAction:
         config = {"comfort_cool": 75}
         # Mock time: 5:00 PM — exactly ECONOMIZER_EVENING_START_HOUR (17:00)
         result = _compute_next_action(c, config, time(17, 0))
-        assert "78" in result          # threshold = 75 + 3
+        assert "78" in result  # threshold = 75 + 3
         assert "9:00 AM" not in result  # no morning cutoff text
 
     def test_next_action_hot_evening_later_in_evening(self):
@@ -268,9 +269,7 @@ class TestBriefingNotificationSplit:
         coord._get_hourly_forecast_data = AsyncMock(return_value=[])
 
         # Bind the real _async_send_briefing method to our mock
-        coord._async_send_briefing = types.MethodType(
-            ClimateAdvisorCoordinator._async_send_briefing, coord
-        )
+        coord._async_send_briefing = types.MethodType(ClimateAdvisorCoordinator._async_send_briefing, coord)
 
         return coord
 

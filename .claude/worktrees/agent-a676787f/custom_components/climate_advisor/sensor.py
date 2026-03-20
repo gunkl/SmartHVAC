@@ -16,15 +16,15 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    DOMAIN,
+    ATTR_AUTOMATION_STATUS,
+    ATTR_BRIEFING,
+    ATTR_COMPLIANCE_SCORE,
     ATTR_DAY_TYPE,
+    ATTR_LEARNING_SUGGESTIONS,
+    ATTR_NEXT_ACTION,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
-    ATTR_BRIEFING,
-    ATTR_NEXT_ACTION,
-    ATTR_AUTOMATION_STATUS,
-    ATTR_LEARNING_SUGGESTIONS,
-    ATTR_COMPLIANCE_SCORE,
+    DOMAIN,
 )
 from .coordinator import ClimateAdvisorCoordinator
 

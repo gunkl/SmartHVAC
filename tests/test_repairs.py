@@ -6,6 +6,7 @@ Covers:
 - Repair issue creation when auto-resolution is ambiguous (2+ entities)
 - WeatherEntityRepairFlow: form display and entity selection
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,10 +17,10 @@ from custom_components.climate_advisor.repairs import (
     async_create_fix_flow,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_config_entry(data: dict, version: int = 7) -> MagicMock:
     """Create a mock ConfigEntry."""
@@ -51,11 +52,7 @@ def _make_hass(weather_entities: list[str] | None = None) -> MagicMock:
     # async_all returns list of state objects for a domain
     def mock_async_all(domain=None):
         if domain == "weather":
-            return [
-                MagicMock(entity_id=eid)
-                for eid in existing
-                if eid.startswith("weather.")
-            ]
+            return [MagicMock(entity_id=eid) for eid in existing if eid.startswith("weather.")]
         return []
 
     hass.states.async_all = mock_async_all
@@ -94,6 +91,7 @@ FULL_CONFIG = {
 # async_create_fix_flow
 # ---------------------------------------------------------------------------
 
+
 class TestAsyncCreateFixFlow:
     """Test the HA entry point for repair flows."""
 
@@ -114,6 +112,7 @@ class TestAsyncCreateFixFlow:
 # ---------------------------------------------------------------------------
 # Setup-time auto-resolution (tests the __init__.py logic)
 # ---------------------------------------------------------------------------
+
 
 class TestSetupAutoResolution:
     """Test auto-resolution of stale weather entity at setup time."""
@@ -155,6 +154,7 @@ class TestSetupAutoResolution:
 # WeatherEntityRepairFlow
 # ---------------------------------------------------------------------------
 
+
 class TestWeatherEntityRepairFlow:
     """Test the repair flow step logic."""
 
@@ -186,14 +186,8 @@ class TestWeatherEntityRepairFlow:
         hass.config_entries.async_entries = MagicMock(return_value=[entry])
         flow.hass = hass
 
-        with patch(
-            "custom_components.climate_advisor.repairs.ir.async_delete_issue"
-        ) as mock_delete:
-            result = asyncio.run(
-                flow.async_step_init(
-                    user_input={"weather_entity": "weather.home"}
-                )
-            )
+        with patch("custom_components.climate_advisor.repairs.ir.async_delete_issue") as mock_delete:
+            result = asyncio.run(flow.async_step_init(user_input={"weather_entity": "weather.home"}))
 
         assert result["type"] == "create_entry"
         # Verify config entry was updated
@@ -211,11 +205,7 @@ class TestWeatherEntityRepairFlow:
         flow = WeatherEntityRepairFlow()
         flow.hass = _make_hass([])  # No entities exist
 
-        result = asyncio.run(
-            flow.async_step_init(
-                user_input={"weather_entity": "weather.nonexistent"}
-            )
-        )
+        result = asyncio.run(flow.async_step_init(user_input={"weather_entity": "weather.nonexistent"}))
 
         assert result["type"] == "form"
         assert result["errors"]["weather_entity"] == "entity_not_found"
@@ -227,11 +217,7 @@ class TestWeatherEntityRepairFlow:
         hass.config_entries.async_entries = MagicMock(return_value=[])
         flow.hass = hass
 
-        result = asyncio.run(
-            flow.async_step_init(
-                user_input={"weather_entity": "weather.home"}
-            )
-        )
+        result = asyncio.run(flow.async_step_init(user_input={"weather_entity": "weather.home"}))
 
         assert result["type"] == "create_entry"
         hass.config_entries.async_update_entry.assert_not_called()

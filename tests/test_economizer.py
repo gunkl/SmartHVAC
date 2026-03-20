@@ -10,6 +10,7 @@ Tests cover:
 - Deactivation when conditions change
 - Serialization round-trip
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,10 +23,10 @@ from custom_components.climate_advisor.const import (
     DAY_TYPE_WARM,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides: dict | None = None) -> AutomationEngine:
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -102,23 +103,18 @@ def _make_warm_classification() -> DayClassification:
 
 def _get_hvac_mode_calls(engine):
     """Extract set_hvac_mode calls from the mock."""
-    return [
-        c for c in engine.hass.services.async_call.call_args_list
-        if c[0][1] == "set_hvac_mode"
-    ]
+    return [c for c in engine.hass.services.async_call.call_args_list if c[0][1] == "set_hvac_mode"]
 
 
 def _get_set_temp_calls(engine):
     """Extract set_temperature calls from the mock."""
-    return [
-        c for c in engine.hass.services.async_call.call_args_list
-        if c[0][1] == "set_temperature"
-    ]
+    return [c for c in engine.hass.services.async_call.call_args_list if c[0][1] == "set_temperature"]
 
 
 # ---------------------------------------------------------------------------
 # Phase 1: Cool-down (indoor above comfort → AC runs)
 # ---------------------------------------------------------------------------
+
 
 class TestEconomizerCoolDown:
     """Phase 1: AC runs when indoor > comfort and outdoor is favorable."""
@@ -170,6 +166,7 @@ class TestEconomizerCoolDown:
 # ---------------------------------------------------------------------------
 # Phase 2: Maintain (indoor at or below comfort → AC off)
 # ---------------------------------------------------------------------------
+
 
 class TestEconomizerMaintain:
     """Phase 2: AC off when indoor <= comfort, ventilation holds."""
@@ -254,6 +251,7 @@ class TestEconomizerMaintain:
 # Time-bounding
 # ---------------------------------------------------------------------------
 
+
 class TestEconomizerTimeBounding:
     """Economizer only active during morning (6-9) and evening (17-24)."""
 
@@ -263,8 +261,10 @@ class TestEconomizerTimeBounding:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=72.0, indoor_temp=80.0,
-                windows_physically_open=True, current_hour=7,
+                outdoor_temp=72.0,
+                indoor_temp=80.0,
+                windows_physically_open=True,
+                current_hour=7,
             )
         )
         assert result is True
@@ -275,8 +275,10 @@ class TestEconomizerTimeBounding:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=72.0, indoor_temp=80.0,
-                windows_physically_open=True, current_hour=20,
+                outdoor_temp=72.0,
+                indoor_temp=80.0,
+                windows_physically_open=True,
+                current_hour=20,
             )
         )
         assert result is True
@@ -288,8 +290,10 @@ class TestEconomizerTimeBounding:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=72.0, indoor_temp=80.0,
-                windows_physically_open=True, current_hour=12,
+                outdoor_temp=72.0,
+                indoor_temp=80.0,
+                windows_physically_open=True,
+                current_hour=12,
             )
         )
         assert result is False
@@ -304,8 +308,10 @@ class TestEconomizerTimeBounding:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=72.0, indoor_temp=74.0,
-                windows_physically_open=True, current_hour=10,  # outside window
+                outdoor_temp=72.0,
+                indoor_temp=74.0,
+                windows_physically_open=True,
+                current_hour=10,  # outside window
             )
         )
         assert result is False
@@ -317,6 +323,7 @@ class TestEconomizerTimeBounding:
 # aggressive_savings flag
 # ---------------------------------------------------------------------------
 
+
 class TestEconomizerAggressiveSavings:
     """When aggressive_savings=True, skip AC assist, ventilation only."""
 
@@ -327,8 +334,10 @@ class TestEconomizerAggressiveSavings:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=72.0, indoor_temp=80.0,
-                windows_physically_open=True, current_hour=18,
+                outdoor_temp=72.0,
+                indoor_temp=80.0,
+                windows_physically_open=True,
+                current_hour=18,
             )
         )
 
@@ -346,8 +355,10 @@ class TestEconomizerAggressiveSavings:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=72.0, indoor_temp=80.0,
-                windows_physically_open=True, current_hour=18,
+                outdoor_temp=72.0,
+                indoor_temp=80.0,
+                windows_physically_open=True,
+                current_hour=18,
             )
         )
 
@@ -361,6 +372,7 @@ class TestEconomizerAggressiveSavings:
 # Guards
 # ---------------------------------------------------------------------------
 
+
 class TestEconomizerGuards:
     """Economizer does not activate when conditions aren't met."""
 
@@ -370,8 +382,10 @@ class TestEconomizerGuards:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=68.0, indoor_temp=74.0,
-                windows_physically_open=True, current_hour=18,
+                outdoor_temp=68.0,
+                indoor_temp=74.0,
+                windows_physically_open=True,
+                current_hour=18,
             )
         )
         assert result is False
@@ -383,8 +397,10 @@ class TestEconomizerGuards:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=70.0, indoor_temp=74.0,
-                windows_physically_open=True, current_hour=18,
+                outdoor_temp=70.0,
+                indoor_temp=74.0,
+                windows_physically_open=True,
+                current_hour=18,
             )
         )
         assert result is False
@@ -396,8 +412,10 @@ class TestEconomizerGuards:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=70.0, indoor_temp=76.0,
-                windows_physically_open=False, current_hour=18,
+                outdoor_temp=70.0,
+                indoor_temp=76.0,
+                windows_physically_open=False,
+                current_hour=18,
             )
         )
         assert result is False
@@ -411,7 +429,8 @@ class TestEconomizerGuards:
             engine.check_window_cooling_opportunity(
                 outdoor_temp=79.0,  # 75 + 3 = 78; 79 > threshold
                 indoor_temp=76.0,
-                windows_physically_open=True, current_hour=18,
+                windows_physically_open=True,
+                current_hour=18,
             )
         )
         assert result is False
@@ -421,6 +440,7 @@ class TestEconomizerGuards:
 # ---------------------------------------------------------------------------
 # Deactivation
 # ---------------------------------------------------------------------------
+
 
 class TestEconomizerDeactivation:
     """Economizer deactivates when conditions change."""
@@ -433,8 +453,10 @@ class TestEconomizerDeactivation:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=80.0, indoor_temp=76.0,
-                windows_physically_open=True, current_hour=18,
+                outdoor_temp=80.0,
+                indoor_temp=76.0,
+                windows_physically_open=True,
+                current_hour=18,
             )
         )
         assert result is False
@@ -451,8 +473,10 @@ class TestEconomizerDeactivation:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=70.0, indoor_temp=75.0,
-                windows_physically_open=False, current_hour=18,
+                outdoor_temp=70.0,
+                indoor_temp=75.0,
+                windows_physically_open=False,
+                current_hour=18,
             )
         )
         assert result is False
@@ -467,8 +491,10 @@ class TestEconomizerDeactivation:
 
         result = asyncio.run(
             engine.check_window_cooling_opportunity(
-                outdoor_temp=70.0, indoor_temp=74.0,
-                windows_physically_open=True, current_hour=18,
+                outdoor_temp=70.0,
+                indoor_temp=74.0,
+                windows_physically_open=True,
+                current_hour=18,
             )
         )
         assert result is False
@@ -479,6 +505,7 @@ class TestEconomizerDeactivation:
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------
+
 
 class TestEconomizerSerialization:
     """Economizer state is correctly serialized and restored."""

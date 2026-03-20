@@ -7,6 +7,7 @@ that each call site in AutomationEngine produces the expected reason string.
 
 See: GitHub Issue #16
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +23,7 @@ AUTOMATION_LOGGER = "custom_components.climate_advisor.automation"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides: dict | None = None) -> AutomationEngine:
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -50,6 +52,7 @@ def _make_automation_engine(config_overrides: dict | None = None) -> AutomationE
         config=config,
     )
 
+
 def _make_classification(
     day_type: str = "warm",
     hvac_mode: str = "cool",
@@ -73,8 +76,8 @@ def _make_classification(
     obj.pre_condition = pre_condition
     obj.pre_condition_target = pre_condition_target
     obj.windows_recommended = kwargs.get("windows_recommended", False)
-    obj.window_open_time = kwargs.get("window_open_time", None)
-    obj.window_close_time = kwargs.get("window_close_time", None)
+    obj.window_open_time = kwargs.get("window_open_time")
+    obj.window_close_time = kwargs.get("window_close_time")
     obj.setback_modifier = setback_modifier
     return obj
 
@@ -83,14 +86,17 @@ def _make_classification(
 # apply_classification
 # ---------------------------------------------------------------------------
 
+
 class TestApplyClassificationLogging:
     """Reason logging for apply_classification()."""
 
     def test_heat_mode_logs_reason(self, caplog):
         engine = _make_automation_engine()
         c = _make_classification(
-            day_type="cold", hvac_mode="heat",
-            trend_direction="cooling", trend_magnitude=5.0,
+            day_type="cold",
+            hvac_mode="heat",
+            trend_direction="cooling",
+            trend_magnitude=5.0,
         )
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.apply_classification(c))
@@ -108,9 +114,12 @@ class TestApplyClassificationLogging:
     def test_cool_mode_with_precool_logs_offset(self, caplog):
         engine = _make_automation_engine()
         c = _make_classification(
-            day_type="hot", hvac_mode="cool",
-            trend_direction="warming", trend_magnitude=8.0,
-            pre_condition=True, pre_condition_target=-3.0,
+            day_type="hot",
+            hvac_mode="cool",
+            trend_direction="warming",
+            trend_magnitude=8.0,
+            pre_condition=True,
+            pre_condition_target=-3.0,
         )
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.apply_classification(c))
@@ -140,6 +149,7 @@ class TestApplyClassificationLogging:
 # ---------------------------------------------------------------------------
 # handle_door_window_open / closed
 # ---------------------------------------------------------------------------
+
 
 class TestDoorWindowLogging:
     """Reason logging for door/window open and close handlers."""
@@ -186,13 +196,16 @@ class TestDoorWindowLogging:
 # handle_occupancy_away / home
 # ---------------------------------------------------------------------------
 
+
 class TestOccupancyLogging:
     """Reason logging for occupancy handlers."""
 
     def test_occupancy_away_heat_logs_reason(self, caplog):
         engine = _make_automation_engine()
         c = _make_classification(
-            day_type="cold", hvac_mode="heat", setback_modifier=2.0,
+            day_type="cold",
+            hvac_mode="heat",
+            setback_modifier=2.0,
         )
         engine._current_classification = c
 
@@ -210,7 +223,9 @@ class TestOccupancyLogging:
     def test_occupancy_away_cool_logs_reason(self, caplog):
         engine = _make_automation_engine()
         c = _make_classification(
-            day_type="hot", hvac_mode="cool", setback_modifier=1.0,
+            day_type="hot",
+            hvac_mode="cool",
+            setback_modifier=1.0,
         )
         engine._current_classification = c
 
@@ -244,13 +259,16 @@ class TestOccupancyLogging:
 # handle_bedtime
 # ---------------------------------------------------------------------------
 
+
 class TestBedtimeLogging:
     """Reason logging for bedtime handler."""
 
     def test_bedtime_heat_logs_reason(self, caplog):
         engine = _make_automation_engine()
         c = _make_classification(
-            day_type="cold", hvac_mode="heat", setback_modifier=2.0,
+            day_type="cold",
+            hvac_mode="heat",
+            setback_modifier=2.0,
         )
         engine._current_classification = c
 
@@ -284,6 +302,7 @@ class TestBedtimeLogging:
 # ---------------------------------------------------------------------------
 # handle_morning_wakeup
 # ---------------------------------------------------------------------------
+
 
 class TestMorningWakeupLogging:
     """Reason logging for morning wakeup handler."""

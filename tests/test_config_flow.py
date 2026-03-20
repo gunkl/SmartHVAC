@@ -10,15 +10,16 @@ Covers:
   absent → weather_service (and indoor equivalent)
 - Options flow multi-step data accumulation (existing tests retained)
 """
+
 from __future__ import annotations
 
 import asyncio
 from unittest.mock import MagicMock
 
-
 # ---------------------------------------------------------------------------
 # Helpers shared across all test classes
 # ---------------------------------------------------------------------------
+
 
 def _make_config_entry(data: dict, version: int = 4) -> MagicMock:
     """Create a mock ConfigEntry with the given data and version."""
@@ -67,6 +68,7 @@ FULL_CONFIG = {
 # _needs_entity() helper
 # ---------------------------------------------------------------------------
 
+
 class TestNeedsEntity:
     """Unit tests for the _needs_entity() routing helper."""
 
@@ -97,6 +99,7 @@ class TestNeedsEntity:
 # Config flow wizard — step routing logic
 # ---------------------------------------------------------------------------
 
+
 class TestConfigFlowWizardRouting:
     """Test the conditional step-routing of the initial config flow wizard.
 
@@ -115,6 +118,7 @@ class TestConfigFlowWizardRouting:
 
         Replicates the routing logic in ClimateAdvisorConfigFlow.
         """
+
         def needs_entity(s: str) -> bool:
             return s in ("sensor", "input_number")
 
@@ -186,14 +190,13 @@ class TestConfigFlowWizardRouting:
         for outdoor in ("weather_service", "sensor", "input_number"):
             for indoor in ("climate_fallback", "sensor", "input_number"):
                 steps = self._route_after_temp_sources(outdoor, indoor)
-                assert steps[-1] == "schedule", (
-                    f"schedule must be last for outdoor={outdoor}, indoor={indoor}"
-                )
+                assert steps[-1] == "schedule", f"schedule must be last for outdoor={outdoor}, indoor={indoor}"
 
 
 # ---------------------------------------------------------------------------
 # Config flow wizard — data accumulation
 # ---------------------------------------------------------------------------
+
 
 class TestConfigFlowDataAccumulation:
     """Test that each wizard step's data is merged into _data correctly."""
@@ -209,21 +212,25 @@ class TestConfigFlowDataAccumulation:
         data: dict = {}
 
         # Step 1: user (core entities + setpoints)
-        data.update({
-            "weather_entity": "weather.forecast_home",
-            "climate_entity": "climate.living_room",
-            "comfort_heat": 70,
-            "comfort_cool": 75,
-            "setback_heat": 60,
-            "setback_cool": 80,
-            "notify_service": "notify.notify",
-        })
+        data.update(
+            {
+                "weather_entity": "weather.forecast_home",
+                "climate_entity": "climate.living_room",
+                "comfort_heat": 70,
+                "comfort_cool": 75,
+                "setback_heat": 60,
+                "setback_cool": 80,
+                "notify_service": "notify.notify",
+            }
+        )
 
         # Step 2: temperature_sources
-        data.update({
-            "outdoor_temp_source": outdoor_source,
-            "indoor_temp_source": indoor_source,
-        })
+        data.update(
+            {
+                "outdoor_temp_source": outdoor_source,
+                "indoor_temp_source": indoor_source,
+            }
+        )
 
         # Conditional step: outdoor entity picker
         if outdoor_source in ("sensor", "input_number"):
@@ -236,22 +243,26 @@ class TestConfigFlowDataAccumulation:
             data["indoor_temp_entity"] = indoor_entity
 
         # Step: sensors
-        data.update({
-            "door_window_sensors": [],
-            "sensor_polarity_inverted": False,
-            "sensor_debounce_seconds": 300,
-            "manual_grace_seconds": 1800,
-            "manual_grace_notify": False,
-            "automation_grace_seconds": 300,
-            "automation_grace_notify": True,
-        })
+        data.update(
+            {
+                "door_window_sensors": [],
+                "sensor_polarity_inverted": False,
+                "sensor_debounce_seconds": 300,
+                "manual_grace_seconds": 1800,
+                "manual_grace_notify": False,
+                "automation_grace_seconds": 300,
+                "automation_grace_notify": True,
+            }
+        )
 
         # Step: schedule (final — creates entry)
-        data.update({
-            "wake_time": "06:30:00",
-            "sleep_time": "22:30:00",
-            "briefing_time": "06:00:00",
-        })
+        data.update(
+            {
+                "wake_time": "06:30:00",
+                "sleep_time": "22:30:00",
+                "briefing_time": "06:00:00",
+            }
+        )
 
         return data
 
@@ -328,6 +339,7 @@ class TestConfigFlowDataAccumulation:
 # Config flow wizard — step_user field requirements
 # ---------------------------------------------------------------------------
 
+
 class TestConfigFlowStepUserFields:
     """Test that async_step_user collects the expected required fields."""
 
@@ -372,11 +384,12 @@ class TestConfigFlowStepUserFields:
     def test_default_setpoints_within_bounds(self):
         """Default setpoints satisfy the slider constraints in the schema."""
         from custom_components.climate_advisor.const import (
-            DEFAULT_COMFORT_HEAT,
             DEFAULT_COMFORT_COOL,
-            DEFAULT_SETBACK_HEAT,
+            DEFAULT_COMFORT_HEAT,
             DEFAULT_SETBACK_COOL,
+            DEFAULT_SETBACK_HEAT,
         )
+
         assert 55 <= DEFAULT_COMFORT_HEAT <= 80
         assert 68 <= DEFAULT_COMFORT_COOL <= 85
         assert 45 <= DEFAULT_SETBACK_HEAT <= 65
@@ -386,6 +399,7 @@ class TestConfigFlowStepUserFields:
 # ---------------------------------------------------------------------------
 # v1→v2 migration
 # ---------------------------------------------------------------------------
+
 
 class TestMigrationV1ToV2:
     """Test async_migrate_entry() for the v1→v2 transition.
@@ -567,6 +581,7 @@ class TestMigrationV1ToV2:
 # Migration invoked via the real async_migrate_entry function
 # ---------------------------------------------------------------------------
 
+
 class TestMigrationViaRealFunction:
     """Call async_migrate_entry() directly to ensure the real code is correct.
 
@@ -635,16 +650,17 @@ class TestMigrationViaRealFunction:
     def test_v1_chain_migration_produces_v5_fields(self):
         """A v1 entry should chain through all migrations and gain v4+v5 fields."""
         from custom_components.climate_advisor.const import (
-            DEFAULT_SENSOR_DEBOUNCE_SECONDS,
-            DEFAULT_MANUAL_GRACE_SECONDS,
-            DEFAULT_AUTOMATION_GRACE_SECONDS,
-            CONF_SENSOR_DEBOUNCE,
-            CONF_MANUAL_GRACE_PERIOD,
-            CONF_MANUAL_GRACE_NOTIFY,
-            CONF_AUTOMATION_GRACE_PERIOD,
             CONF_AUTOMATION_GRACE_NOTIFY,
+            CONF_AUTOMATION_GRACE_PERIOD,
             CONF_EMAIL_NOTIFY,
+            CONF_MANUAL_GRACE_NOTIFY,
+            CONF_MANUAL_GRACE_PERIOD,
+            CONF_SENSOR_DEBOUNCE,
+            DEFAULT_AUTOMATION_GRACE_SECONDS,
+            DEFAULT_MANUAL_GRACE_SECONDS,
+            DEFAULT_SENSOR_DEBOUNCE_SECONDS,
         )
+
         v1 = {"weather_entity": "weather.forecast_home", "climate_entity": "climate.living_room"}
         data, ok = self._call_migrate(v1)
         assert ok is True
@@ -660,6 +676,7 @@ class TestMigrationViaRealFunction:
     def test_v4_entry_migrates_to_v5_with_email_notify(self):
         """A v4 entry should gain email_notify=True via v4→v5 migration."""
         from custom_components.climate_advisor.const import CONF_EMAIL_NOTIFY
+
         v4 = {
             "weather_entity": "weather.forecast_home",
             "climate_entity": "climate.living_room",
@@ -676,6 +693,7 @@ class TestMigrationViaRealFunction:
         hass = _make_hass()
 
         from custom_components.climate_advisor import async_migrate_entry
+
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         # v5→v6 migration should have been applied
@@ -687,6 +705,7 @@ class TestMigrationViaRealFunction:
 # ---------------------------------------------------------------------------
 # Options flow multi-step data accumulation (existing tests retained)
 # ---------------------------------------------------------------------------
+
 
 class TestOptionsFlowMultiStep:
     """Test that the multi-step options flow merges data correctly."""
@@ -716,46 +735,56 @@ class TestOptionsFlowMultiStep:
         updates = {}
 
         # Step 1: init
-        updates.update({
-            "weather_entity": "weather.home",
-            "climate_entity": "climate.living_room",
-            "comfort_heat": 72,
-            "comfort_cool": 76,
-            "setback_heat": 60,
-            "setback_cool": 80,
-            "notify_service": "notify.notify",
-        })
+        updates.update(
+            {
+                "weather_entity": "weather.home",
+                "climate_entity": "climate.living_room",
+                "comfort_heat": 72,
+                "comfort_cool": 76,
+                "setback_heat": 60,
+                "setback_cool": 80,
+                "notify_service": "notify.notify",
+            }
+        )
 
         # Step 2: temperature_sources
-        updates.update({
-            "outdoor_temp_source": "sensor",
-            "outdoor_temp_entity": "sensor.outdoor_temp",
-            "indoor_temp_source": "climate_fallback",
-        })
+        updates.update(
+            {
+                "outdoor_temp_source": "sensor",
+                "outdoor_temp_entity": "sensor.outdoor_temp",
+                "indoor_temp_source": "climate_fallback",
+            }
+        )
 
         # Step 3: sensors
-        updates.update({
-            "door_window_sensors": ["binary_sensor.back_door"],
-            "sensor_polarity_inverted": True,
-            "sensor_debounce_seconds": 600,
-            "manual_grace_seconds": 900,
-            "manual_grace_notify": True,
-            "automation_grace_seconds": 1800,
-            "automation_grace_notify": False,
-        })
+        updates.update(
+            {
+                "door_window_sensors": ["binary_sensor.back_door"],
+                "sensor_polarity_inverted": True,
+                "sensor_debounce_seconds": 600,
+                "manual_grace_seconds": 900,
+                "manual_grace_notify": True,
+                "automation_grace_seconds": 1800,
+                "automation_grace_notify": False,
+            }
+        )
 
         # Step 4: schedule
-        updates.update({
-            "wake_time": "07:00:00",
-            "sleep_time": "23:00:00",
-            "briefing_time": "06:30:00",
-        })
+        updates.update(
+            {
+                "wake_time": "07:00:00",
+                "sleep_time": "23:00:00",
+                "briefing_time": "06:30:00",
+            }
+        )
 
         # Step 5: advanced
-        updates.update({
-            "learning_enabled": False,
-            "aggressive_savings": True,
-        })
+        updates.update(
+            {
+                "learning_enabled": False,
+                "aggressive_savings": True,
+            }
+        )
 
         merged = {**original, **updates}
 

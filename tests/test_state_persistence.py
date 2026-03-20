@@ -6,6 +6,7 @@ Covers:
 - DailyRecord field population (runtime, comfort violations, avg temp, windows)
 - Phase 2: Per-sensor pause tracking, granular overrides, suggestion tracking
 """
+
 from __future__ import annotations
 
 import json
@@ -13,11 +14,9 @@ from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
-from custom_components.climate_advisor.state import StatePersistence, STATE_VERSION
 from custom_components.climate_advisor.const import STATE_FILE
 from custom_components.climate_advisor.learning import DailyRecord
-
+from custom_components.climate_advisor.state import STATE_VERSION, StatePersistence
 
 # ---------------------------------------------------------------------------
 # StatePersistence class tests
@@ -441,12 +440,14 @@ class TestAutomationRestoreState:
             config={},
         )
 
-        engine.restore_state({
-            "paused_by_door": True,
-            "pre_pause_mode": "heat",
-            "grace_active": True,  # Should be cleared on restore
-            "last_resume_source": "automation",
-        })
+        engine.restore_state(
+            {
+                "paused_by_door": True,
+                "pre_pause_mode": "heat",
+                "grace_active": True,  # Should be cleared on restore
+                "last_resume_source": "automation",
+            }
+        )
 
         assert engine._paused_by_door is True
         assert engine._pre_pause_mode == "heat"
@@ -504,14 +505,10 @@ class TestDoorPauseBySensor:
         for _ in range(3):
             record.door_window_pause_events += 1
             sensor_key = "back_door"
-            record.door_pause_by_sensor[sensor_key] = (
-                record.door_pause_by_sensor.get(sensor_key, 0) + 1
-            )
+            record.door_pause_by_sensor[sensor_key] = record.door_pause_by_sensor.get(sensor_key, 0) + 1
         record.door_window_pause_events += 1
         sensor_key = "front_door"
-        record.door_pause_by_sensor[sensor_key] = (
-            record.door_pause_by_sensor.get(sensor_key, 0) + 1
-        )
+        record.door_pause_by_sensor[sensor_key] = record.door_pause_by_sensor.get(sensor_key, 0) + 1
 
         assert record.door_window_pause_events == 4
         assert record.door_pause_by_sensor == {"back_door": 3, "front_door": 1}
@@ -519,7 +516,9 @@ class TestDoorPauseBySensor:
     def test_round_trip_preserves_sensor_dict(self, tmp_path: Path):
         sp = StatePersistence(tmp_path)
         record = DailyRecord(
-            date="2026-03-18", day_type="mild", trend_direction="stable",
+            date="2026-03-18",
+            day_type="mild",
+            trend_direction="stable",
             door_window_pause_events=5,
             door_pause_by_sensor={"garage_door": 3, "kitchen_window": 2},
         )
@@ -547,13 +546,15 @@ class TestOverrideDetails:
         old_val, new_val = 70.0, 72.0
         magnitude = round(new_val - old_val, 1)
         record.manual_overrides += 1
-        record.override_details.append({
-            "time": "14:30",
-            "old_temp": old_val,
-            "new_temp": new_val,
-            "direction": "up" if magnitude > 0 else "down",
-            "magnitude": abs(magnitude),
-        })
+        record.override_details.append(
+            {
+                "time": "14:30",
+                "old_temp": old_val,
+                "new_temp": new_val,
+                "direction": "up" if magnitude > 0 else "down",
+                "magnitude": abs(magnitude),
+            }
+        )
         assert len(record.override_details) == 1
         assert record.override_details[0]["direction"] == "up"
         assert record.override_details[0]["magnitude"] == 2.0
@@ -562,26 +563,28 @@ class TestOverrideDetails:
         record = DailyRecord(date="2026-03-18", day_type="warm", trend_direction="stable")
         old_val, new_val = 74.0, 71.0
         magnitude = round(new_val - old_val, 1)
-        record.override_details.append({
-            "time": "22:00",
-            "old_temp": old_val,
-            "new_temp": new_val,
-            "direction": "up" if magnitude > 0 else "down",
-            "magnitude": abs(magnitude),
-        })
+        record.override_details.append(
+            {
+                "time": "22:00",
+                "old_temp": old_val,
+                "new_temp": new_val,
+                "direction": "up" if magnitude > 0 else "down",
+                "magnitude": abs(magnitude),
+            }
+        )
         assert record.override_details[0]["direction"] == "down"
         assert record.override_details[0]["magnitude"] == 3.0
 
     def test_override_round_trip(self, tmp_path: Path):
         sp = StatePersistence(tmp_path)
         record = DailyRecord(
-            date="2026-03-18", day_type="cool", trend_direction="stable",
+            date="2026-03-18",
+            day_type="cool",
+            trend_direction="stable",
             manual_overrides=2,
             override_details=[
-                {"time": "09:00", "old_temp": 68.0, "new_temp": 70.0,
-                 "direction": "up", "magnitude": 2.0},
-                {"time": "21:00", "old_temp": 72.0, "new_temp": 69.0,
-                 "direction": "down", "magnitude": 3.0},
+                {"time": "09:00", "old_temp": 68.0, "new_temp": 70.0, "direction": "up", "magnitude": 2.0},
+                {"time": "21:00", "old_temp": 72.0, "new_temp": 69.0, "direction": "down", "magnitude": 3.0},
             ],
         )
         state = {"date": "2026-03-18", "today_record": asdict(record)}
@@ -607,17 +610,21 @@ class TestSuggestionTracking:
 
     def test_suggestion_keys_populated(self, tmp_path: Path):
         from custom_components.climate_advisor.learning import LearningEngine
+
         engine = LearningEngine(tmp_path)
 
         # Add enough records to trigger suggestions (need MIN_DATA_POINTS_FOR_SUGGESTION)
         from custom_components.climate_advisor.const import MIN_DATA_POINTS_FOR_SUGGESTION
+
         for i in range(MIN_DATA_POINTS_FOR_SUGGESTION):
-            engine.record_day(DailyRecord(
-                date=f"2026-03-{i+1:02d}",
-                day_type="mild",
-                trend_direction="stable",
-                manual_overrides=5,  # Trigger frequent_overrides pattern
-            ))
+            engine.record_day(
+                DailyRecord(
+                    date=f"2026-03-{i + 1:02d}",
+                    day_type="mild",
+                    trend_direction="stable",
+                    manual_overrides=5,  # Trigger frequent_overrides pattern
+                )
+            )
 
         suggestions = engine.generate_suggestions()
         keys = engine.get_last_suggestion_keys()
@@ -630,7 +637,9 @@ class TestSuggestionTracking:
     def test_suggestion_sent_round_trip(self, tmp_path: Path):
         sp = StatePersistence(tmp_path)
         record = DailyRecord(
-            date="2026-03-18", day_type="mild", trend_direction="stable",
+            date="2026-03-18",
+            day_type="mild",
+            trend_direction="stable",
             suggestion_sent=["frequent_overrides", "comfort_violations"],
         )
         state = {"date": "2026-03-18", "today_record": asdict(record)}
@@ -641,6 +650,7 @@ class TestSuggestionTracking:
 
     def test_no_suggestions_leaves_empty_list(self, tmp_path: Path):
         from custom_components.climate_advisor.learning import LearningEngine
+
         engine = LearningEngine(tmp_path)
         suggestions = engine.generate_suggestions()
         keys = engine.get_last_suggestion_keys()

@@ -7,46 +7,46 @@ This integration provides:
 - Automatic door/window and occupancy response
 - A learning engine that adapts to household patterns
 """
+
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
 
+import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
-import homeassistant.helpers.config_validation as cv
 
 from .api import API_VIEWS
 from .const import (
-    PANEL_FRONTEND_PATH,
-    PANEL_URL,
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
     CONF_EMAIL_NOTIFY,
+    CONF_GUEST_TOGGLE,
+    CONF_GUEST_TOGGLE_INVERT,
+    CONF_HOME_TOGGLE,
+    CONF_HOME_TOGGLE_INVERT,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
     CONF_SENSOR_DEBOUNCE,
     CONF_SENSOR_POLARITY_INVERTED,
+    CONF_VACATION_TOGGLE,
+    CONF_VACATION_TOGGLE_INVERT,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     DOMAIN,
-    VERSION,
-    TEMP_SOURCE_SENSOR,
-    TEMP_SOURCE_INPUT_NUMBER,
-    TEMP_SOURCE_WEATHER_SERVICE,
+    PANEL_FRONTEND_PATH,
+    PANEL_URL,
     TEMP_SOURCE_CLIMATE_FALLBACK,
-    CONF_HOME_TOGGLE,
-    CONF_HOME_TOGGLE_INVERT,
-    CONF_VACATION_TOGGLE,
-    CONF_VACATION_TOGGLE_INVERT,
-    CONF_GUEST_TOGGLE,
-    CONF_GUEST_TOGGLE_INVERT,
+    TEMP_SOURCE_INPUT_NUMBER,
+    TEMP_SOURCE_SENSOR,
+    TEMP_SOURCE_WEATHER_SERVICE,
+    VERSION,
 )
 from .coordinator import ClimateAdvisorCoordinator
 
@@ -64,9 +64,7 @@ def _resolve_weather_entity(hass: HomeAssistant, configured: str) -> str | None:
     if hass.states.get(configured):
         return configured
 
-    weather_entities = [
-        state.entity_id for state in hass.states.async_all("weather")
-    ]
+    weather_entities = [state.entity_id for state in hass.states.async_all("weather")]
 
     if len(weather_entities) == 1:
         return weather_entities[0]
@@ -102,9 +100,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             new_data["indoor_temp_source"] = TEMP_SOURCE_CLIMATE_FALLBACK
             new_data.pop("indoor_temp_entity", None)
 
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=2
-        )
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=2)
         _LOGGER.info("Migration to version 2 complete")
         # Fall through to v2→v3 migration
 
@@ -113,9 +109,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         new_data = {**config_entry.data}
         new_data.pop("door_window_groups", None)  # removed: groups are binary_sensor entities
         new_data.setdefault(CONF_SENSOR_POLARITY_INVERTED, False)
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=3
-        )
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=3)
         _LOGGER.info("Migration to version 3 complete")
         # Fall through to v3→v4 migration
 
@@ -127,18 +121,14 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         new_data.setdefault(CONF_MANUAL_GRACE_NOTIFY, False)
         new_data.setdefault(CONF_AUTOMATION_GRACE_PERIOD, DEFAULT_AUTOMATION_GRACE_SECONDS)
         new_data.setdefault(CONF_AUTOMATION_GRACE_NOTIFY, True)
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=4
-        )
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=4)
         _LOGGER.info("Migration to version 4 complete")
 
     if config_entry.version == 4:
         _LOGGER.info("Migrating Climate Advisor config entry from version 4 to 5")
         new_data = {**config_entry.data}
         new_data.setdefault(CONF_EMAIL_NOTIFY, True)
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=5
-        )
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=5)
         _LOGGER.info("Migration to version 5 complete")
 
     if config_entry.version == 5:
@@ -150,8 +140,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             resolved = _resolve_weather_entity(hass, configured_weather)
             if resolved and resolved != configured_weather:
                 _LOGGER.warning(
-                    "Weather entity '%s' no longer exists; "
-                    "auto-resolved to '%s' (only weather entity available)",
+                    "Weather entity '%s' no longer exists; auto-resolved to '%s' (only weather entity available)",
                     configured_weather,
                     resolved,
                 )
@@ -164,9 +153,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
                     configured_weather,
                 )
 
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=6
-        )
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=6)
         _LOGGER.info("Migration to version 6 complete")
 
     if config_entry.version == 6:
@@ -178,9 +165,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         new_data.setdefault(CONF_VACATION_TOGGLE_INVERT, False)
         new_data.setdefault(CONF_GUEST_TOGGLE, None)
         new_data.setdefault(CONF_GUEST_TOGGLE_INVERT, False)
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=7
-        )
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=7)
         _LOGGER.info("Migration to version 7 complete")
 
     return True
@@ -202,9 +187,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     weather_entity,
                     resolved,
                 )
-                hass.config_entries.async_update_entry(
-                    entry, data={**entry.data, "weather_entity": resolved}
-                )
+                hass.config_entries.async_update_entry(entry, data={**entry.data, "weather_entity": resolved})
                 ir.async_delete_issue(hass, DOMAIN, "weather_entity_not_found")
                 await hass.config_entries.async_reload(entry.entry_id)
             else:
@@ -249,10 +232,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Set up sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    RESPOND_SUGGESTION_SCHEMA = vol.Schema({
-        vol.Required("action"): vol.In(["accept", "dismiss"]),
-        vol.Required("suggestion_key"): cv.string,
-    })
+    RESPOND_SUGGESTION_SCHEMA = vol.Schema(
+        {
+            vol.Required("action"): vol.In(["accept", "dismiss"]),
+            vol.Required("suggestion_key"): cv.string,
+        }
+    )
 
     # Register service for accepting/dismissing learning suggestions
     async def handle_suggestion_response(call):
@@ -303,10 +288,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "indoor_points": len(coordinator._indoor_temp_history),
             },
             "learning_summary": coordinator.learning.get_compliance_summary(),
-            "config": {
-                k: v for k, v in coordinator.config.items()
-                if k != "notify_service"
-            },
+            "config": {k: v for k, v in coordinator.config.items() if k != "notify_service"},
             "briefing_state": {
                 "sent_today": coordinator._briefing_sent_today,
                 "briefing_length": len(coordinator._last_briefing),
@@ -321,7 +303,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "resend_briefing", handle_resend_briefing, schema=vol.Schema({}))
     hass.services.async_register(DOMAIN, "dump_diagnostics", handle_dump_diagnostics, schema=vol.Schema({}))
 
-
     # Register REST API views for the dashboard panel
     for view_cls in API_VIEWS:
         hass.http.register_view(view_cls())
@@ -329,14 +310,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register dashboard panel (iframe serving frontend/index.html)
     frontend_path = Path(__file__).parent / "frontend"
     from homeassistant.components.http import StaticPathConfig
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(PANEL_URL, str(frontend_path), cache_headers=False)]
-    )
-    from homeassistant.components.frontend import async_register_built_in_panel
+
+    await hass.http.async_register_static_paths([StaticPathConfig(PANEL_URL, str(frontend_path), cache_headers=False)])
     import hashlib
-    _panel_bytes = await hass.async_add_executor_job(
-        (frontend_path / "index.html").read_bytes
-    )
+
+    from homeassistant.components.frontend import async_register_built_in_panel
+
+    _panel_bytes = await hass.async_add_executor_job((frontend_path / "index.html").read_bytes)
     _panel_hash = hashlib.md5(_panel_bytes).hexdigest()[:8]
     async_register_built_in_panel(
         hass,
@@ -359,6 +339,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Remove the dashboard panel
     from homeassistant.components.frontend import async_remove_panel
+
     async_remove_panel(hass, PANEL_FRONTEND_PATH)
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

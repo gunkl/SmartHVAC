@@ -6,6 +6,7 @@ and transition points (bedtime, morning) clear the override.
 
 See: GitHub Issue #37
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +24,7 @@ sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 3, 19, 14, 30,
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides=None):
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -75,8 +77,8 @@ def _make_classification(
     obj.pre_condition = pre_condition
     obj.pre_condition_target = pre_condition_target
     obj.windows_recommended = kwargs.get("windows_recommended", False)
-    obj.window_open_time = kwargs.get("window_open_time", None)
-    obj.window_close_time = kwargs.get("window_close_time", None)
+    obj.window_open_time = kwargs.get("window_open_time")
+    obj.window_close_time = kwargs.get("window_close_time")
     obj.setback_modifier = setback_modifier
     return obj
 
@@ -84,6 +86,7 @@ def _make_classification(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestManualOverrideProtection:
     """Verify that manual override blocks classification and is cleared at transitions."""

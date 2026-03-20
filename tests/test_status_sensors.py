@@ -5,6 +5,7 @@ Tests for:
 - _compute_next_automation_action logic
 - ClimateAdvisorNextActionSensor name rename
 """
+
 from __future__ import annotations
 
 import sys
@@ -13,10 +14,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ── HA module stubs (must happen before importing climate_advisor) ──
 if "homeassistant" not in sys.modules:
     from conftest import _install_ha_stubs
+
     _install_ha_stubs()
 
 from custom_components.climate_advisor.classifier import DayClassification
@@ -25,10 +26,10 @@ from custom_components.climate_advisor.const import (
     ATTR_NEXT_AUTOMATION_TIME,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_classification(**overrides):
     """Build a DayClassification bypassing __post_init__."""
@@ -146,6 +147,7 @@ def _compute_next_automation_action(
 # Tests: _compute_automation_status
 # ---------------------------------------------------------------------------
 
+
 class TestComputeAutomationStatus:
     """Tests for _compute_automation_status logic."""
 
@@ -191,6 +193,7 @@ class TestComputeAutomationStatus:
 # ---------------------------------------------------------------------------
 # Tests: _compute_next_automation_action
 # ---------------------------------------------------------------------------
+
 
 class TestComputeNextAutomationAction:
     """Tests for _compute_next_automation_action logic."""
@@ -318,6 +321,7 @@ class TestComputeNextAutomationAction:
 # Tests: Sensor name rename
 # ---------------------------------------------------------------------------
 
+
 class TestNextActionSensorRename:
     """Verify sensor names via source inspection.
 
@@ -329,9 +333,9 @@ class TestNextActionSensorRename:
     def _read_sensor_source(self):
         """Read sensor.py source once for all tests in this class."""
         import pathlib
+
         sensor_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "custom_components" / "climate_advisor" / "sensor.py"
+            pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "climate_advisor" / "sensor.py"
         )
         self.source = sensor_path.read_text()
 
@@ -353,6 +357,7 @@ class TestNextActionSensorRename:
 # ---------------------------------------------------------------------------
 # Tests: New constants exist
 # ---------------------------------------------------------------------------
+
 
 class TestNewConstants:
     """Verify the new attribute constants were added to const.py."""

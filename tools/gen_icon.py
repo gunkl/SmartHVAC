@@ -20,7 +20,7 @@ SIZE = 512  # work at 2x, then downscale
 
 def lerp_color(c1: tuple, c2: tuple, t: float) -> tuple:
     """Linearly interpolate between two RGBA colors."""
-    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
+    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2, strict=False))
 
 
 def draw_rounded_rect(draw, bbox, radius, fill):
@@ -40,7 +40,7 @@ def make_gradient_bg(size: int) -> Image.Image:
     draw = ImageDraw.Draw(img)
 
     # Colors: cool blue (top) → warm orange (bottom)
-    top = (41, 128, 185, 255)     # steel blue
+    top = (41, 128, 185, 255)  # steel blue
     bottom = (230, 126, 34, 255)  # carrot orange
 
     radius = size // 8
@@ -55,8 +55,7 @@ def make_gradient_bg(size: int) -> Image.Image:
     # Mask to rounded rect shape
     mask = Image.new("L", (size, size), 0)
     mask_draw = ImageDraw.Draw(mask)
-    draw_rounded_rect(mask_draw, (margin, margin, size - margin, size - margin),
-                      radius, fill=255)
+    draw_rounded_rect(mask_draw, (margin, margin, size - margin, size - margin), radius, fill=255)
     img.putalpha(mask)
     return img
 
@@ -97,8 +96,7 @@ def draw_thermometer(draw, cx: int, cy: int, scale: int):
     )
     inner_bulb_r = bulb_r * 2 // 3
     draw.ellipse(
-        [cx - inner_bulb_r, bulb_cy - inner_bulb_r,
-         cx + inner_bulb_r, bulb_cy + inner_bulb_r],
+        [cx - inner_bulb_r, bulb_cy - inner_bulb_r, cx + inner_bulb_r, bulb_cy + inner_bulb_r],
         fill=mercury_color,
     )
 
@@ -117,7 +115,6 @@ def draw_gear(draw, cx: int, cy: int, r: int):
     outer_r = r
     inner_r = int(r * 0.7)
 
-
     # Draw gear teeth as small rectangles around a circle
     for i in range(teeth):
         angle = 2 * math.pi * i / teeth
@@ -131,8 +128,7 @@ def draw_gear(draw, cx: int, cy: int, r: int):
 
     # Center hole
     hole_r = inner_r // 2
-    draw.ellipse([cx - hole_r, cy - hole_r, cx + hole_r, cy + hole_r],
-                 fill=(0, 0, 0, 0))
+    draw.ellipse([cx - hole_r, cy - hole_r, cx + hole_r, cy + hole_r], fill=(0, 0, 0, 0))
 
 
 def generate():

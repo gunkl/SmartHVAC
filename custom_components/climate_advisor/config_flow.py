@@ -1,4 +1,5 @@
 """Config flow for Climate Advisor integration."""
+
 from __future__ import annotations
 
 import logging
@@ -6,7 +7,6 @@ import re
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import selector
@@ -78,13 +78,9 @@ def _needs_entity(source: str) -> bool:
 def _entity_selector_for_source(source: str) -> selector.EntitySelector:
     """Return an EntitySelector appropriate for the given source type."""
     if source == TEMP_SOURCE_INPUT_NUMBER:
-        return selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="input_number")
-        )
+        return selector.EntitySelector(selector.EntitySelectorConfig(domain="input_number"))
     # Default: sensor with temperature device class
-    return selector.EntitySelector(
-        selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
-    )
+    return selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="temperature"))
 
 
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -96,9 +92,7 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._data: dict[str, Any] = {}
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Handle the initial setup step — core entities and setpoints."""
         errors: dict[str, str] = {}
 
@@ -169,17 +163,13 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="temperature_sources",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        "outdoor_temp_source", default=TEMP_SOURCE_WEATHER_SERVICE
-                    ): selector.SelectSelector(
+                    vol.Required("outdoor_temp_source", default=TEMP_SOURCE_WEATHER_SERVICE): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=OUTDOOR_SOURCE_OPTIONS,
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
-                    vol.Required(
-                        "indoor_temp_source", default=TEMP_SOURCE_CLIMATE_FALLBACK
-                    ): selector.SelectSelector(
+                    vol.Required("indoor_temp_source", default=TEMP_SOURCE_CLIMATE_FALLBACK): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=INDOOR_SOURCE_OPTIONS,
                             mode=selector.SelectSelectorMode.DROPDOWN,
@@ -228,9 +218,7 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ),
         )
 
-    async def async_step_sensors(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_sensors(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Handle the door/window sensor selection step."""
         if user_input is not None:
             # Convert minutes (UI) to seconds (internal storage)
@@ -250,14 +238,14 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             multiple=True,
                         )
                     ),
-                    vol.Optional(
-                        CONF_SENSOR_POLARITY_INVERTED, default=False
-                    ): selector.BooleanSelector(),
+                    vol.Optional(CONF_SENSOR_POLARITY_INVERTED, default=False): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_SENSOR_DEBOUNCE, default=DEFAULT_SENSOR_DEBOUNCE_SECONDS // 60
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=60, step=1,
+                            min=0,
+                            max=60,
+                            step=1,
                             unit_of_measurement="minutes",
                             mode="box",
                         )
@@ -266,29 +254,27 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_MANUAL_GRACE_PERIOD, default=DEFAULT_MANUAL_GRACE_SECONDS // 60
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=240, step=1,
+                            min=0,
+                            max=240,
+                            step=1,
                             unit_of_measurement="minutes",
                             mode="box",
                         )
                     ),
-                    vol.Optional(
-                        CONF_MANUAL_GRACE_NOTIFY, default=False
-                    ): selector.BooleanSelector(),
+                    vol.Optional(CONF_MANUAL_GRACE_NOTIFY, default=False): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_AUTOMATION_GRACE_PERIOD, default=DEFAULT_AUTOMATION_GRACE_SECONDS // 60
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=240, step=1,
+                            min=0,
+                            max=240,
+                            step=1,
                             unit_of_measurement="minutes",
                             mode="box",
                         )
                     ),
-                    vol.Optional(
-                        CONF_AUTOMATION_GRACE_NOTIFY, default=True
-                    ): selector.BooleanSelector(),
-                    vol.Optional(
-                        CONF_FAN_MODE, default=DEFAULT_FAN_MODE
-                    ): selector.SelectSelector(
+                    vol.Optional(CONF_AUTOMATION_GRACE_NOTIFY, default=True): selector.BooleanSelector(),
+                    vol.Optional(CONF_FAN_MODE, default=DEFAULT_FAN_MODE): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=FAN_MODE_OPTIONS,
                             mode=selector.SelectSelectorMode.DROPDOWN,
@@ -297,16 +283,12 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_FAN_ENTITY,
                         description={"suggested_value": None},
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["fan", "switch"])
-                    ),
+                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain=["fan", "switch"])),
                 }
             ),
         )
 
-    async def async_step_occupancy(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_occupancy(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Handle the occupancy awareness step."""
         if user_input is not None:
             self._data.update(user_input)
@@ -320,42 +302,28 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_HOME_TOGGLE,
                         description={"suggested_value": None},
                     ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["input_boolean", "binary_sensor", "switch"]
-                        )
+                        selector.EntitySelectorConfig(domain=["input_boolean", "binary_sensor", "switch"])
                     ),
-                    vol.Optional(
-                        CONF_HOME_TOGGLE_INVERT, default=False
-                    ): selector.BooleanSelector(),
+                    vol.Optional(CONF_HOME_TOGGLE_INVERT, default=False): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_VACATION_TOGGLE,
                         description={"suggested_value": None},
                     ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["input_boolean", "binary_sensor", "switch"]
-                        )
+                        selector.EntitySelectorConfig(domain=["input_boolean", "binary_sensor", "switch"])
                     ),
-                    vol.Optional(
-                        CONF_VACATION_TOGGLE_INVERT, default=False
-                    ): selector.BooleanSelector(),
+                    vol.Optional(CONF_VACATION_TOGGLE_INVERT, default=False): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_GUEST_TOGGLE,
                         description={"suggested_value": None},
                     ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["input_boolean", "binary_sensor", "switch"]
-                        )
+                        selector.EntitySelectorConfig(domain=["input_boolean", "binary_sensor", "switch"])
                     ),
-                    vol.Optional(
-                        CONF_GUEST_TOGGLE_INVERT, default=False
-                    ): selector.BooleanSelector(),
+                    vol.Optional(CONF_GUEST_TOGGLE_INVERT, default=False): selector.BooleanSelector(),
                 }
             ),
         )
 
-    async def async_step_schedule(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_schedule(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Handle the daily schedule step."""
         if user_input is not None:
             self._data.update(user_input)
@@ -399,9 +367,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
         """Initialize the options flow."""
         self._updates: dict[str, Any] = {}
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Step 1: Core entities and temperature setpoints."""
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -428,22 +394,21 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(
                         "weather_entity",
                         default=current.get("weather_entity"),
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="weather")
-                    ),
+                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain="weather")),
                     vol.Required(
                         "climate_entity",
                         default=current.get("climate_entity"),
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="climate")
-                    ),
+                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain="climate")),
                     vol.Required(
                         "comfort_heat",
                         default=current.get("comfort_heat", DEFAULT_COMFORT_HEAT),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=55, max=80, step=1,
-                            unit_of_measurement="°F", mode="slider",
+                            min=55,
+                            max=80,
+                            step=1,
+                            unit_of_measurement="°F",
+                            mode="slider",
                         )
                     ),
                     vol.Required(
@@ -451,8 +416,11 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         default=current.get("comfort_cool", DEFAULT_COMFORT_COOL),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=68, max=85, step=1,
-                            unit_of_measurement="°F", mode="slider",
+                            min=68,
+                            max=85,
+                            step=1,
+                            unit_of_measurement="°F",
+                            mode="slider",
                         )
                     ),
                     vol.Required(
@@ -460,8 +428,11 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         default=current.get("setback_heat", DEFAULT_SETBACK_HEAT),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=45, max=65, step=1,
-                            unit_of_measurement="°F", mode="slider",
+                            min=45,
+                            max=65,
+                            step=1,
+                            unit_of_measurement="°F",
+                            mode="slider",
                         )
                     ),
                     vol.Required(
@@ -469,8 +440,11 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         default=current.get("setback_cool", DEFAULT_SETBACK_COOL),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=75, max=90, step=1,
-                            unit_of_measurement="°F", mode="slider",
+                            min=75,
+                            max=90,
+                            step=1,
+                            unit_of_measurement="°F",
+                            mode="slider",
                         )
                     ),
                     vol.Required(
@@ -517,9 +491,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(
                         "outdoor_temp_entity",
                         description={"suggested_value": current.get("outdoor_temp_entity")},
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["sensor", "input_number"])
-                    ),
+                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor", "input_number"])),
                     vol.Required(
                         "indoor_temp_source",
                         default=current.get("indoor_temp_source", TEMP_SOURCE_CLIMATE_FALLBACK),
@@ -532,16 +504,12 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(
                         "indoor_temp_entity",
                         description={"suggested_value": current.get("indoor_temp_entity")},
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["sensor", "input_number"])
-                    ),
+                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor", "input_number"])),
                 }
             ),
         )
 
-    async def async_step_sensors(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_sensors(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Step 3: Door/window sensor configuration."""
         if user_input is not None:
             # Convert minutes (UI) to seconds (internal storage)
@@ -575,7 +543,9 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         default=current.get(CONF_SENSOR_DEBOUNCE, DEFAULT_SENSOR_DEBOUNCE_SECONDS) // 60,
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=60, step=1,
+                            min=0,
+                            max=60,
+                            step=1,
                             unit_of_measurement="minutes",
                             mode="box",
                         )
@@ -585,7 +555,9 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         default=current.get(CONF_MANUAL_GRACE_PERIOD, DEFAULT_MANUAL_GRACE_SECONDS) // 60,
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=240, step=1,
+                            min=0,
+                            max=240,
+                            step=1,
                             unit_of_measurement="minutes",
                             mode="box",
                         )
@@ -599,7 +571,9 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         default=current.get(CONF_AUTOMATION_GRACE_PERIOD, DEFAULT_AUTOMATION_GRACE_SECONDS) // 60,
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=240, step=1,
+                            min=0,
+                            max=240,
+                            step=1,
                             unit_of_measurement="minutes",
                             mode="box",
                         )
@@ -620,16 +594,12 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_FAN_ENTITY,
                         description={"suggested_value": current.get(CONF_FAN_ENTITY)},
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["fan", "switch"])
-                    ),
+                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain=["fan", "switch"])),
                 }
             ),
         )
 
-    async def async_step_occupancy(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_occupancy(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Step 4: Occupancy awareness configuration."""
         if user_input is not None:
             self._updates.update(user_input)
@@ -645,9 +615,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         CONF_HOME_TOGGLE,
                         description={"suggested_value": current.get(CONF_HOME_TOGGLE)},
                     ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["input_boolean", "binary_sensor", "switch"]
-                        )
+                        selector.EntitySelectorConfig(domain=["input_boolean", "binary_sensor", "switch"])
                     ),
                     vol.Optional(
                         CONF_HOME_TOGGLE_INVERT,
@@ -657,9 +625,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         CONF_VACATION_TOGGLE,
                         description={"suggested_value": current.get(CONF_VACATION_TOGGLE)},
                     ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["input_boolean", "binary_sensor", "switch"]
-                        )
+                        selector.EntitySelectorConfig(domain=["input_boolean", "binary_sensor", "switch"])
                     ),
                     vol.Optional(
                         CONF_VACATION_TOGGLE_INVERT,
@@ -669,9 +635,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         CONF_GUEST_TOGGLE,
                         description={"suggested_value": current.get(CONF_GUEST_TOGGLE)},
                     ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=["input_boolean", "binary_sensor", "switch"]
-                        )
+                        selector.EntitySelectorConfig(domain=["input_boolean", "binary_sensor", "switch"])
                     ),
                     vol.Optional(
                         CONF_GUEST_TOGGLE_INVERT,
@@ -681,9 +645,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
-    async def async_step_schedule(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_schedule(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Step 5: Daily schedule configuration."""
         if user_input is not None:
             self._updates.update(user_input)
@@ -712,9 +674,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
-    async def async_step_advanced(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    async def async_step_advanced(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Step 5: Learning and behavior settings."""
         if user_input is not None:
             self._updates.update(user_input)
@@ -723,9 +683,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                 self.config_entry,
                 data={**self.config_entry.data, **self._updates},
             )
-            await self.hass.config_entries.async_reload(
-                self.config_entry.entry_id
-            )
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
             _LOGGER.info("Options updated — reload triggered")
             return self.async_create_entry(title="", data={})
 

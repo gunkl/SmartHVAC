@@ -8,6 +8,7 @@ shlex.quote() — these tests verify that contract.
 
 See: GitHub Issue #48 Phase 6
 """
+
 from __future__ import annotations
 
 import os
@@ -19,15 +20,12 @@ from unittest.mock import MagicMock, patch
 # Path setup — tools/ is not a package, add it to sys.path directly
 # ---------------------------------------------------------------------------
 
-_TOOLS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"
-)
+_TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
 from deploy import validate_config  # noqa: E402
-from ha_logs import fetch_logs      # noqa: E402
-
+from ha_logs import fetch_logs  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -60,6 +58,7 @@ def _cfg(**overrides) -> dict[str, str]:
 # 1. validate_config() — input validation
 # ---------------------------------------------------------------------------
 
+
 class TestDeployConfigValidation:
     """validate_config() must accept clean values and reject malformed ones."""
 
@@ -74,25 +73,19 @@ class TestDeployConfigValidation:
         """Non-numeric port must produce an error mentioning 'numeric'."""
         errors = validate_config(_cfg(HA_SSH_PORT="abc"))
         assert errors, "Expected at least one error for non-numeric port"
-        assert any("numeric" in e.lower() for e in errors), (
-            f"Expected error containing 'numeric', got: {errors}"
-        )
+        assert any("numeric" in e.lower() for e in errors), f"Expected error containing 'numeric', got: {errors}"
 
     def test_invalid_port_zero(self):
         """Port 0 is outside the valid range — error must mention 'range'."""
         errors = validate_config(_cfg(HA_SSH_PORT="0"))
         assert errors, "Expected at least one error for port 0"
-        assert any("range" in e.lower() for e in errors), (
-            f"Expected error containing 'range', got: {errors}"
-        )
+        assert any("range" in e.lower() for e in errors), f"Expected error containing 'range', got: {errors}"
 
     def test_invalid_port_high(self):
         """Port 99999 is above 65535 — error must mention 'range'."""
         errors = validate_config(_cfg(HA_SSH_PORT="99999"))
         assert errors, "Expected at least one error for port 99999"
-        assert any("range" in e.lower() for e in errors), (
-            f"Expected error containing 'range', got: {errors}"
-        )
+        assert any("range" in e.lower() for e in errors), f"Expected error containing 'range', got: {errors}"
 
     def test_valid_port_boundaries(self):
         """Ports 1 and 65535 are the legal boundary values — both must pass."""
@@ -132,9 +125,7 @@ class TestDeployConfigValidation:
         """A non-existent SSH key path must produce an error mentioning 'not found'."""
         errors = validate_config(_cfg(HA_SSH_KEY="/nonexistent/key"))
         assert errors, "Expected at least one error for missing key file"
-        assert any("not found" in e.lower() for e in errors), (
-            f"Expected error containing 'not found', got: {errors}"
-        )
+        assert any("not found" in e.lower() for e in errors), f"Expected error containing 'not found', got: {errors}"
 
     def test_empty_ssh_key_ok(self):
         """Empty SSH key string is valid (key is optional; password auth is allowed)."""
@@ -144,6 +135,7 @@ class TestDeployConfigValidation:
 # ---------------------------------------------------------------------------
 # 2. fetch_logs() — shell injection resistance via shlex.quote()
 # ---------------------------------------------------------------------------
+
 
 class TestShellSanitization:
     """User-supplied filter strings must be quoted before they reach the shell.
@@ -160,23 +152,18 @@ class TestShellSanitization:
         mock_run.return_value = MagicMock(returncode=0, stdout="log line", stderr="")
 
         malicious = "ERROR'; rm -rf /; echo '"
-        fetch_logs(_MOCK_SSH_CONFIG, component_filter="climate_advisor",
-                   extra_filter=malicious)
+        fetch_logs(_MOCK_SSH_CONFIG, component_filter="climate_advisor", extra_filter=malicious)
 
-        cmd = mock_run.call_args[0][0]   # first positional arg to subprocess.run
-        remote_cmd = cmd[-1]             # SSH passes the remote command as the last arg
+        cmd = mock_run.call_args[0][0]  # first positional arg to subprocess.run
+        remote_cmd = cmd[-1]  # SSH passes the remote command as the last arg
 
         quoted = shlex.quote(malicious)
         # The quoted form must appear in the command…
-        assert quoted in remote_cmd, (
-            f"Expected shlex-quoted form {quoted!r} in remote_cmd: {remote_cmd!r}"
-        )
+        assert quoted in remote_cmd, f"Expected shlex-quoted form {quoted!r} in remote_cmd: {remote_cmd!r}"
         # …and no bare (unquoted) semicolons should remain outside of the
         # quoted token, which we verify by checking the raw injection string
         # is not present verbatim.
-        assert malicious not in remote_cmd, (
-            f"Raw injection string appeared unquoted in remote_cmd: {remote_cmd!r}"
-        )
+        assert malicious not in remote_cmd, f"Raw injection string appeared unquoted in remote_cmd: {remote_cmd!r}"
 
     @patch("ha_logs.subprocess.run")
     def test_component_filter_with_backticks_is_quoted(self, mock_run):
@@ -190,17 +177,14 @@ class TestShellSanitization:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
         backtick_payload = "`id`"
-        fetch_logs(_MOCK_SSH_CONFIG, component_filter="climate_advisor",
-                   extra_filter=backtick_payload)
+        fetch_logs(_MOCK_SSH_CONFIG, component_filter="climate_advisor", extra_filter=backtick_payload)
 
         cmd = mock_run.call_args[0][0]
         remote_cmd = cmd[-1]
 
         # shlex.quote("`id`") == "'`id`'" — backticks inside single quotes are inert
         quoted = shlex.quote(backtick_payload)
-        assert quoted in remote_cmd, (
-            f"Expected shlex-quoted form {quoted!r} in remote_cmd: {remote_cmd!r}"
-        )
+        assert quoted in remote_cmd, f"Expected shlex-quoted form {quoted!r} in remote_cmd: {remote_cmd!r}"
         # The dangerous form would be "grep -i `id`" — raw payload after the grep flag.
         # Verify that pattern does not appear unquoted in the command.
         assert f"-i {backtick_payload}" not in remote_cmd, (
@@ -212,19 +196,14 @@ class TestShellSanitization:
         """A benign extra_filter value must appear as a grep argument."""
         mock_run.return_value = MagicMock(returncode=0, stdout="2026-01-01 ERROR foo", stderr="")
 
-        fetch_logs(_MOCK_SSH_CONFIG, component_filter="climate_advisor",
-                   extra_filter="ERROR")
+        fetch_logs(_MOCK_SSH_CONFIG, component_filter="climate_advisor", extra_filter="ERROR")
 
         cmd = mock_run.call_args[0][0]
         remote_cmd = cmd[-1]
 
         # The remote pipeline must contain grep -i with the filter
-        assert "grep -i" in remote_cmd, (
-            f"Expected 'grep -i' in remote_cmd: {remote_cmd!r}"
-        )
-        assert "ERROR" in remote_cmd, (
-            f"Expected 'ERROR' to appear in remote_cmd: {remote_cmd!r}"
-        )
+        assert "grep -i" in remote_cmd, f"Expected 'grep -i' in remote_cmd: {remote_cmd!r}"
+        assert "ERROR" in remote_cmd, f"Expected 'ERROR' to appear in remote_cmd: {remote_cmd!r}"
 
     @patch("ha_logs.subprocess.run")
     def test_no_filter_no_grep(self, mock_run):
@@ -236,9 +215,5 @@ class TestShellSanitization:
         cmd = mock_run.call_args[0][0]
         remote_cmd = cmd[-1]
 
-        assert remote_cmd.strip() == "ha core logs", (
-            f"Expected bare 'ha core logs', got: {remote_cmd!r}"
-        )
-        assert "grep" not in remote_cmd, (
-            f"Expected no grep in full_dump mode, got: {remote_cmd!r}"
-        )
+        assert remote_cmd.strip() == "ha core logs", f"Expected bare 'ha core logs', got: {remote_cmd!r}"
+        assert "grep" not in remote_cmd, f"Expected no grep in full_dump mode, got: {remote_cmd!r}"

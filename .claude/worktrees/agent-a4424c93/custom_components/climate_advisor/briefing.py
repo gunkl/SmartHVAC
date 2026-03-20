@@ -16,11 +16,11 @@ from datetime import time
 
 from .classifier import DayClassification
 from .const import (
-    DAY_TYPE_HOT,
-    DAY_TYPE_WARM,
-    DAY_TYPE_MILD,
-    DAY_TYPE_COOL,
     DAY_TYPE_COLD,
+    DAY_TYPE_COOL,
+    DAY_TYPE_HOT,
+    DAY_TYPE_MILD,
+    DAY_TYPE_WARM,
 )
 
 _LOGGER = logging.getLogger(__name__)

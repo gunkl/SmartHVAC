@@ -1,4 +1,5 @@
 """Tests for Issue #29 — Home/Away/Vacation/Guest occupancy awareness."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +14,7 @@ _update_coord_mod = sys.modules["homeassistant.helpers.update_coordinator"]
 
 class _FakeDataUpdateCoordinator:
     """Minimal stand-in for DataUpdateCoordinator so the real coordinator can inherit."""
+
     def __init__(self, hass, *args, **kwargs):
         self.hass = hass
 
@@ -28,21 +30,21 @@ if "custom_components.climate_advisor.coordinator" in sys.modules:
 
 from custom_components.climate_advisor.automation import AutomationEngine  # noqa: E402
 from custom_components.climate_advisor.classifier import DayClassification  # noqa: E402
-from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator  # noqa: E402
-from custom_components.climate_advisor.learning import DailyRecord  # noqa: E402
 from custom_components.climate_advisor.const import (  # noqa: E402
+    CONF_GUEST_TOGGLE,
+    CONF_GUEST_TOGGLE_INVERT,
     CONF_HOME_TOGGLE,
     CONF_HOME_TOGGLE_INVERT,
     CONF_VACATION_TOGGLE,
     CONF_VACATION_TOGGLE_INVERT,
-    CONF_GUEST_TOGGLE,
-    CONF_GUEST_TOGGLE_INVERT,
-    OCCUPANCY_HOME,
     OCCUPANCY_AWAY,
-    OCCUPANCY_VACATION,
     OCCUPANCY_GUEST,
+    OCCUPANCY_HOME,
+    OCCUPANCY_VACATION,
     VACATION_SETBACK_EXTRA,
 )
+from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator  # noqa: E402
+from custom_components.climate_advisor.learning import DailyRecord  # noqa: E402
 
 AUTOMATION_LOGGER = "custom_components.climate_advisor.automation"
 
@@ -117,10 +119,10 @@ def _make_classification(
     obj.tomorrow_high = kwargs.get("tomorrow_high", 80.0)
     obj.tomorrow_low = kwargs.get("tomorrow_low", 60.0)
     obj.pre_condition = kwargs.get("pre_condition", False)
-    obj.pre_condition_target = kwargs.get("pre_condition_target", None)
+    obj.pre_condition_target = kwargs.get("pre_condition_target")
     obj.windows_recommended = kwargs.get("windows_recommended", False)
-    obj.window_open_time = kwargs.get("window_open_time", None)
-    obj.window_close_time = kwargs.get("window_close_time", None)
+    obj.window_open_time = kwargs.get("window_open_time")
+    obj.window_close_time = kwargs.get("window_close_time")
     obj.setback_modifier = setback_modifier
     obj.window_opportunity_morning = kwargs.get("window_opportunity_morning", False)
     obj.window_opportunity_evening = kwargs.get("window_opportunity_evening", False)
@@ -406,10 +408,7 @@ class TestVacationSetback:
             asyncio.run(engine.handle_occupancy_vacation())
 
         # No actual service calls in dry run
-        climate_calls = [
-            c for c in engine.hass.services.async_call.call_args_list
-            if c[0][0] == "climate"
-        ]
+        climate_calls = [c for c in engine.hass.services.async_call.call_args_list if c[0][0] == "climate"]
         assert len(climate_calls) == 0
 
         # Should have logged a dry-run message
@@ -436,6 +435,7 @@ class TestOccupancyStatePersistence:
     def test_occupancy_away_since_in_state_dict(self):
         """_build_state_dict() includes occupancy_away_since when set."""
         from datetime import datetime
+
         coord = _make_coordinator()
         coord._occupancy_away_since = datetime(2026, 3, 19, 14, 30, 0)
         state = coord._build_state_dict()
@@ -619,8 +619,9 @@ class TestLearningVacationExclusion:
 
     def test_vacation_days_excluded_from_override_pattern(self):
         """Vacation records should not count toward frequent_overrides."""
-        from custom_components.climate_advisor.learning import LearningEngine
         from pathlib import Path
+
+        from custom_components.climate_advisor.learning import LearningEngine
 
         engine = LearningEngine(Path("/tmp/fake"))
 
@@ -636,9 +637,7 @@ class TestLearningVacationExclusion:
             engine.record_day(record)
 
         suggestions = engine.generate_suggestions()
-        override_suggestions = [
-            s for s in suggestions if "override" in s.get("key", "").lower()
-        ]
+        override_suggestions = [s for s in suggestions if "override" in s.get("key", "").lower()]
         assert len(override_suggestions) == 0
 
 
@@ -675,37 +674,27 @@ class TestIsToggleOn:
 
     def test_on_state_no_invert(self):
         """ON state, no invert → True."""
-        coord = _make_coordinator(
-            state_map={"input_boolean.test": "on"}
-        )
+        coord = _make_coordinator(state_map={"input_boolean.test": "on"})
         assert coord._is_toggle_on("input_boolean.test", False) is True
 
     def test_off_state_no_invert(self):
         """OFF state, no invert → False."""
-        coord = _make_coordinator(
-            state_map={"input_boolean.test": "off"}
-        )
+        coord = _make_coordinator(state_map={"input_boolean.test": "off"})
         assert coord._is_toggle_on("input_boolean.test", False) is False
 
     def test_on_state_inverted(self):
         """ON state, inverted → False."""
-        coord = _make_coordinator(
-            state_map={"input_boolean.test": "on"}
-        )
+        coord = _make_coordinator(state_map={"input_boolean.test": "on"})
         assert coord._is_toggle_on("input_boolean.test", True) is False
 
     def test_off_state_inverted(self):
         """OFF state, inverted → True."""
-        coord = _make_coordinator(
-            state_map={"input_boolean.test": "off"}
-        )
+        coord = _make_coordinator(state_map={"input_boolean.test": "off"})
         assert coord._is_toggle_on("input_boolean.test", True) is True
 
     def test_unavailable_returns_false(self):
         """Unavailable entity → False regardless of invert."""
-        coord = _make_coordinator(
-            state_map={"input_boolean.test": "unavailable"}
-        )
+        coord = _make_coordinator(state_map={"input_boolean.test": "unavailable"})
         assert coord._is_toggle_on("input_boolean.test", False) is False
         assert coord._is_toggle_on("input_boolean.test", True) is False
 
@@ -725,8 +714,9 @@ class TestBriefingOccupancy:
 
     def _generate_briefing(self, occupancy_mode: str = "home") -> str:
         """Generate a briefing with given occupancy mode."""
-        from custom_components.climate_advisor.briefing import generate_briefing
         from datetime import time
+
+        from custom_components.climate_advisor.briefing import generate_briefing
 
         c = _make_classification(day_type="warm", hvac_mode="cool")
         return generate_briefing(
@@ -778,9 +768,12 @@ class TestOccupancyConstants:
     def test_config_keys_are_strings(self):
         """All occupancy config keys are non-empty strings."""
         for key in (
-            CONF_HOME_TOGGLE, CONF_HOME_TOGGLE_INVERT,
-            CONF_VACATION_TOGGLE, CONF_VACATION_TOGGLE_INVERT,
-            CONF_GUEST_TOGGLE, CONF_GUEST_TOGGLE_INVERT,
+            CONF_HOME_TOGGLE,
+            CONF_HOME_TOGGLE_INVERT,
+            CONF_VACATION_TOGGLE,
+            CONF_VACATION_TOGGLE_INVERT,
+            CONF_GUEST_TOGGLE,
+            CONF_GUEST_TOGGLE_INVERT,
         ):
             assert isinstance(key, str)
             assert len(key) > 0

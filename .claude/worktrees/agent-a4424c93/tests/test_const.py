@@ -21,7 +21,6 @@ from custom_components.climate_advisor.const import (
     TREND_THRESHOLD_SIGNIFICANT,
 )
 
-
 # ---------------------------------------------------------------------------
 # Day type thresholds — ascending order
 # ---------------------------------------------------------------------------

@@ -1,13 +1,15 @@
 """Shared pytest fixtures for Climate Advisor tests."""
+
 from __future__ import annotations
 
-import sys
 import os
+import sys
 from unittest.mock import MagicMock
 
 # Ensure the project root is on sys.path so imports from
 # custom_components.climate_advisor resolve correctly.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 # Mock the homeassistant package and its submodules so tests can import
 # Climate Advisor modules without a running HA instance. This must happen
@@ -22,6 +24,7 @@ def _make_mock_module(name):
     mod.__loader__ = None
     mod.__package__ = name
     return mod
+
 
 _HA_MODULES = [
     "homeassistant",
@@ -53,6 +56,7 @@ for mod_name in _HA_MODULES:
     if mod_name not in sys.modules:
         sys.modules[mod_name] = _make_mock_module(mod_name)
 
+
 # RepairsFlow needs to be a real class so repairs.py can subclass it
 class _MockRepairsFlow:
     """Minimal stand-in for homeassistant.components.repairs.RepairsFlow."""
@@ -68,11 +72,14 @@ class _MockRepairsFlow:
     def async_create_entry(self, *, title="", data):
         return {"type": "create_entry", "title": title, "data": data}
 
+
 class _MockConfirmRepairFlow(_MockRepairsFlow):
     """Minimal stand-in for homeassistant.components.repairs.ConfirmRepairFlow."""
 
+
 sys.modules["homeassistant.components.repairs"].RepairsFlow = _MockRepairsFlow
 sys.modules["homeassistant.components.repairs"].ConfirmRepairFlow = _MockConfirmRepairFlow
+
 
 # DataUpdateCoordinator needs to be a real class so coordinator.py can subclass it
 class _MockDataUpdateCoordinator:
@@ -84,6 +91,7 @@ class _MockDataUpdateCoordinator:
     async def async_request_refresh(self):
         """Stub for triggering a data refresh."""
 
+
 sys.modules["homeassistant.helpers.update_coordinator"].DataUpdateCoordinator = _MockDataUpdateCoordinator
 
 # voluptuous is used by config_flow — mock it if not installed
@@ -93,6 +101,7 @@ if "voluptuous" not in sys.modules:
 
 # Now safe to import Climate Advisor modules
 import pytest  # noqa: E402
+
 from custom_components.climate_advisor.classifier import ForecastSnapshot  # noqa: E402
 
 

@@ -5,6 +5,7 @@ state serialization/deserialization includes action and override fields.
 
 See: GitHub Issue #37
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +23,7 @@ sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 3, 19, 14, 30,
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides=None):
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -74,8 +76,8 @@ def _make_classification(
     obj.pre_condition = pre_condition
     obj.pre_condition_target = pre_condition_target
     obj.windows_recommended = kwargs.get("windows_recommended", False)
-    obj.window_open_time = kwargs.get("window_open_time", None)
-    obj.window_close_time = kwargs.get("window_close_time", None)
+    obj.window_open_time = kwargs.get("window_open_time")
+    obj.window_close_time = kwargs.get("window_close_time")
     obj.setback_modifier = setback_modifier
     return obj
 
@@ -83,6 +85,7 @@ def _make_classification(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestActionTracking:
     """Verify _record_action stores time and reason on HVAC actions."""
@@ -127,10 +130,12 @@ class TestActionTracking:
     def test_restore_state_loads_action_fields(self):
         """restore_state() must populate action tracking fields."""
         engine = _make_automation_engine()
-        engine.restore_state({
-            "last_action_time": "2026-03-19T14:00:00",
-            "last_action_reason": "test",
-        })
+        engine.restore_state(
+            {
+                "last_action_time": "2026-03-19T14:00:00",
+                "last_action_reason": "test",
+            }
+        )
 
         assert engine._last_action_time == "2026-03-19T14:00:00"
         assert engine._last_action_reason == "test"
@@ -151,11 +156,13 @@ class TestActionTracking:
     def test_restore_state_loads_override_fields(self):
         """restore_state() must populate manual override fields."""
         engine = _make_automation_engine()
-        engine.restore_state({
-            "manual_override_active": True,
-            "manual_override_mode": "cool",
-            "manual_override_time": "2026-03-19T15:00:00",
-        })
+        engine.restore_state(
+            {
+                "manual_override_active": True,
+                "manual_override_mode": "cool",
+                "manual_override_time": "2026-03-19T15:00:00",
+            }
+        )
 
         assert engine._manual_override_active is True
         assert engine._manual_override_mode == "cool"

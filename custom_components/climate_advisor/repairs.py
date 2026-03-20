@@ -1,12 +1,13 @@
 """Repairs flows for Climate Advisor."""
+
 from __future__ import annotations
 
 import voluptuous as vol
-
 from homeassistant import data_entry_flow
 from homeassistant.components.repairs import ConfirmRepairFlow, RepairsFlow
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir, selector
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import selector
 
 from .const import DOMAIN
 
@@ -14,9 +15,7 @@ from .const import DOMAIN
 class WeatherEntityRepairFlow(RepairsFlow):
     """Repair flow to select a new weather entity."""
 
-    async def async_step_init(
-        self, user_input: dict[str, str] | None = None
-    ) -> data_entry_flow.FlowResult:
+    async def async_step_init(self, user_input: dict[str, str] | None = None) -> data_entry_flow.FlowResult:
         """Handle the repair step."""
         if user_input is not None and "weather_entity" in user_input:
             weather_entity = user_input["weather_entity"]
@@ -44,9 +43,7 @@ class WeatherEntityRepairFlow(RepairsFlow):
                 )
                 ir.async_delete_issue(self.hass, DOMAIN, "weather_entity_not_found")
                 # Defer reload to avoid tearing down the integration mid-flow
-                self.hass.async_create_task(
-                    self.hass.config_entries.async_reload(entry.entry_id)
-                )
+                self.hass.async_create_task(self.hass.config_entries.async_reload(entry.entry_id))
 
             return self.async_create_entry(title="", data={})
 
@@ -62,9 +59,7 @@ class WeatherEntityRepairFlow(RepairsFlow):
         )
 
 
-async def async_create_fix_flow(
-    hass: HomeAssistant, issue_id: str, data: dict | None
-) -> RepairsFlow:
+async def async_create_fix_flow(hass: HomeAssistant, issue_id: str, data: dict | None) -> RepairsFlow:
     """Create a fix flow for the given issue."""
     if issue_id == "weather_entity_not_found":
         return WeatherEntityRepairFlow()

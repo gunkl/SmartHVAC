@@ -7,6 +7,7 @@ Tests for:
 - Status API response includes setpoint and indoor temp
 - Learning API response includes yesterday_record and tomorrow_plan
 """
+
 from __future__ import annotations
 
 import sys
@@ -17,6 +18,7 @@ from unittest.mock import MagicMock
 # ── HA module stubs (must happen before importing climate_advisor) ──
 if "homeassistant" not in sys.modules:
     from conftest import _install_ha_stubs
+
     _install_ha_stubs()
 
 from custom_components.climate_advisor.classifier import (
@@ -30,10 +32,10 @@ from custom_components.climate_advisor.learning import (
     LearningEngine,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_record(date: str = "2026-03-18", **overrides) -> DailyRecord:
     defaults = dict(day_type="mild", trend_direction="stable")
@@ -70,6 +72,7 @@ def _make_classification(**overrides):
 # ---------------------------------------------------------------------------
 # LearningEngine.get_record_by_date
 # ---------------------------------------------------------------------------
+
 
 class TestGetRecordByDate:
     """Tests for LearningEngine.get_record_by_date()."""
@@ -123,6 +126,7 @@ class TestGetRecordByDate:
 # Coordinator.yesterday_record
 # ---------------------------------------------------------------------------
 
+
 class TestYesterdayRecord:
     """Tests for the yesterday_record coordinator property."""
 
@@ -132,9 +136,8 @@ class TestYesterdayRecord:
         coord.learning = learning_engine
         # Bind the real property logic
         from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
-        coord.yesterday_record = property(
-            ClimateAdvisorCoordinator.yesterday_record.fget
-        ).__get__(coord)
+
+        coord.yesterday_record = property(ClimateAdvisorCoordinator.yesterday_record.fget).__get__(coord)
         return coord
 
     def test_returns_none_when_no_records(self, tmp_path: Path):
@@ -157,6 +160,7 @@ class TestYesterdayRecord:
 # Coordinator.tomorrow_plan
 # ---------------------------------------------------------------------------
 
+
 class TestTomorrowPlan:
     """Tests for the tomorrow_plan coordinator property."""
 
@@ -165,6 +169,7 @@ class TestTomorrowPlan:
         coord = MagicMock()
         coord._current_classification = None
         from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+
         # Call the property's fget directly
         result = ClimateAdvisorCoordinator.tomorrow_plan.fget(coord)
         assert result is None
@@ -179,6 +184,7 @@ class TestTomorrowPlan:
         )
 
         from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+
         result = ClimateAdvisorCoordinator.tomorrow_plan.fget(coord)
 
         assert result is not None
@@ -202,6 +208,7 @@ class TestTomorrowPlan:
         )
 
         from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+
         result = ClimateAdvisorCoordinator.tomorrow_plan.fget(coord)
 
         assert result is not None
@@ -217,6 +224,7 @@ class TestTomorrowPlan:
         )
 
         from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+
         result = ClimateAdvisorCoordinator.tomorrow_plan.fget(coord)
 
         assert result is not None
@@ -232,6 +240,7 @@ class TestTomorrowPlan:
         )
 
         from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+
         result = ClimateAdvisorCoordinator.tomorrow_plan.fget(coord)
 
         assert result is not None

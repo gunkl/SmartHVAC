@@ -6,6 +6,7 @@ service calls are skipped and logged with a [DRY RUN] prefix.
 
 See: GitHub Issue #19
 """
+
 from __future__ import annotations
 
 import logging

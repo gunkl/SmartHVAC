@@ -94,7 +94,7 @@ def check_manifest(component_dir):
         return result
 
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             manifest = json.load(f)
     except json.JSONDecodeError as e:
         result.error(f"manifest.json is not valid JSON: {e}")
@@ -109,22 +109,15 @@ def check_manifest(component_dir):
     if "domain" in manifest:
         dir_name = os.path.basename(component_dir)
         if manifest["domain"] != dir_name:
-            result.error(
-                f"Domain '{manifest['domain']}' does not match "
-                f"directory name '{dir_name}'"
-            )
+            result.error(f"Domain '{manifest['domain']}' does not match directory name '{dir_name}'")
 
     # Check version is valid semver
-    if "version" in manifest:
-        if not SEMVER_PATTERN.match(manifest["version"]):
-            result.error(
-                f"Version '{manifest['version']}' is not valid semver (expected X.Y.Z)"
-            )
+    if "version" in manifest and not SEMVER_PATTERN.match(manifest["version"]):
+        result.error(f"Version '{manifest['version']}' is not valid semver (expected X.Y.Z)")
 
     # Check config_flow is boolean
-    if "config_flow" in manifest:
-        if not isinstance(manifest["config_flow"], bool):
-            result.error("config_flow must be a boolean")
+    if "config_flow" in manifest and not isinstance(manifest["config_flow"], bool):
+        result.error("config_flow must be a boolean")
 
     if verbose and result.passed:
         print(f"  OK: domain={manifest.get('domain')}, version={manifest.get('version')}")
@@ -141,7 +134,7 @@ def check_imports(component_dir):
     for filename in sorted(py_files):
         filepath = os.path.join(component_dir, filename)
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 source = f.read()
             tree = ast.parse(source, filename=filepath)
         except SyntaxError:
@@ -149,17 +142,13 @@ def check_imports(component_dir):
             continue
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                if node.level == 1 and node.module:
-                    # Relative import: from .module import ...
-                    module_name = node.module.split(".")[0]
-                    if module_name not in available_modules:
-                        result.error(
-                            f"{filename}: imports '.{node.module}' but "
-                            f"'{module_name}.py' does not exist"
-                        )
-                    elif verbose:
-                        print(f"  OK: {filename} -> .{node.module}")
+            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+                # Relative import: from .module import ...
+                module_name = node.module.split(".")[0]
+                if module_name not in available_modules:
+                    result.error(f"{filename}: imports '.{node.module}' but '{module_name}.py' does not exist")
+                elif verbose:
+                    print(f"  OK: {filename} -> .{node.module}")
 
     return result
 
@@ -174,7 +163,7 @@ def check_strings(component_dir):
         return result
 
     try:
-        with open(strings_path, "r", encoding="utf-8") as f:
+        with open(strings_path, encoding="utf-8") as f:
             strings = json.load(f)
     except json.JSONDecodeError as e:
         result.error(f"strings.json is not valid JSON: {e}")
@@ -199,7 +188,7 @@ def check_secrets(component_dir):
     for filename in sorted(py_files):
         filepath = os.path.join(component_dir, filename)
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 lines = f.readlines()
         except OSError:
             continue
@@ -214,12 +203,10 @@ def check_secrets(component_dir):
                 matches = pattern.findall(line)
                 for match in matches:
                     # Filter out common false positives (variable names, dict keys, log messages)
-                    if any(fp in match.lower() for fp in [
-                        "api_key", "token", "password", "secret"
-                    ]):
-                        # Only warn if it looks like an actual value assignment
-                        if "=" in line and ('""' not in line) and ("''" not in line):
-                            result.warn(f"{filename}:{line_num}: possible secret reference: {match[:50]}")
+                    is_secret_ref = any(fp in match.lower() for fp in ["api_key", "token", "password", "secret"])
+                    # Only warn if it looks like an actual value assignment
+                    if is_secret_ref and "=" in line and ('""' not in line) and ("''" not in line):
+                        result.warn(f"{filename}:{line_num}: possible secret reference: {match[:50]}")
 
     return result
 

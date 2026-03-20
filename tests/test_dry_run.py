@@ -7,12 +7,12 @@ continue to execute normally.
 
 See: GitHub Issue #19
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
-
 
 from custom_components.climate_advisor.automation import AutomationEngine
 from custom_components.climate_advisor.classifier import DayClassification
@@ -23,6 +23,7 @@ AUTOMATION_LOGGER = "custom_components.climate_advisor.automation"
 # ---------------------------------------------------------------------------
 # Helpers (reused from test_reason_logging.py)
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides: dict | None = None) -> AutomationEngine:
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -75,8 +76,8 @@ def _make_classification(
     obj.pre_condition = pre_condition
     obj.pre_condition_target = pre_condition_target
     obj.windows_recommended = kwargs.get("windows_recommended", False)
-    obj.window_open_time = kwargs.get("window_open_time", None)
-    obj.window_close_time = kwargs.get("window_close_time", None)
+    obj.window_open_time = kwargs.get("window_open_time")
+    obj.window_close_time = kwargs.get("window_close_time")
     obj.setback_modifier = setback_modifier
     return obj
 
@@ -84,6 +85,7 @@ def _make_classification(
 # ---------------------------------------------------------------------------
 # 1. Default state
 # ---------------------------------------------------------------------------
+
 
 class TestDryRunDefault:
     """Verify dry_run is off by default."""
@@ -96,6 +98,7 @@ class TestDryRunDefault:
 # ---------------------------------------------------------------------------
 # 2–4. Primitive guards — dry run skips service calls
 # ---------------------------------------------------------------------------
+
 
 class TestDryRunPrimitiveGuards:
     """When dry_run=True, service calls are skipped and logged."""
@@ -144,6 +147,7 @@ class TestDryRunPrimitiveGuards:
 # 5. Normal mode — service calls proceed
 # ---------------------------------------------------------------------------
 
+
 class TestNormalModeAllowsCalls:
     """When dry_run=False, all primitives call hass.services.async_call."""
 
@@ -162,6 +166,7 @@ class TestNormalModeAllowsCalls:
 # ---------------------------------------------------------------------------
 # 6. apply_classification — logic runs, no service calls
 # ---------------------------------------------------------------------------
+
 
 class TestDryRunHighLevelLogic:
     """Higher-level methods execute logic in dry-run but skip service calls."""
@@ -208,7 +213,9 @@ class TestDryRunHighLevelLogic:
         engine = _make_automation_engine()
         engine.dry_run = True
         engine._current_classification = _make_classification(
-            day_type="cold", hvac_mode="heat", setback_modifier=2.0,
+            day_type="cold",
+            hvac_mode="heat",
+            setback_modifier=2.0,
         )
 
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
@@ -223,7 +230,9 @@ class TestDryRunHighLevelLogic:
         engine = _make_automation_engine()
         engine.dry_run = True
         engine._current_classification = _make_classification(
-            day_type="cold", hvac_mode="heat", setback_modifier=0.0,
+            day_type="cold",
+            hvac_mode="heat",
+            setback_modifier=0.0,
         )
 
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
@@ -237,7 +246,8 @@ class TestDryRunHighLevelLogic:
         engine = _make_automation_engine()
         engine.dry_run = True
         engine._current_classification = _make_classification(
-            day_type="cold", hvac_mode="heat",
+            day_type="cold",
+            hvac_mode="heat",
         )
 
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
@@ -251,6 +261,7 @@ class TestDryRunHighLevelLogic:
 # ---------------------------------------------------------------------------
 # 11. Coordinator sync
 # ---------------------------------------------------------------------------
+
 
 class TestCoordinatorSync:
     """Coordinator.set_automation_enabled syncs to engine.dry_run."""
@@ -285,6 +296,7 @@ class TestCoordinatorSync:
 # ---------------------------------------------------------------------------
 # 12. State persistence
 # ---------------------------------------------------------------------------
+
 
 class TestStatePersistence:
     """Verify automation_enabled is included in serialized state."""

@@ -6,6 +6,7 @@ Covers:
 - voluptuous schema for respond_to_suggestion service call
 - LearningEngine DB type safety and growth caps
 """
+
 from __future__ import annotations
 
 import json
@@ -20,11 +21,8 @@ import pytest
 
 try:
     import voluptuous as vol
-    HAS_VOLUPTUOUS = (
-        not isinstance(vol, MagicMock)
-        and hasattr(vol, "Schema")
-        and callable(vol.Schema)
-    )
+
+    HAS_VOLUPTUOUS = not isinstance(vol, MagicMock) and hasattr(vol, "Schema") and callable(vol.Schema)
 except ImportError:
     HAS_VOLUPTUOUS = False
 
@@ -40,6 +38,7 @@ class TestNotifyServiceValidation:
     @pytest.fixture(autouse=True)
     def _import_regex(self):
         from custom_components.climate_advisor.config_flow import _NOTIFY_SERVICE_RE
+
         self.re = _NOTIFY_SERVICE_RE
 
     def test_valid_default(self):
@@ -183,10 +182,13 @@ class TestServiceSchemaValidation:
     @pytest.fixture(autouse=True)
     def _build_schema(self):
         import voluptuous as vol  # noqa: PLC0415  (inside fixture intentionally)
-        self.schema = vol.Schema({
-            vol.Required("action"): vol.In(["accept", "dismiss"]),
-            vol.Required("suggestion_key"): vol.Coerce(str),
-        })
+
+        self.schema = vol.Schema(
+            {
+                vol.Required("action"): vol.In(["accept", "dismiss"]),
+                vol.Required("suggestion_key"): vol.Coerce(str),
+            }
+        )
 
     def test_valid_accept(self):
         """'accept' with a known suggestion key is valid."""
@@ -202,18 +204,21 @@ class TestServiceSchemaValidation:
     def test_invalid_action(self):
         """An unrecognised action value must raise vol.Invalid."""
         import voluptuous as vol  # noqa: PLC0415
+
         with pytest.raises(vol.Invalid):
             self.schema({"action": "delete", "suggestion_key": "foo"})
 
     def test_missing_action(self):
         """Omitting the required 'action' field must raise vol.MultipleInvalid."""
         import voluptuous as vol  # noqa: PLC0415
+
         with pytest.raises(vol.MultipleInvalid):
             self.schema({"suggestion_key": "foo"})
 
     def test_missing_suggestion_key(self):
         """Omitting the required 'suggestion_key' field must raise vol.MultipleInvalid."""
         import voluptuous as vol  # noqa: PLC0415
+
         with pytest.raises(vol.MultipleInvalid):
             self.schema({"action": "accept"})
 
@@ -230,18 +235,17 @@ class TestLearningDBEdgeCases:
 
     def _engine(self, tmp_path: Path) -> object:
         from custom_components.climate_advisor.learning import LearningEngine
+
         return LearningEngine(tmp_path)
 
     def _db_path(self, tmp_path: Path) -> Path:
         from custom_components.climate_advisor.const import LEARNING_DB_FILE
+
         return tmp_path / LEARNING_DB_FILE
 
     def _state_is_empty(self, engine) -> bool:
         summary = engine.get_compliance_summary()
-        return (
-            summary["days_recorded"] == 0
-            and engine.get_last_suggestion_keys() == []
-        )
+        return summary["days_recorded"] == 0 and engine.get_last_suggestion_keys() == []
 
     # -- load_state type-safety --
 

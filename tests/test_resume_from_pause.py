@@ -7,6 +7,7 @@ Covers:
 - _resumed_from_pause flag lifecycle (set on resume, cleared on clear_manual_override)
 - _compute_automation_status() returning the correct status string variants
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +29,7 @@ sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 3, 20, 10, 0, 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides: dict | None = None) -> AutomationEngine:
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -85,8 +87,8 @@ def _make_classification(
     obj.pre_condition = pre_condition
     obj.pre_condition_target = pre_condition_target
     obj.windows_recommended = kwargs.get("windows_recommended", False)
-    obj.window_open_time = kwargs.get("window_open_time", None)
-    obj.window_close_time = kwargs.get("window_close_time", None)
+    obj.window_open_time = kwargs.get("window_open_time")
+    obj.window_close_time = kwargs.get("window_close_time")
     obj.setback_modifier = setback_modifier
     return obj
 
@@ -98,8 +100,7 @@ _PATCH_CALLBACK = "custom_components.climate_advisor.automation.callback"
 
 def _start_grace_and_capture_callback(engine: AutomationEngine, source: str = "manual"):
     """Call _start_grace_period and return the raw expiry closure."""
-    with patch(_PATCH_CALL_LATER) as mock_call_later, \
-         patch(_PATCH_CALLBACK, side_effect=lambda f: f):
+    with patch(_PATCH_CALL_LATER) as mock_call_later, patch(_PATCH_CALLBACK, side_effect=lambda f: f):
         mock_call_later.return_value = MagicMock()
         engine._start_grace_period(source)
         assert mock_call_later.call_count == 1
@@ -110,6 +111,7 @@ def _start_grace_and_capture_callback(engine: AutomationEngine, source: str = "m
 # ---------------------------------------------------------------------------
 # TestHvacCommandPendingGuard
 # ---------------------------------------------------------------------------
+
 
 class TestHvacCommandPendingGuard:
     """Verify the _hvac_command_pending and _hvac_command_time race guards."""
@@ -131,15 +133,15 @@ class TestHvacCommandPendingGuard:
         # Replicate the coordinator's override-detection condition
         old_state_value = "cool"
         new_state_value = "off"
-        manual_override_active = engine._manual_override_active           # False
-        hvac_command_pending = engine._hvac_command_pending               # True (guard)
-        classification_matches = (new_state_value == classification.hvac_mode)  # False
+        manual_override_active = engine._manual_override_active  # False
+        hvac_command_pending = engine._hvac_command_pending  # True (guard)
+        classification_matches = new_state_value == classification.hvac_mode  # False
 
         override_would_fire = (
             old_state_value != new_state_value
             and new_state_value not in ("unavailable", "unknown")
             and not manual_override_active
-            and not hvac_command_pending          # <-- blocks here
+            and not hvac_command_pending  # <-- blocks here
             and classification is not None
             and not classification_matches
         )
@@ -205,21 +207,23 @@ class TestHvacCommandPendingGuard:
 # TestResumeFromPause
 # ---------------------------------------------------------------------------
 
+
 class TestResumeFromPause:
     """Verify resume_from_pause() correctly restores HVAC and starts grace."""
 
     def test_resume_restores_classified_mode(self):
         """resume_from_pause clears pause state, calls HVAC service with classified mode."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
         engine._pre_pause_mode = "cool"
         engine._current_classification = _make_classification(hvac_mode="cool")
 
-        with patch(_PATCH_CALL_LATER) as mock_call_later, \
-             patch(_PATCH_CALLBACK, side_effect=lambda f: f):
+        with patch(_PATCH_CALL_LATER) as mock_call_later, patch(_PATCH_CALLBACK, side_effect=lambda f: f):
             mock_call_later.return_value = MagicMock()
             result = asyncio.run(engine.resume_from_pause())
 
@@ -231,35 +235,30 @@ class TestResumeFromPause:
 
         # A climate service call must have been issued with "cool"
         calls = engine.hass.services.async_call.call_args_list
-        hvac_calls = [
-            c for c in calls
-            if c.args[0] == "climate" and c.args[1] == "set_hvac_mode"
-        ]
+        hvac_calls = [c for c in calls if c.args[0] == "climate" and c.args[1] == "set_hvac_mode"]
         assert len(hvac_calls) >= 1
         assert hvac_calls[0].args[2]["hvac_mode"] == "cool"
 
     def test_resume_uses_current_classification_not_pre_pause(self):
         """resume_from_pause uses _current_classification.hvac_mode, not _pre_pause_mode."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
-        engine._pre_pause_mode = "cool"         # stale pre-pause mode
+        engine._pre_pause_mode = "cool"  # stale pre-pause mode
         # Classification changed to heat since the pause was set
         engine._current_classification = _make_classification(hvac_mode="heat")
 
-        with patch(_PATCH_CALL_LATER) as mock_call_later, \
-             patch(_PATCH_CALLBACK, side_effect=lambda f: f):
+        with patch(_PATCH_CALL_LATER) as mock_call_later, patch(_PATCH_CALLBACK, side_effect=lambda f: f):
             mock_call_later.return_value = MagicMock()
             result = asyncio.run(engine.resume_from_pause())
 
         assert result == "heat"
         calls = engine.hass.services.async_call.call_args_list
-        hvac_calls = [
-            c for c in calls
-            if c.args[0] == "climate" and c.args[1] == "set_hvac_mode"
-        ]
+        hvac_calls = [c for c in calls if c.args[0] == "climate" and c.args[1] == "set_hvac_mode"]
         assert len(hvac_calls) >= 1
         assert hvac_calls[0].args[2]["hvac_mode"] == "heat"
 
@@ -275,15 +274,16 @@ class TestResumeFromPause:
 
     def test_resume_without_classification(self):
         """resume_from_pause clears pause flags even when _current_classification is None."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
         engine._current_classification = None
 
-        with patch(_PATCH_CALL_LATER) as mock_call_later, \
-             patch(_PATCH_CALLBACK, side_effect=lambda f: f):
+        with patch(_PATCH_CALL_LATER) as mock_call_later, patch(_PATCH_CALLBACK, side_effect=lambda f: f):
             mock_call_later.return_value = MagicMock()
             result = asyncio.run(engine.resume_from_pause())
 
@@ -292,7 +292,8 @@ class TestResumeFromPause:
         assert engine._pre_pause_mode is None
         # No HVAC call because there is no classification to restore from
         hvac_calls = [
-            c for c in engine.hass.services.async_call.call_args_list
+            c
+            for c in engine.hass.services.async_call.call_args_list
             if c.args[0] == "climate" and c.args[1] == "set_hvac_mode"
         ]
         assert len(hvac_calls) == 0
@@ -300,15 +301,16 @@ class TestResumeFromPause:
 
     def test_resume_starts_manual_grace(self):
         """resume_from_pause starts a grace period with source='manual'."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
         engine._current_classification = _make_classification(hvac_mode="cool")
 
-        with patch(_PATCH_CALL_LATER) as mock_call_later, \
-             patch(_PATCH_CALLBACK, side_effect=lambda f: f):
+        with patch(_PATCH_CALL_LATER) as mock_call_later, patch(_PATCH_CALLBACK, side_effect=lambda f: f):
             mock_call_later.return_value = MagicMock()
             asyncio.run(engine.resume_from_pause())
 
@@ -320,15 +322,18 @@ class TestResumeFromPause:
 # TestGraceExpiryRecheck
 # ---------------------------------------------------------------------------
 
+
 class TestGraceExpiryRecheck:
     """Verify that grace expiry re-checks sensors and re-pauses when still open."""
 
     def test_grace_expiry_repauses_when_sensor_open(self):
         """If a sensor is still open at grace expiry, HVAC is re-paused."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         # Sensor check callback returns True → sensor still open
         engine._sensor_check_callback = lambda: True
 
@@ -353,7 +358,8 @@ class TestGraceExpiryRecheck:
 
         assert engine._paused_by_door is True
         hvac_calls = [
-            c for c in engine.hass.services.async_call.call_args_list
+            c
+            for c in engine.hass.services.async_call.call_args_list
             if c.args[0] == "climate" and c.args[1] == "set_hvac_mode"
         ]
         assert len(hvac_calls) >= 1
@@ -361,10 +367,12 @@ class TestGraceExpiryRecheck:
 
     def test_grace_expiry_clears_normally_when_closed(self):
         """If all sensors are closed at grace expiry, grace clears normally."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         # Sensor check callback returns False → all sensors closed
         engine._sensor_check_callback = lambda: False
 
@@ -377,10 +385,12 @@ class TestGraceExpiryRecheck:
 
     def test_grace_expiry_no_callback_clears_normally(self):
         """When _sensor_check_callback is None, grace expires normally."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         engine._sensor_check_callback = None
 
         grace_callback = _start_grace_and_capture_callback(engine, source="manual")
@@ -402,7 +412,8 @@ class TestGraceExpiryRecheck:
         assert engine._paused_by_door is True
         # No climate service call should have been made (HVAC already off)
         hvac_calls = [
-            c for c in engine.hass.services.async_call.call_args_list
+            c
+            for c in engine.hass.services.async_call.call_args_list
             if c.args[0] == "climate" and c.args[1] == "set_hvac_mode"
         ]
         assert len(hvac_calls) == 0
@@ -412,20 +423,22 @@ class TestGraceExpiryRecheck:
 # TestResumedFromPauseFlag
 # ---------------------------------------------------------------------------
 
+
 class TestResumedFromPauseFlag:
     """Verify _resumed_from_pause flag lifecycle."""
 
     def test_flag_set_on_resume(self):
         """resume_from_pause() sets _resumed_from_pause to True."""
-        engine = _make_automation_engine({
-            CONF_MANUAL_GRACE_PERIOD: 300,
-            CONF_MANUAL_GRACE_NOTIFY: False,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_MANUAL_GRACE_PERIOD: 300,
+                CONF_MANUAL_GRACE_NOTIFY: False,
+            }
+        )
         engine._paused_by_door = True
         engine._current_classification = _make_classification(hvac_mode="cool")
 
-        with patch(_PATCH_CALL_LATER) as mock_call_later, \
-             patch(_PATCH_CALLBACK, side_effect=lambda f: f):
+        with patch(_PATCH_CALL_LATER) as mock_call_later, patch(_PATCH_CALLBACK, side_effect=lambda f: f):
             mock_call_later.return_value = MagicMock()
             asyncio.run(engine.resume_from_pause())
 
@@ -450,6 +463,7 @@ class TestResumedFromPauseFlag:
 # ---------------------------------------------------------------------------
 # TestStatusStringResumedFromPause
 # ---------------------------------------------------------------------------
+
 
 class TestStatusStringResumedFromPause:
     """Verify _compute_automation_status() returns correct status strings.

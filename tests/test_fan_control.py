@@ -12,10 +12,11 @@ Tests cover:
 - Fan behavior at transitions (bedtime, wakeup) (Issue #37)
 - Fan state serialization (save/restore) (Issue #37)
 """
+
 from __future__ import annotations
 
-import sys
 import asyncio
+import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -34,10 +35,10 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     FAN_MODE_WHOLE_HOUSE,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_automation_engine(config_overrides: dict | None = None) -> AutomationEngine:
     """Create an AutomationEngine with mocked HA dependencies."""
@@ -92,25 +93,25 @@ def _make_hot_classification() -> DayClassification:
 
 def _get_service_calls(engine, domain: str, service: str) -> list:
     """Extract calls matching a specific domain and service."""
-    return [
-        c for c in engine.hass.services.async_call.call_args_list
-        if c[0][0] == domain and c[0][1] == service
-    ]
+    return [c for c in engine.hass.services.async_call.call_args_list if c[0][0] == domain and c[0][1] == service]
 
 
 # ---------------------------------------------------------------------------
 # _activate_fan tests
 # ---------------------------------------------------------------------------
 
+
 class TestActivateFan:
     """Tests for _activate_fan."""
 
     def test_activate_whole_house_fan(self):
         """fan_mode=whole_house_fan, fan_entity=fan.attic → calls fan.turn_on."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
 
         asyncio.run(engine._activate_fan(reason="test"))
 
@@ -134,10 +135,12 @@ class TestActivateFan:
 
     def test_activate_both_fans(self):
         """fan_mode=both → calls both fan.turn_on and climate.set_fan_mode 'on'."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_BOTH,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_BOTH,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
 
         asyncio.run(engine._activate_fan(reason="test"))
 
@@ -170,15 +173,18 @@ class TestActivateFan:
 # _deactivate_fan tests
 # ---------------------------------------------------------------------------
 
+
 class TestDeactivateFan:
     """Tests for _deactivate_fan."""
 
     def test_deactivate_whole_house_fan(self):
         """fan_mode=whole_house_fan, fan_entity=fan.attic → calls fan.turn_off."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
 
         asyncio.run(engine._deactivate_fan(reason="test"))
 
@@ -202,10 +208,12 @@ class TestDeactivateFan:
 
     def test_deactivate_both_fans(self):
         """fan_mode=both → calls both fan.turn_off and climate.set_fan_mode 'auto'."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_BOTH,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_BOTH,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
 
         asyncio.run(engine._deactivate_fan(reason="test"))
 
@@ -230,15 +238,18 @@ class TestDeactivateFan:
 # Switch domain detection
 # ---------------------------------------------------------------------------
 
+
 class TestSwitchDomainFan:
     """Fan entity in switch domain uses switch.turn_on / switch.turn_off."""
 
     def test_switch_domain_activate(self):
         """fan_entity=switch.attic_fan → calls switch.turn_on."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "switch.attic_fan",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "switch.attic_fan",
+            }
+        )
 
         asyncio.run(engine._activate_fan(reason="test"))
 
@@ -248,10 +259,12 @@ class TestSwitchDomainFan:
 
     def test_switch_domain_deactivate(self):
         """fan_entity=switch.attic_fan → calls switch.turn_off."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "switch.attic_fan",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "switch.attic_fan",
+            }
+        )
 
         asyncio.run(engine._deactivate_fan(reason="test"))
 
@@ -264,15 +277,18 @@ class TestSwitchDomainFan:
 # Dry run mode
 # ---------------------------------------------------------------------------
 
+
 class TestDryRunFan:
     """When dry_run=True, fan methods log but do not call any services."""
 
     def test_dry_run_skips_activate(self):
         """dry_run=True → _activate_fan logs but makes no service calls."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine.dry_run = True
 
         asyncio.run(engine._activate_fan(reason="dry run test"))
@@ -281,10 +297,12 @@ class TestDryRunFan:
 
     def test_dry_run_skips_deactivate(self):
         """dry_run=True → _deactivate_fan logs but makes no service calls."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_BOTH,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_BOTH,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine.dry_run = True
 
         asyncio.run(engine._deactivate_fan(reason="dry run test"))
@@ -296,15 +314,18 @@ class TestDryRunFan:
 # Economizer integration
 # ---------------------------------------------------------------------------
 
+
 class TestFanEconomizerIntegration:
     """Fan activates/deactivates together with the economizer."""
 
     def test_fan_activates_with_economizer_maintain(self):
         """When economizer enters maintain phase, fan activates."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine._current_classification = _make_hot_classification()
 
         # indoor at/below comfort → maintain phase
@@ -324,11 +345,13 @@ class TestFanEconomizerIntegration:
 
     def test_fan_activates_with_economizer_maintain_savings_mode(self):
         """Savings mode also activates fan when entering maintain phase."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-            "aggressive_savings": True,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+                "aggressive_savings": True,
+            }
+        )
         engine._current_classification = _make_hot_classification()
 
         asyncio.run(
@@ -346,10 +369,12 @@ class TestFanEconomizerIntegration:
 
     def test_fan_deactivates_with_economizer_off(self):
         """When economizer deactivates, fan deactivates too."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine._current_classification = _make_hot_classification()
         engine._economizer_active = True
         engine._economizer_phase = "maintain"
@@ -385,10 +410,7 @@ class TestFanEconomizerIntegration:
 
         assert engine._economizer_phase == "maintain"
         # Only HVAC calls (set_hvac_mode) — no fan calls
-        fan_calls = [
-            c for c in engine.hass.services.async_call.call_args_list
-            if c[0][0] in ("fan", "switch")
-        ]
+        fan_calls = [c for c in engine.hass.services.async_call.call_args_list if c[0][0] in ("fan", "switch")]
         assert len(fan_calls) == 0
 
 
@@ -396,15 +418,18 @@ class TestFanEconomizerIntegration:
 # Fan state tracking (Issue #37)
 # ---------------------------------------------------------------------------
 
+
 class TestFanStateTracking:
     """Tests for fan state tracking fields (_fan_active, _fan_on_since)."""
 
     def test_activate_fan_sets_fan_active(self):
         """_activate_fan sets _fan_active=True and _fan_on_since."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
 
         assert engine._fan_active is False
         assert engine._fan_on_since is None
@@ -416,10 +441,12 @@ class TestFanStateTracking:
 
     def test_deactivate_fan_clears_fan_active(self):
         """_deactivate_fan clears _fan_active and _fan_on_since."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine._fan_active = True
         engine._fan_on_since = "2026-03-20T10:00:00"
 
@@ -430,9 +457,11 @@ class TestFanStateTracking:
 
     def test_activate_fan_records_action(self):
         """_activate_fan calls _record_action with fan-specific reason."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_HVAC,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_HVAC,
+            }
+        )
 
         asyncio.run(engine._activate_fan(reason="economizer maintain"))
 
@@ -441,9 +470,11 @@ class TestFanStateTracking:
 
     def test_deactivate_fan_records_action(self):
         """_deactivate_fan calls _record_action."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_HVAC,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_HVAC,
+            }
+        )
         engine._fan_active = True
 
         asyncio.run(engine._deactivate_fan(reason="economizer off"))
@@ -461,6 +492,7 @@ class TestFanStateTracking:
         """_get_fan_runtime_minutes returns positive value when fan is on."""
         from datetime import timedelta
         from unittest.mock import patch
+
         import custom_components.climate_advisor.automation as auto_mod
 
         engine = _make_automation_engine()
@@ -479,10 +511,12 @@ class TestFanStateTracking:
 
     def test_fan_command_pending_set_during_activate(self):
         """_fan_command_pending is False after _activate_fan completes."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
 
         asyncio.run(engine._activate_fan(reason="test"))
 
@@ -493,6 +527,7 @@ class TestFanStateTracking:
 # ---------------------------------------------------------------------------
 # Fan override (Issue #37)
 # ---------------------------------------------------------------------------
+
 
 class TestFanOverride:
     """Tests for fan manual override detection and handling."""
@@ -519,10 +554,12 @@ class TestFanOverride:
 
     def test_activate_fan_skips_when_override_active(self):
         """_activate_fan does nothing when _fan_override_active is True."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine._fan_override_active = True
 
         asyncio.run(engine._activate_fan(reason="test"))
@@ -532,10 +569,12 @@ class TestFanOverride:
 
     def test_deactivate_fan_skips_when_override_active(self):
         """_deactivate_fan does nothing when _fan_override_active is True."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine._fan_override_active = True
         engine._fan_active = True
 
@@ -564,16 +603,19 @@ class TestFanOverride:
 # Fan behavior at transitions (Issue #37)
 # ---------------------------------------------------------------------------
 
+
 class TestFanTransitions:
     """Tests for fan deactivation at bedtime and morning wakeup."""
 
     def test_bedtime_deactivates_fan(self):
         """handle_bedtime deactivates fan if active."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-            "comfort_cool": 75,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+                "comfort_cool": 75,
+            }
+        )
         engine._current_classification = _make_hot_classification()
         engine._fan_active = True
         engine._fan_on_since = "2026-03-20T18:00:00"
@@ -586,11 +628,13 @@ class TestFanTransitions:
 
     def test_bedtime_deactivates_economizer(self):
         """handle_bedtime deactivates economizer if active."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-            "comfort_cool": 75,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+                "comfort_cool": 75,
+            }
+        )
         engine._current_classification = _make_hot_classification()
         engine._economizer_active = True
         engine._economizer_phase = "maintain"
@@ -602,11 +646,13 @@ class TestFanTransitions:
 
     def test_morning_wakeup_deactivates_fan(self):
         """handle_morning_wakeup deactivates fan if still running."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-            "comfort_cool": 75,
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+                "comfort_cool": 75,
+            }
+        )
         engine._current_classification = _make_hot_classification()
         engine._fan_active = True
         engine._fan_on_since = "2026-03-20T06:00:00"
@@ -628,10 +674,12 @@ class TestFanTransitions:
 
     def test_bedtime_clears_fan_override_then_deactivates(self):
         """handle_bedtime clears fan override (transition point) and deactivates fan."""
-        engine = _make_automation_engine({
-            CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
-            CONF_FAN_ENTITY: "fan.attic",
-        })
+        engine = _make_automation_engine(
+            {
+                CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE,
+                CONF_FAN_ENTITY: "fan.attic",
+            }
+        )
         engine._current_classification = _make_hot_classification()
         engine._fan_active = True
         engine._fan_override_active = True
@@ -646,6 +694,7 @@ class TestFanTransitions:
 # ---------------------------------------------------------------------------
 # Fan state serialization (Issue #37)
 # ---------------------------------------------------------------------------
+
 
 class TestFanSerialization:
     """Tests for fan state persistence via get_serializable_state / restore_state."""
@@ -669,12 +718,14 @@ class TestFanSerialization:
         """restore_state populates fan tracking fields from saved data."""
         engine = _make_automation_engine()
 
-        engine.restore_state({
-            "fan_active": True,
-            "fan_on_since": "2026-03-20T10:00:00",
-            "fan_override_active": True,
-            "fan_override_time": "2026-03-20T10:05:00",
-        })
+        engine.restore_state(
+            {
+                "fan_active": True,
+                "fan_on_since": "2026-03-20T10:00:00",
+                "fan_override_active": True,
+                "fan_override_time": "2026-03-20T10:05:00",
+            }
+        )
 
         assert engine._fan_active is True
         assert engine._fan_on_since == "2026-03-20T10:00:00"

@@ -1,4 +1,5 @@
 """Tests for CONFIG_METADATA in const.py."""
+
 from __future__ import annotations
 
 from custom_components.climate_advisor.const import CONFIG_METADATA
@@ -86,8 +87,7 @@ class TestConfigMetadataCategoriesValid:
         for key, meta in CONFIG_METADATA.items():
             cat = meta.get("category")
             assert cat in VALID_CATEGORIES, (
-                f"Entry '{key}' has invalid category '{cat}'. "
-                f"Must be one of: {VALID_CATEGORIES}"
+                f"Entry '{key}' has invalid category '{cat}'. Must be one of: {VALID_CATEGORIES}"
             )
 
     def test_core_category_populated(self):

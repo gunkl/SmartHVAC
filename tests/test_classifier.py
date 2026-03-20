@@ -3,6 +3,7 @@
 The classifier is pure logic with no Home Assistant dependencies,
 so no mocking is required.
 """
+
 from __future__ import annotations
 
 from datetime import time
@@ -27,10 +28,10 @@ from custom_components.climate_advisor.const import (
     TREND_THRESHOLD_SIGNIFICANT,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_forecast(
     today_high: float,
@@ -60,6 +61,7 @@ def make_forecast(
 # ---------------------------------------------------------------------------
 # Day type classification — basic values
 # ---------------------------------------------------------------------------
+
 
 class TestDayTypeClassification:
     """classify_day() returns the correct day_type for every temperature band."""
@@ -103,6 +105,7 @@ class TestDayTypeClassification:
 # ---------------------------------------------------------------------------
 # Boundary tests — exact threshold values
 # ---------------------------------------------------------------------------
+
 
 class TestDayTypeBoundaries:
     """Exact threshold values must fall into the correct (upper) band."""
@@ -151,6 +154,7 @@ class TestDayTypeBoundaries:
 # "stable"   when -2 <= avg_delta <= 2
 # trend_magnitude = abs(avg_delta)
 # ---------------------------------------------------------------------------
+
 
 class TestTrendComputation:
     """classify_day() computes trend_direction and trend_magnitude correctly."""
@@ -246,6 +250,7 @@ class TestTrendComputation:
 # Recommendations — DayClassification._compute_recommendations()
 # ---------------------------------------------------------------------------
 
+
 class TestRecommendations:
     """Verify that recommendations are derived correctly for each day type."""
 
@@ -255,13 +260,15 @@ class TestRecommendations:
             tomorrow_high = today_high
         if tomorrow_low is None:
             tomorrow_low = today_low
-        return classify_day(ForecastSnapshot(
-            today_high=today_high,
-            today_low=today_low,
-            tomorrow_high=tomorrow_high,
-            tomorrow_low=tomorrow_low,
-            current_outdoor_temp=60.0,
-        ))
+        return classify_day(
+            ForecastSnapshot(
+                today_high=today_high,
+                today_low=today_low,
+                tomorrow_high=tomorrow_high,
+                tomorrow_low=tomorrow_low,
+                current_outdoor_temp=60.0,
+            )
+        )
 
     # --- HOT ---
 
@@ -372,6 +379,7 @@ class TestRecommendations:
 # Trend modifiers applied on top of day-type recommendations
 # ---------------------------------------------------------------------------
 
+
 class TestTrendModifiers:
     """Setback modifiers and pre-condition overrides driven by trend magnitude."""
 
@@ -451,6 +459,7 @@ class TestTrendModifiers:
 # ForecastSnapshot — optional field defaults
 # ---------------------------------------------------------------------------
 
+
 class TestForecastSnapshotDefaults:
     """Optional fields should default to None."""
 
@@ -471,6 +480,7 @@ class TestForecastSnapshotDefaults:
 # conftest fixture smoke-test
 # ---------------------------------------------------------------------------
 
+
 def test_basic_forecast_fixture(basic_forecast):
     """The shared fixture should produce a mild, stable-trend classification."""
     result = classify_day(basic_forecast)
@@ -485,6 +495,7 @@ def test_basic_forecast_fixture(basic_forecast):
 # overwrite pre_condition / setback_modifier. These tests verify the
 # interaction across multiple day types × trend magnitudes.
 # ---------------------------------------------------------------------------
+
 
 class TestTrendModifierDayTypeCombinations:
     """Verify trend modifiers interact correctly with every day type."""
@@ -583,6 +594,7 @@ class TestTrendModifierDayTypeCombinations:
 #   |avg_delta| >= 10 → significant modifier
 # ---------------------------------------------------------------------------
 
+
 class TestTrendMagnitudeBoundaries:
     """Exact boundary values for trend magnitude thresholds."""
 
@@ -673,19 +685,22 @@ class TestTrendMagnitudeBoundaries:
 # Window opportunity flags on HOT days (Issue #18)
 # ---------------------------------------------------------------------------
 
+
 class TestHotDayWindowOpportunityFlags:
     """HOT days set window_opportunity_morning / window_opportunity_evening
     based on today_low and tomorrow_low thresholds."""
 
     def _classify_hot(self, today_low: float, tomorrow_low: float) -> object:
         """Classify a HOT day with given lows and a stable trend."""
-        return classify_day(ForecastSnapshot(
-            today_high=90.0,
-            today_low=today_low,
-            tomorrow_high=90.0,
-            tomorrow_low=tomorrow_low,
-            current_outdoor_temp=85.0,
-        ))
+        return classify_day(
+            ForecastSnapshot(
+                today_high=90.0,
+                today_low=today_low,
+                tomorrow_high=90.0,
+                tomorrow_low=tomorrow_low,
+                current_outdoor_temp=85.0,
+            )
+        )
 
     # --- Morning opportunity (today_low <= 80) ---
 
@@ -741,26 +756,30 @@ class TestHotDayWindowOpportunityFlags:
 
     def test_warm_day_no_window_opportunity_flags(self):
         """WARM day (windows_recommended=True) should not set opportunity flags."""
-        result = classify_day(ForecastSnapshot(
-            today_high=80.0,
-            today_low=60.0,
-            tomorrow_high=80.0,
-            tomorrow_low=60.0,
-            current_outdoor_temp=70.0,
-        ))
+        result = classify_day(
+            ForecastSnapshot(
+                today_high=80.0,
+                today_low=60.0,
+                tomorrow_high=80.0,
+                tomorrow_low=60.0,
+                current_outdoor_temp=70.0,
+            )
+        )
         assert result.day_type == DAY_TYPE_WARM
         assert result.window_opportunity_morning is False
         assert result.window_opportunity_evening is False
 
     def test_mild_day_no_window_opportunity_flags(self):
         """MILD day should not set opportunity flags."""
-        result = classify_day(ForecastSnapshot(
-            today_high=67.0,
-            today_low=50.0,
-            tomorrow_high=67.0,
-            tomorrow_low=50.0,
-            current_outdoor_temp=60.0,
-        ))
+        result = classify_day(
+            ForecastSnapshot(
+                today_high=67.0,
+                today_low=50.0,
+                tomorrow_high=67.0,
+                tomorrow_low=50.0,
+                current_outdoor_temp=60.0,
+            )
+        )
         assert result.day_type == DAY_TYPE_MILD
         assert result.window_opportunity_morning is False
         assert result.window_opportunity_evening is False
@@ -770,19 +789,22 @@ class TestHotDayWindowOpportunityFlags:
 # Window opportunity time fields on HOT days (Issue #18)
 # ---------------------------------------------------------------------------
 
+
 class TestHotDayWindowOpportunityTimes:
     """HOT days populate window_opportunity_morning/evening start and end
     time fields based on today_low and tomorrow_low thresholds."""
 
     def _classify_hot(self, today_low: float, tomorrow_low: float) -> object:
         """Classify a HOT day with given lows and a stable trend."""
-        return classify_day(ForecastSnapshot(
-            today_high=90.0,
-            today_low=today_low,
-            tomorrow_high=90.0,
-            tomorrow_low=tomorrow_low,
-            current_outdoor_temp=85.0,
-        ))
+        return classify_day(
+            ForecastSnapshot(
+                today_high=90.0,
+                today_low=today_low,
+                tomorrow_high=90.0,
+                tomorrow_low=tomorrow_low,
+                current_outdoor_temp=85.0,
+            )
+        )
 
     # --- Morning opportunity times (today_low <= 80) ---
 
@@ -835,13 +857,15 @@ class TestHotDayWindowOpportunityTimes:
 
     def test_warm_day_no_opportunity_times(self):
         """WARM day → all 4 opportunity time fields remain None."""
-        result = classify_day(ForecastSnapshot(
-            today_high=80.0,
-            today_low=60.0,
-            tomorrow_high=80.0,
-            tomorrow_low=60.0,
-            current_outdoor_temp=70.0,
-        ))
+        result = classify_day(
+            ForecastSnapshot(
+                today_high=80.0,
+                today_low=60.0,
+                tomorrow_high=80.0,
+                tomorrow_low=60.0,
+                current_outdoor_temp=70.0,
+            )
+        )
         assert result.day_type == DAY_TYPE_WARM
         assert result.window_opportunity_morning_start is None
         assert result.window_opportunity_morning_end is None
@@ -850,13 +874,15 @@ class TestHotDayWindowOpportunityTimes:
 
     def test_mild_day_no_opportunity_times(self):
         """MILD day → all 4 opportunity time fields remain None."""
-        result = classify_day(ForecastSnapshot(
-            today_high=67.0,
-            today_low=50.0,
-            tomorrow_high=67.0,
-            tomorrow_low=50.0,
-            current_outdoor_temp=60.0,
-        ))
+        result = classify_day(
+            ForecastSnapshot(
+                today_high=67.0,
+                today_low=50.0,
+                tomorrow_high=67.0,
+                tomorrow_low=50.0,
+                current_outdoor_temp=60.0,
+            )
+        )
         assert result.day_type == DAY_TYPE_MILD
         assert result.window_opportunity_morning_start is None
         assert result.window_opportunity_morning_end is None

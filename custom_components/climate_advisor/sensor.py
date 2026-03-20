@@ -4,6 +4,7 @@ Exposes the day classification, briefing, learning metrics, and next
 recommended action as Home Assistant sensors for use in dashboards
 and other automations.
 """
+
 from __future__ import annotations
 
 import logging
@@ -16,24 +17,24 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    DOMAIN,
-    ATTR_DAY_TYPE,
-    ATTR_TREND,
-    ATTR_TREND_MAGNITUDE,
+    ATTR_AUTOMATION_STATUS,
     ATTR_BRIEFING,
     ATTR_BRIEFING_SHORT,
-    ATTR_NEXT_ACTION,
-    ATTR_AUTOMATION_STATUS,
-    ATTR_LEARNING_SUGGESTIONS,
     ATTR_COMPLIANCE_SCORE,
+    ATTR_CONTACT_STATUS,
+    ATTR_DAY_TYPE,
+    ATTR_FAN_RUNTIME,
+    ATTR_FAN_STATUS,
+    ATTR_LAST_ACTION_REASON,
+    ATTR_LAST_ACTION_TIME,
+    ATTR_LEARNING_SUGGESTIONS,
+    ATTR_NEXT_ACTION,
     ATTR_NEXT_AUTOMATION_ACTION,
     ATTR_NEXT_AUTOMATION_TIME,
     ATTR_OCCUPANCY_MODE,
-    ATTR_LAST_ACTION_TIME,
-    ATTR_LAST_ACTION_REASON,
-    ATTR_FAN_STATUS,
-    ATTR_FAN_RUNTIME,
-    ATTR_CONTACT_STATUS,
+    ATTR_TREND,
+    ATTR_TREND_MAGNITUDE,
+    DOMAIN,
 )
 from .coordinator import ClimateAdvisorCoordinator
 
@@ -147,7 +148,8 @@ class ClimateAdvisorNextAutomationSensor(ClimateAdvisorBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(
-            coordinator, entry,
+            coordinator,
+            entry,
             ATTR_NEXT_AUTOMATION_ACTION,
             "Next Automation Action",
             "mdi:robot",
@@ -159,7 +161,8 @@ class ClimateAdvisorNextAutomationTimeSensor(ClimateAdvisorBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(
-            coordinator, entry,
+            coordinator,
+            entry,
             ATTR_NEXT_AUTOMATION_TIME,
             "Next Automation Time",
             "mdi:clock-outline",
@@ -231,20 +234,14 @@ class ClimateAdvisorOccupancySensor(ClimateAdvisorBaseSensor):
 
     def __init__(self, coordinator, entry):
         """Initialize the occupancy mode sensor."""
-        super().__init__(
-            coordinator, entry,
-            ATTR_OCCUPANCY_MODE, "Occupancy Mode", "mdi:home-account"
-        )
+        super().__init__(coordinator, entry, ATTR_OCCUPANCY_MODE, "Occupancy Mode", "mdi:home-account")
 
 
 class ClimateAdvisorLastActionTimeSensor(ClimateAdvisorBaseSensor):
     """Sensor showing when the last HVAC action was taken."""
 
     def __init__(self, coordinator, entry):
-        super().__init__(
-            coordinator, entry,
-            ATTR_LAST_ACTION_TIME, "Last Action Time", "mdi:clock-check-outline"
-        )
+        super().__init__(coordinator, entry, ATTR_LAST_ACTION_TIME, "Last Action Time", "mdi:clock-check-outline")
 
 
 class ClimateAdvisorLastActionReasonSensor(ClimateAdvisorBaseSensor):
@@ -253,10 +250,7 @@ class ClimateAdvisorLastActionReasonSensor(ClimateAdvisorBaseSensor):
     _truncation_warned: bool = False
 
     def __init__(self, coordinator, entry):
-        super().__init__(
-            coordinator, entry,
-            ATTR_LAST_ACTION_REASON, "Last Action Reason", "mdi:text-box-outline"
-        )
+        super().__init__(coordinator, entry, ATTR_LAST_ACTION_REASON, "Last Action Reason", "mdi:text-box-outline")
 
     @property
     def native_value(self) -> str | None:
@@ -286,10 +280,7 @@ class ClimateAdvisorFanStatusSensor(ClimateAdvisorBaseSensor):
     """Sensor showing the current fan status (active/inactive/override/disabled)."""
 
     def __init__(self, coordinator, entry):
-        super().__init__(
-            coordinator, entry,
-            ATTR_FAN_STATUS, "Fan Status", "mdi:fan"
-        )
+        super().__init__(coordinator, entry, ATTR_FAN_STATUS, "Fan Status", "mdi:fan")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -297,9 +288,7 @@ class ClimateAdvisorFanStatusSensor(ClimateAdvisorBaseSensor):
         if not self.coordinator.data:
             return {}
         return {
-            "fan_runtime_minutes": round(
-                self.coordinator.data.get(ATTR_FAN_RUNTIME, 0.0), 1
-            ),
+            "fan_runtime_minutes": round(self.coordinator.data.get(ATTR_FAN_RUNTIME, 0.0), 1),
         }
 
 
@@ -307,10 +296,7 @@ class ClimateAdvisorContactStatusSensor(ClimateAdvisorBaseSensor):
     """Sensor showing the current door/window contact sensor status."""
 
     def __init__(self, coordinator, entry):
-        super().__init__(
-            coordinator, entry,
-            ATTR_CONTACT_STATUS, "Contact Sensors", "mdi:door-open"
-        )
+        super().__init__(coordinator, entry, ATTR_CONTACT_STATUS, "Contact Sensors", "mdi:door-open")
 
     @property
     def icon(self) -> str:
