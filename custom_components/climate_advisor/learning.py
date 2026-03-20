@@ -46,6 +46,7 @@ class DailyRecord:
     window_close_actual_time: str | None = None
     hvac_runtime_minutes: float = 0.0
     occupancy_away_minutes: float = 0.0
+    occupancy_mode: str = "home"
     door_window_pause_events: int = 0
     door_pause_by_sensor: dict[str, int] = field(default_factory=dict)
     manual_overrides: int = 0
@@ -157,7 +158,7 @@ class LearningEngine:
         recently_dismissed = set(self._state.dismissed_suggestions)
 
         # --- Pattern: Windows recommended but rarely opened ---
-        window_days = [r for r in records if r.get("windows_recommended")]
+        window_days = [r for r in records if r.get("windows_recommended") and r.get("occupancy_mode", "home") != "vacation"]
         if len(window_days) >= 7:
             compliance = sum(1 for r in window_days if r.get("windows_opened")) / len(window_days)
             suggestion_key = "low_window_compliance"
@@ -172,13 +173,17 @@ class LearningEngine:
 
         # --- Pattern: Frequent manual overrides ---
         recent_14 = records[-14:] if len(records) >= 14 else records
-        total_overrides = sum(r.get("manual_overrides", 0) for r in recent_14)
+
+        # Exclude vacation days from pattern analysis (abnormal runtime/compliance)
+        non_vacation = [r for r in recent_14 if r.get("occupancy_mode", "home") != "vacation"]
+
+        total_overrides = sum(r.get("manual_overrides", 0) for r in non_vacation)
         if total_overrides > 10:
             suggestion_key = "frequent_overrides"
             if suggestion_key not in recently_dismissed:
                 # Analyze override direction and timing from granular data
                 all_overrides: list[dict] = []
-                for r in recent_14:
+                for r in non_vacation:
                     all_overrides.extend(r.get("override_details", []))
 
                 if all_overrides:
@@ -218,7 +223,7 @@ class LearningEngine:
 
         # --- Pattern: High runtime on mild/warm days ---
         mild_warm_days = [
-            r for r in recent_14
+            r for r in non_vacation
             if r.get("day_type") in ("mild", "warm")
         ]
         if mild_warm_days:
@@ -250,7 +255,7 @@ class LearningEngine:
 
         # --- Pattern: Comfort violations (too cold/hot despite automation) ---
         violation_days = [
-            r for r in recent_14 if r.get("comfort_violations_minutes", 0) > 30
+            r for r in non_vacation if r.get("comfort_violations_minutes", 0) > 30
         ]
         if len(violation_days) > 5:
             suggestion_key = "comfort_violations"
@@ -263,13 +268,13 @@ class LearningEngine:
                 ))
 
         # --- Pattern: Door/window pauses happening frequently ---
-        pause_total = sum(r.get("door_window_pause_events", 0) for r in recent_14)
+        pause_total = sum(r.get("door_window_pause_events", 0) for r in non_vacation)
         if pause_total > 20:
             suggestion_key = "frequent_door_pauses"
             if suggestion_key not in recently_dismissed:
                 # Aggregate per-sensor pause data across 14-day window
                 sensor_totals: dict[str, int] = {}
-                for r in recent_14:
+                for r in non_vacation:
                     for sensor, count in r.get("door_pause_by_sensor", {}).items():
                         sensor_totals[sensor] = sensor_totals.get(sensor, 0) + count
 

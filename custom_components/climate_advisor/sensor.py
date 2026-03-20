@@ -27,6 +27,7 @@ from .const import (
     ATTR_COMPLIANCE_SCORE,
     ATTR_NEXT_AUTOMATION_ACTION,
     ATTR_NEXT_AUTOMATION_TIME,
+    ATTR_OCCUPANCY_MODE,
 )
 from .coordinator import ClimateAdvisorCoordinator
 
@@ -50,6 +51,7 @@ async def async_setup_entry(
         ClimateAdvisorStatusSensor(coordinator, entry),
         ClimateAdvisorNextAutomationSensor(coordinator, entry),
         ClimateAdvisorNextAutomationTimeSensor(coordinator, entry),
+        ClimateAdvisorOccupancySensor(coordinator, entry),
     ]
 
     async_add_entities(entities)
@@ -218,3 +220,14 @@ class ClimateAdvisorStatusSensor(ClimateAdvisorBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry, ATTR_AUTOMATION_STATUS, "Status", "mdi:home-thermometer")
+
+
+class ClimateAdvisorOccupancySensor(ClimateAdvisorBaseSensor):
+    """Sensor showing the current occupancy mode."""
+
+    def __init__(self, coordinator, entry):
+        """Initialize the occupancy mode sensor."""
+        super().__init__(
+            coordinator, entry,
+            ATTR_OCCUPANCY_MODE, "Occupancy Mode", "mdi:home-account"
+        )

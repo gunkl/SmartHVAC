@@ -29,9 +29,15 @@ EXPECTED_KEYS = {
     "briefing_time",
     "learning_enabled",
     "aggressive_savings",
+    "home_toggle_entity",
+    "home_toggle_invert",
+    "vacation_toggle_entity",
+    "vacation_toggle_invert",
+    "guest_toggle_entity",
+    "guest_toggle_invert",
 }
 
-VALID_CATEGORIES = {"core", "sensors", "fan", "schedule", "advanced"}
+VALID_CATEGORIES = {"core", "sensors", "fan", "schedule", "advanced", "occupancy"}
 
 
 class TestConfigMetadataHasAllKeys:

@@ -124,6 +124,131 @@ class TestHotDayBriefing:
         assert "blind" in result.lower()
 
 
+class TestHotDayWindowOpportunities:
+    """_hot_day_plan() branches based on morning/evening window opportunity flags."""
+
+    # --- Both opportunities ---
+
+    def test_hot_day_both_opportunities_mentions_morning_times(self):
+        """today_low=72 (≤80) gives morning opportunity — start/end times appear."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=70)
+        result = _generate(c)
+        assert "6:00 AM" in result
+        assert "9:00 AM" in result
+
+    def test_hot_day_both_opportunities_mentions_evening(self):
+        """tomorrow_low=70 (≤80) gives evening opportunity — evening start time appears."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=70)
+        result = _generate(c)
+        assert "5:00 PM" in result
+
+    def test_hot_day_both_opportunities_mentions_threshold(self):
+        """With opportunities, threshold (comfort_cool 75 + delta 3 = 78) appears."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=70)
+        result = _generate(c)
+        assert "78" in result
+
+    # --- Morning only ---
+
+    def test_hot_day_morning_only(self):
+        """today_low=72 → morning opportunity; tomorrow_low=82 → no evening opportunity."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=82)
+        result = _generate(c)
+        assert "6:00 AM" in result
+        assert "9:00 AM" in result
+        assert "5:00 PM" not in result
+
+    # --- Evening only ---
+
+    def test_hot_day_evening_only(self):
+        """today_low=82 → no morning opportunity; tomorrow_low=70 → evening opportunity."""
+        c = _make_classification("hot", today_high=95, today_low=82, tomorrow_low=70)
+        result = _generate(c)
+        assert "5:00 PM" in result
+        assert "6:00 AM" not in result
+
+    # --- No opportunities ---
+
+    def test_hot_day_no_opportunities_sealed(self):
+        """today_low=82, tomorrow_low=82 → no opportunities — sealed/closed language, no time ranges."""
+        c = _make_classification("hot", today_high=95, today_low=82, tomorrow_low=82)
+        result = _generate(c)
+        low = result.lower()
+        assert "sealed" in low or "closed" in low
+        assert "6:00 AM" not in result
+        assert "9:00 AM" not in result
+        assert "5:00 PM" not in result
+
+    # --- Removed false notification promise ---
+
+    def test_hot_day_no_false_notification_promise(self):
+        """Old 'heads-up' / 'send' notification promise should not appear in the hot day body."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=70)
+        result = _generate(c)
+        # The old implementation promised to send a notification; that's been removed.
+        # (Note: "hands-off" in grace sections is unrelated — we're checking the day plan body.
+        #  Use a hot day with no grace to isolate the plan text.)
+        assert "send" not in result.lower()
+
+    # --- Persistent content regardless of opportunities ---
+
+    def test_hot_day_still_mentions_precool(self):
+        """Pre-cool target (comfort_cool - 2 = 73) should always appear on hot days."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=70)
+        result = _generate(c)
+        assert "73" in result
+
+    def test_hot_day_still_mentions_blinds(self):
+        """Blind/sun-facing guidance should appear on hot days regardless of opportunity branch."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=70)
+        result = _generate(c)
+        assert "blind" in result.lower()
+
+    def test_hot_day_morning_only_still_mentions_blinds(self):
+        """Blind guidance appears even in the morning-only branch."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=82)
+        result = _generate(c)
+        assert "blind" in result.lower()
+
+    def test_hot_day_no_opportunities_still_mentions_blinds(self):
+        """Blind guidance appears in the sealed/no-opportunity branch too."""
+        c = _make_classification("hot", today_high=95, today_low=82, tomorrow_low=82)
+        result = _generate(c)
+        assert "blind" in result.lower()
+
+    # --- Fan mode ---
+
+    def test_hot_day_fan_mode_with_opportunities(self):
+        """fan_mode != disabled AND opportunities exist → fan paragraph appears."""
+        c = _make_classification("hot", today_high=95, today_low=72, tomorrow_low=70)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            fan_mode="whole_house_fan",
+        )
+        assert "fan" in result.lower()
+
+    def test_hot_day_fan_mode_without_opportunities(self):
+        """fan_mode != disabled but no opportunities → fan paragraph does NOT appear."""
+        c = _make_classification("hot", today_high=95, today_low=82, tomorrow_low=82)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            fan_mode="whole_house_fan",
+        )
+        assert "fan" not in result.lower()
+
+
 class TestWarmDayBriefing:
     """Warm day briefings should mention windows and optional AC safety net."""
 
@@ -608,12 +733,46 @@ class TestTldrTable:
         assert "Cool at 75" in table
 
     def test_tldr_hot_day_windows_row(self):
-        """Hot days with window_opportunity flags should say morning/evening or Closed."""
-        c = _make_classification("hot", today_high=92, today_low=70)
+        """Hot days with both opportunities show time ranges and threshold in Windows row."""
+        # today_low=70 (≤80) → morning; tomorrow_low=70 (≤80) → evening
+        c = _make_classification("hot", today_high=92, today_low=70, tomorrow_low=70)
         rows = _generate_tldr_table(c, _make_config())
         table = "\n".join(rows)
-        # DayClassification sets window_opportunity flags on hot days
-        assert "morning" in table.lower() or "evening" in table.lower() or "Closed" in table
+        # Should contain morning start time, morning end time, evening start time, and threshold
+        assert "6:00 AM" in table or "6" in table
+        assert "9:00 AM" in table or "9" in table
+        assert "5:00 PM" in table or "5" in table
+        # Threshold: comfort_cool (75) + ECONOMIZER_TEMP_DELTA (3) = 78
+        assert "78" in table
+
+    def test_tldr_hot_day_windows_morning_only(self):
+        """Hot day with morning-only opportunity shows morning time range and threshold, no evening."""
+        # today_low=72 (≤80) → morning; tomorrow_low=82 (>80) → no evening
+        c = _make_classification("hot", today_high=92, today_low=72, tomorrow_low=82)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "6:00 AM" in table or "6" in table
+        assert "9:00 AM" in table or "9" in table
+        assert "78" in table
+        assert "5:00 PM" not in table
+
+    def test_tldr_hot_day_windows_evening_only(self):
+        """Hot day with evening-only opportunity shows evening start time and threshold."""
+        # today_low=82 (>80) → no morning; tomorrow_low=70 (≤80) → evening
+        c = _make_classification("hot", today_high=92, today_low=82, tomorrow_low=70)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "5:00 PM" in table or "5" in table
+        assert "78" in table
+        assert "6:00 AM" not in table
+
+    def test_tldr_hot_day_windows_neither(self):
+        """Hot day with no opportunities shows 'Closed all day'."""
+        # today_low=82 (>80) → no morning; tomorrow_low=82 (>80) → no evening
+        c = _make_classification("hot", today_high=92, today_low=82, tomorrow_low=82)
+        rows = _generate_tldr_table(c, _make_config())
+        table = "\n".join(rows)
+        assert "Closed all day" in table
 
     def test_tldr_warm_day_windows_open_times(self):
         """Warm days should show open/close times in the Windows row."""

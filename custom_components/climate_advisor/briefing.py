@@ -24,6 +24,7 @@ from .const import (
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    ECONOMIZER_TEMP_DELTA,
     FAN_MODE_DISABLED,
 )
 
@@ -49,6 +50,7 @@ def generate_briefing(
     grace_source: str | None = None,
     verbosity: str = "normal",
     fan_mode: str = FAN_MODE_DISABLED,
+    occupancy_mode: str = "home",
 ) -> str:
     """Generate the daily climate briefing message.
 
@@ -66,6 +68,7 @@ def generate_briefing(
         verbosity: "tldr_only" (header + table only), "normal" (header + table + trimmed
             body), or "verbose" (header + table + full original body).
         fan_mode: Fan control mode — one of the FAN_MODE_* constants.
+        occupancy_mode: Current occupancy state — "home", "away", "guest", or "vacation".
 
     Returns:
         Formatted briefing string suitable for email or notification.
@@ -128,7 +131,7 @@ def generate_briefing(
     _LOGGER.debug("Dispatched %s day plan", c.day_type)
 
     lines.append("")
-    lines.extend(_leaving_home_section(c, setback_heat, setback_cool))
+    lines.extend(_leaving_home_section(c, setback_heat, setback_cool, occupancy_mode=occupancy_mode))
     lines.append("")
     lines.extend(_fresh_air_section(c, comfort_heat, comfort_cool, debounce_seconds))
 
@@ -200,16 +203,23 @@ def _generate_tldr_table(c: DayClassification, config: dict) -> list[str]:
         hvac_val = "Off — windows day"
 
     # --- Windows row ---
+    threshold = comfort_cool + ECONOMIZER_TEMP_DELTA
     if c.windows_recommended and c.window_open_time and c.window_close_time:
         open_t = c.window_open_time.strftime(_FMT_HOUR)
         close_t = c.window_close_time.strftime(_FMT_HOUR)
         windows_val = f"Open {open_t} – {close_t}"
     elif c.window_opportunity_morning and c.window_opportunity_evening:
-        windows_val = "Open morning/evening if cool enough"
+        m_start = c.window_opportunity_morning_start.strftime(_FMT_HOUR).lstrip("0")
+        m_end = c.window_opportunity_morning_end.strftime(_FMT_HOUR).lstrip("0")
+        e_start = c.window_opportunity_evening_start.strftime(_FMT_HOUR).lstrip("0")
+        windows_val = f"{m_start}–{m_end} / {e_start}+ (<{threshold:.0f}°F)"
     elif c.window_opportunity_morning:
-        windows_val = "Open morning if cool enough"
+        m_start = c.window_opportunity_morning_start.strftime(_FMT_HOUR).lstrip("0")
+        m_end = c.window_opportunity_morning_end.strftime(_FMT_HOUR).lstrip("0")
+        windows_val = f"{m_start}–{m_end} (<{threshold:.0f}°F)"
     elif c.window_opportunity_evening:
-        windows_val = "Open evening if cool enough"
+        e_start = c.window_opportunity_evening_start.strftime(_FMT_HOUR).lstrip("0")
+        windows_val = f"{e_start} onward (<{threshold:.0f}°F)"
     else:
         windows_val = "Closed all day"
 
@@ -230,7 +240,7 @@ def _generate_tldr_table(c: DayClassification, config: dict) -> list[str]:
     tomorrow_val = f"{trend_desc} ({c.tomorrow_high:.0f}°F)"
 
     col1 = 16
-    col2 = 20
+    col2 = 30
     header = f"| {'Setting':<{col1}} | {'Value':<{col2}} |"
     sep = f"|{'-' * (col1 + 2)}|{'-' * (col2 + 2)}|"
     rows = [
@@ -258,20 +268,79 @@ def _trend_description(c: DayClassification) -> str:
 
 def _hot_day_plan(c, comfort_cool, setback_cool, wake_time, sleep_time, fan_mode: str = FAN_MODE_DISABLED) -> list[str]:
     """Conversational plan for hot days (85°F+)."""
+    threshold = comfort_cool + ECONOMIZER_TEMP_DELTA
+
     lines = [
         f"I pre-cooled to {comfort_cool - 2:.0f}°F this morning while outdoor air"
         f" was still cool — that banking strategy cuts energy use significantly over"
         f" the course of the day.",
-        "",
-        f"Today's a keep-it-sealed kind of day. Close the blinds on sun-facing"
-        f" windows (especially west-facing ones after noon) and I'll handle the rest."
-        f" If outdoor temps drop below {comfort_cool:.0f}°F after sunset, I'll send"
-        f" a heads-up that it's safe to open up.",
     ]
-    if fan_mode != FAN_MODE_DISABLED:
+
+    has_morning = c.window_opportunity_morning
+    has_evening = c.window_opportunity_evening
+
+    if has_morning and has_evening:
+        m_start = c.window_opportunity_morning_start.strftime(_FMT_HOUR)
+        m_end = c.window_opportunity_morning_end.strftime(_FMT_HOUR)
+        e_start = c.window_opportunity_evening_start.strftime(_FMT_HOUR)
         lines.append("")
         lines.append(
-            "When evening ventilation windows open, I'll use the fan to help"
+            f"This morning between {m_start} and {m_end}, if outdoor temps are"
+            f" at or below {threshold:.0f}°F, open up for a cross-breeze —"
+            f" I'll handle the AC transition."
+        )
+        lines.append("")
+        lines.append(
+            f"After {m_end}, close up and keep blinds drawn on sun-facing windows"
+            f" (especially west-facing after noon). I'll hold things at"
+            f" {comfort_cool:.0f}°F."
+        )
+        lines.append("")
+        lines.append(
+            f"From {e_start} onward, if outdoor temps drop back below"
+            f" {threshold:.0f}°F, open up again and I'll cut the AC to let"
+            f" natural ventilation take over."
+        )
+    elif has_morning:
+        m_start = c.window_opportunity_morning_start.strftime(_FMT_HOUR)
+        m_end = c.window_opportunity_morning_end.strftime(_FMT_HOUR)
+        lines.append("")
+        lines.append(
+            f"This morning between {m_start} and {m_end}, if outdoor temps are"
+            f" at or below {threshold:.0f}°F, open up for a cross-breeze —"
+            f" I'll handle the AC transition."
+        )
+        lines.append("")
+        lines.append(
+            f"After {m_end}, close up and keep blinds drawn on sun-facing windows"
+            f" (especially west-facing after noon). I'll hold things at"
+            f" {comfort_cool:.0f}°F for the rest of the day."
+        )
+    elif has_evening:
+        e_start = c.window_opportunity_evening_start.strftime(_FMT_HOUR)
+        lines.append("")
+        lines.append(
+            f"Today's a keep-it-sealed kind of day. Close the blinds on sun-facing"
+            f" windows (especially west-facing ones after noon) and I'll hold things"
+            f" at {comfort_cool:.0f}°F."
+        )
+        lines.append("")
+        lines.append(
+            f"From {e_start} onward, if outdoor temps drop below {threshold:.0f}°F,"
+            f" open up and I'll cut the AC to let natural ventilation take over."
+        )
+    else:
+        lines.append("")
+        lines.append(
+            f"Today's a keep-it-sealed kind of day. Close the blinds on sun-facing"
+            f" windows (especially west-facing ones after noon) and I'll handle"
+            f" the rest at {comfort_cool:.0f}°F."
+        )
+
+    if fan_mode != FAN_MODE_DISABLED and (has_morning or has_evening):
+        lines.append("")
+        lines.append(
+            "When ventilation windows open, I'll use the fan to help"
             " pull that cool outdoor air through the house."
         )
     return lines
@@ -379,26 +448,65 @@ def _cold_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time) -> list
     return lines
 
 
-def _leaving_home_section(c, setback_heat, setback_cool) -> list[str]:
-    """Conversational section about what happens when they leave."""
-    if c.hvac_mode == "cool":
+def _leaving_home_section(c, setback_heat, setback_cool, occupancy_mode: str = "home") -> list[str]:
+    """Conversational section about what happens when they leave.
+
+    Args:
+        c: Today's day classification.
+        setback_heat: Heating setback temperature.
+        setback_cool: Cooling setback temperature.
+        occupancy_mode: Current occupancy state — "home", "away", "guest", or "vacation".
+    """
+    if occupancy_mode == "vacation":
         return [
-            f"If you head out, no worries. After about 15 minutes I'll let the"
-            f" house drift up to {setback_cool:.0f}°F to save energy. When you're"
-            f" back, I'll pull it right back down — give it 20 to 30 minutes to"
-            f" feel normal again.",
+            "**While you're on vacation**, I'm keeping the house at a deeper"
+            " energy-saving setback to save energy. Comfort temperatures will be"
+            " restored when you return.",
         ]
-    elif c.hvac_mode == "heat":
+    elif occupancy_mode == "guest":
         return [
-            f"If you head out, I'll drop to {setback_heat:.0f}°F after about"
-            f" 15 minutes. When you get back, I'll warm things right up — should"
-            f" take 20 to 30 minutes depending on how long you were gone.",
+            "**Guests are visiting** — maintaining full comfort temperatures."
+            " Away setbacks are disabled while guest mode is active.",
         ]
+    elif occupancy_mode == "away":
+        if c.hvac_mode == "cool":
+            return [
+                f"**You're currently away.** I've applied setback temperatures,"
+                f" letting the house drift up to {setback_cool:.0f}°F to save"
+                f" energy. Comfort will be restored when you return — give it"
+                f" 20 to 30 minutes to feel normal again.",
+            ]
+        elif c.hvac_mode == "heat":
+            return [
+                f"**You're currently away.** I've dropped to {setback_heat:.0f}°F"
+                f" to save energy. Comfort will be restored when you return —"
+                f" should take 20 to 30 minutes depending on how long you've been gone.",
+            ]
+        else:
+            return [
+                "**You're currently away.** The HVAC is off today, so not much"
+                " changes. If it kicks on as a safety net, it'll set back on its own.",
+            ]
     else:
-        return [
-            "If you head out, nothing really changes today — the HVAC is off."
-            " If it was running as a safety net, it'll set back on its own.",
-        ]
+        # occupancy_mode == "home" — default hypothetical text
+        if c.hvac_mode == "cool":
+            return [
+                f"If you head out, no worries. After about 15 minutes I'll let the"
+                f" house drift up to {setback_cool:.0f}°F to save energy. When you're"
+                f" back, I'll pull it right back down — give it 20 to 30 minutes to"
+                f" feel normal again.",
+            ]
+        elif c.hvac_mode == "heat":
+            return [
+                f"If you head out, I'll drop to {setback_heat:.0f}°F after about"
+                f" 15 minutes. When you get back, I'll warm things right up — should"
+                f" take 20 to 30 minutes depending on how long you were gone.",
+            ]
+        else:
+            return [
+                "If you head out, nothing really changes today — the HVAC is off."
+                " If it was running as a safety net, it'll set back on its own.",
+            ]
 
 
 def _fresh_air_section(

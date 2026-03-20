@@ -64,6 +64,7 @@ One day's tracked data: what was recommended, what actually happened, outcomes (
 |--------|-------|---------|
 | Door/window sensors | State change (open/closed) | `_async_door_window_changed` |
 | Climate entity | State change (temp, mode) | `_async_thermostat_changed` |
+| Occupancy toggle entities (home/vacation/guest) | State change (on/off) | `_async_occupancy_changed` |
 
 ## Sensors Exposed
 
@@ -75,6 +76,7 @@ One day's tracked data: what was recommended, what actually happened, outcomes (
 | `sensor.climate_advisor_daily_briefing` | Truncated briefing (255 char) | full_briefing (complete text) |
 | `sensor.climate_advisor_comfort_score` | 0–100% | pending_suggestions, suggestions list |
 | `sensor.climate_advisor_status` | active/inactive | — |
+| `sensor.climate_advisor_occupancy_mode` | home/away/vacation/guest | occupancy_entity_states (raw toggle states) |
 
 ## Services Registered
 
@@ -105,6 +107,12 @@ automation_grace_notify: true   # send notification when automation grace period
 wake_time: "06:30"
 sleep_time: "22:30"
 briefing_time: "06:00"
+occupancy_home_entity: binary_sensor.someone_home (optional)
+occupancy_home_inverted: false          # true if on=away instead of on=home
+occupancy_vacation_entity: input_boolean.vacation_mode (optional)
+occupancy_vacation_inverted: false
+occupancy_guest_entity: input_boolean.guest_mode (optional)
+occupancy_guest_inverted: false
 ```
 
 ### Debounce and Grace Period System
@@ -193,5 +201,15 @@ INFO  [DRY RUN] Would send notification: Climate Advisor — 🏠 Welcome home! 
 ### Implementation
 
 Guards are placed at the 3 thermostat primitives (`_set_hvac_mode`, `_set_temperature`, `_notify`) in `AutomationEngine` plus the briefing notification in the coordinator. Higher-level logic (classification application, door/window pause tracking, grace periods, occupancy handling) continues unaffected.
+
+## Automation Engine — Occupancy Methods
+
+| Method | Trigger | Behaviour |
+|--------|---------|-----------|
+| `handle_occupancy_vacation(active: bool)` | Vacation toggle changes | `active=True`: applies setback + `VACATION_SETBACK_EXTRA` offset. `active=False`: restores comfort setpoint. Logs mode change; respects dry-run guard. |
+| `handle_occupancy_guest(active: bool)` | Guest toggle changes | `active=True`: sets comfort setpoint immediately, disables all setback paths. `active=False`: re-evaluates current occupancy state and applies appropriate setpoint. |
+| `handle_occupancy_home(home: bool)` | Home/Away toggle changes | Delegates to existing away/return logic with the configured setback delay. |
+
+Priority enforcement lives in `_async_occupancy_changed` (coordinator): it reads all three toggle states, resolves the winner using Guest > Vacation > Home/Away > default, and dispatches to the appropriate handler above.
 
 The toggle state is persisted via `StatePersistence` and survives HA restarts. It is also exposed in the dashboard API (`/api/climate_advisor/status`) and debug state.

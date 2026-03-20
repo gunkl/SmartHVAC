@@ -53,6 +53,29 @@ MAX_CONTINUOUS_RUNTIME_HOURS = 3
 # Economizer (window cooling) threshold
 ECONOMIZER_TEMP_DELTA = 3  # °F — activate when outdoor temp within this delta of comfort_cool
 
+# Economizer time boundaries for hot-day window cooling
+ECONOMIZER_MORNING_START_HOUR = 6   # 6:00 AM
+ECONOMIZER_MORNING_END_HOUR = 9     # 9:00 AM
+ECONOMIZER_EVENING_START_HOUR = 17  # 5:00 PM
+ECONOMIZER_EVENING_END_HOUR = 24    # midnight (end of day)
+
+# Occupancy toggle configuration
+CONF_HOME_TOGGLE = "home_toggle_entity"
+CONF_HOME_TOGGLE_INVERT = "home_toggle_invert"
+CONF_VACATION_TOGGLE = "vacation_toggle_entity"
+CONF_VACATION_TOGGLE_INVERT = "vacation_toggle_invert"
+CONF_GUEST_TOGGLE = "guest_toggle_entity"
+CONF_GUEST_TOGGLE_INVERT = "guest_toggle_invert"
+
+# Occupancy mode values
+OCCUPANCY_HOME = "home"
+OCCUPANCY_AWAY = "away"
+OCCUPANCY_VACATION = "vacation"
+OCCUPANCY_GUEST = "guest"
+
+# Vacation deeper setback (degrees beyond normal setback)
+VACATION_SETBACK_EXTRA = 3
+
 # Fan control configuration
 CONF_FAN_ENTITY = "fan_entity"
 CONF_FAN_MODE = "fan_mode"
@@ -91,6 +114,7 @@ ATTR_ESTIMATED_SAVINGS = "estimated_savings"
 ATTR_AUTOMATION_ENABLED = "automation_enabled"
 ATTR_NEXT_AUTOMATION_ACTION = "next_automation_action"
 ATTR_NEXT_AUTOMATION_TIME = "next_automation_time"
+ATTR_OCCUPANCY_MODE = "occupancy_mode"
 
 # API paths for dashboard panel
 API_BASE = "/api/climate_advisor"
@@ -206,6 +230,36 @@ CONFIG_METADATA = {
         "label": "Fan Entity",
         "description": "The fan or switch entity to control for whole-house ventilation. Only used when fan mode is 'whole_house_fan' or 'both'.",
         "category": "fan",
+    },
+    "home_toggle_entity": {
+        "label": "Home/Away Toggle",
+        "description": "An entity that indicates whether someone is home. ON = home, OFF = away. Climate Advisor applies setback temperatures when away.",
+        "category": "occupancy",
+    },
+    "home_toggle_invert": {
+        "label": "Invert Home Toggle",
+        "description": "Enable if your toggle reports ON when you're away and OFF when you're home.",
+        "category": "occupancy",
+    },
+    "vacation_toggle_entity": {
+        "label": "Vacation Mode Toggle",
+        "description": "An entity that indicates vacation mode. When active, Climate Advisor applies a deeper temperature setback for extended energy savings.",
+        "category": "occupancy",
+    },
+    "vacation_toggle_invert": {
+        "label": "Invert Vacation Toggle",
+        "description": "Enable if your toggle reports ON when you're NOT on vacation.",
+        "category": "occupancy",
+    },
+    "guest_toggle_entity": {
+        "label": "Guest Mode Toggle",
+        "description": "An entity that indicates guests are present. Overrides vacation and away modes — the house stays at comfort temperature while guests are visiting.",
+        "category": "occupancy",
+    },
+    "guest_toggle_invert": {
+        "label": "Invert Guest Toggle",
+        "description": "Enable if your toggle reports ON when guests are NOT present.",
+        "category": "occupancy",
     },
     "wake_time": {
         "label": "Wake Time",

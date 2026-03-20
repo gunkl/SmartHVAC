@@ -16,6 +16,16 @@ from .const import (
     CONF_EMAIL_NOTIFY,
     CONF_FAN_ENTITY,
     CONF_FAN_MODE,
+    CONF_GUEST_TOGGLE,
+    CONF_GUEST_TOGGLE_INVERT,
+    CONF_HOME_TOGGLE,
+    CONF_HOME_TOGGLE_INVERT,
+    CONF_MANUAL_GRACE_NOTIFY,
+    CONF_MANUAL_GRACE_PERIOD,
+    CONF_SENSOR_DEBOUNCE,
+    CONF_SENSOR_POLARITY_INVERTED,
+    CONF_VACATION_TOGGLE,
+    CONF_VACATION_TOGGLE_INVERT,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_COMFORT_COOL,
     DEFAULT_COMFORT_HEAT,
@@ -24,10 +34,6 @@ from .const import (
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     DEFAULT_SETBACK_COOL,
     DEFAULT_SETBACK_HEAT,
-    CONF_MANUAL_GRACE_NOTIFY,
-    CONF_MANUAL_GRACE_PERIOD,
-    CONF_SENSOR_DEBOUNCE,
-    CONF_SENSOR_POLARITY_INVERTED,
     DOMAIN,
     FAN_MODE_BOTH,
     FAN_MODE_DISABLED,
@@ -81,7 +87,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 6
+    VERSION = 7
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -218,7 +224,7 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if key in user_input:
                     user_input[key] = int(user_input[key] * 60)
             self._data.update(user_input)
-            return await self.async_step_schedule()
+            return await self.async_step_occupancy()
 
         return self.async_show_form(
             step_id="sensors",
@@ -280,6 +286,55 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=["fan", "switch"])
                     ),
+                }
+            ),
+        )
+
+    async def async_step_occupancy(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Handle the occupancy awareness step."""
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_schedule()
+
+        return self.async_show_form(
+            step_id="occupancy",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_HOME_TOGGLE,
+                        description={"suggested_value": None},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["input_boolean", "binary_sensor", "switch"]
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_HOME_TOGGLE_INVERT, default=False
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_VACATION_TOGGLE,
+                        description={"suggested_value": None},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["input_boolean", "binary_sensor", "switch"]
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_VACATION_TOGGLE_INVERT, default=False
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_GUEST_TOGGLE,
+                        description={"suggested_value": None},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["input_boolean", "binary_sensor", "switch"]
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_GUEST_TOGGLE_INVERT, default=False
+                    ): selector.BooleanSelector(),
                 }
             ),
         )
@@ -467,7 +522,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                 if key in user_input:
                     user_input[key] = int(user_input[key] * 60)
             self._updates.update(user_input)
-            return await self.async_step_schedule()
+            return await self.async_step_occupancy()
 
         current = self.config_entry.data
 
@@ -545,10 +600,64 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
+    async def async_step_occupancy(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Step 4: Occupancy awareness configuration."""
+        if user_input is not None:
+            self._updates.update(user_input)
+            return await self.async_step_schedule()
+
+        current = self.config_entry.data
+
+        return self.async_show_form(
+            step_id="occupancy",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_HOME_TOGGLE,
+                        description={"suggested_value": current.get(CONF_HOME_TOGGLE)},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["input_boolean", "binary_sensor", "switch"]
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_HOME_TOGGLE_INVERT,
+                        default=current.get(CONF_HOME_TOGGLE_INVERT, False),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_VACATION_TOGGLE,
+                        description={"suggested_value": current.get(CONF_VACATION_TOGGLE)},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["input_boolean", "binary_sensor", "switch"]
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_VACATION_TOGGLE_INVERT,
+                        default=current.get(CONF_VACATION_TOGGLE_INVERT, False),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_GUEST_TOGGLE,
+                        description={"suggested_value": current.get(CONF_GUEST_TOGGLE)},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["input_boolean", "binary_sensor", "switch"]
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_GUEST_TOGGLE_INVERT,
+                        default=current.get(CONF_GUEST_TOGGLE_INVERT, False),
+                    ): selector.BooleanSelector(),
+                }
+            ),
+        )
+
     async def async_step_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Step 4: Daily schedule configuration."""
+        """Step 5: Daily schedule configuration."""
         if user_input is not None:
             self._updates.update(user_input)
             return await self.async_step_advanced()

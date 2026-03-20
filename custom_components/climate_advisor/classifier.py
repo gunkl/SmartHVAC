@@ -11,6 +11,9 @@ from .const import (
     DAY_TYPE_MILD,
     DAY_TYPE_COOL,
     DAY_TYPE_COLD,
+    ECONOMIZER_MORNING_END_HOUR,
+    ECONOMIZER_MORNING_START_HOUR,
+    ECONOMIZER_EVENING_START_HOUR,
     THRESHOLD_HOT,
     THRESHOLD_WARM,
     THRESHOLD_MILD,
@@ -58,6 +61,10 @@ class DayClassification:
     setback_modifier: float = 0.0  # Degrees to adjust setback based on trend
     window_opportunity_morning: bool = False  # Morning window cooling possible on hot days
     window_opportunity_evening: bool = False  # Evening window cooling possible on hot days
+    window_opportunity_morning_start: time | None = None
+    window_opportunity_morning_end: time | None = None
+    window_opportunity_evening_start: time | None = None
+    window_opportunity_evening_end: time | None = None
 
     def __post_init__(self):
         """Compute recommendations based on classification."""
@@ -75,8 +82,12 @@ class DayClassification:
             # If today's low is within 5°F of a typical comfort_cool (75°F), windows could help
             if self.today_low <= 80:  # Today's low is moderate enough for window opportunity
                 self.window_opportunity_morning = True
+                self.window_opportunity_morning_start = time(ECONOMIZER_MORNING_START_HOUR, 0)
+                self.window_opportunity_morning_end = time(ECONOMIZER_MORNING_END_HOUR, 0)
             if self.tomorrow_low <= 80:  # Tomorrow's low suggests cool evening
                 self.window_opportunity_evening = True
+                self.window_opportunity_evening_start = time(ECONOMIZER_EVENING_START_HOUR, 0)
+                self.window_opportunity_evening_end = time(0, 0)  # midnight
         elif self.day_type == DAY_TYPE_WARM:
             self.hvac_mode = "off"
             self.windows_recommended = True

@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPONENT_DIR = REPO_ROOT / "custom_components" / "climate_advisor"
 ENV_FILE = REPO_ROOT / ".deploy.env"
 LOG_DIR = REPO_ROOT / "logs"
+BACKUP_DIR = REPO_ROOT / "backups"
 BACKUP_KEEP_COUNT = 5
 
 _log = logging.getLogger("deploy")
@@ -188,28 +189,66 @@ def run_validation() -> bool:
 
 
 def create_backup(config: dict[str, str]) -> None:
-    step("Creating backup on HA server")
+    step("Downloading backup from HA server")
     rpath = remote_path(config)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_path = f"{rpath}.bak.{timestamp}"
 
     rc, output = run_ssh(config, f"test -d '{rpath}' && echo yes || echo no")
-    if "yes" in output:
-        run_ssh(config, f"cp -r '{rpath}' '{backup_path}'")
-        ok(f"Backup created: {backup_path}")
-    else:
+    if "yes" not in output:
         info("No existing installation found. Skipping backup.")
+        return
+
+    BACKUP_DIR.mkdir(exist_ok=True)
+    local_tar = BACKUP_DIR / f"climate_advisor-{timestamp}.tar.gz"
+    target = ssh_target(config)
+    parent = f"{config['HA_CONFIG_PATH']}/custom_components"
+
+    # Tar+gzip the remote directory and download it locally
+    rc, output = run_ssh(config, f"tar czf /tmp/ca_backup.tar.gz -C '{parent}' climate_advisor")
+    if rc != 0:
+        fail(f"Remote tar failed: {output}")
+        return
+
+    cmd = scp_args(config) + [f"{target}:/tmp/ca_backup.tar.gz", str(local_tar)]
+    rc, output = run_local(cmd)
+    if rc != 0:
+        fail(f"Backup download failed: {output}")
+        return
+
+    run_ssh(config, "rm -f /tmp/ca_backup.tar.gz")
+    ok(f"Backup saved: {local_tar}")
 
 
 def prune_backups(config: dict[str, str]) -> None:
     step(f"Pruning old backups (keeping last {BACKUP_KEEP_COUNT})")
+    if not BACKUP_DIR.exists():
+        ok("No backups directory yet")
+        return
+
+    backups = sorted(BACKUP_DIR.glob("climate_advisor-*.tar.gz"), reverse=True)
+    removed = 0
+    for old in backups[BACKUP_KEEP_COUNT:]:
+        old.unlink()
+        removed += 1
+    ok(f"Pruned {removed} old backup(s), {min(len(backups), BACKUP_KEEP_COUNT)} kept")
+
+
+def clean_legacy_backups(config: dict[str, str]) -> None:
+    """Remove old climate_advisor.bak.* directories from custom_components/.
+
+    These backup directories contain manifest.json files that cause HA's
+    loader to discover them as duplicate integrations, breaking import.
+    """
     rpath = remote_path(config)
-    cmd = (
-        f"ls -1d {rpath}.bak.* 2>/dev/null | sort -r | "
-        f"tail -n +{BACKUP_KEEP_COUNT + 1} | xargs rm -rf 2>/dev/null; echo done"
-    )
-    run_ssh(config, cmd)
-    ok("Old backups pruned")
+    rc, output = run_ssh(config, f"ls -1d {rpath}.bak.* 2>/dev/null")
+    if rc != 0 or not output.strip():
+        return
+
+    dirs = [d.strip() for d in output.splitlines() if d.strip()]
+    if dirs:
+        step(f"Removing {len(dirs)} legacy backup dir(s) from custom_components/")
+        run_ssh(config, f"rm -rf {rpath}.bak.*")
+        ok(f"Removed {len(dirs)} legacy backup dir(s)")
 
 
 def ensure_brand_dir() -> None:
@@ -310,29 +349,40 @@ def check_logs(config: dict[str, str]) -> None:
 
 
 def do_rollback(config: dict[str, str]) -> None:
-    step("Listing available backups")
+    step("Listing available local backups")
+
+    if not BACKUP_DIR.exists():
+        fail("No backups/ directory found")
+        sys.exit(1)
+
+    backups = sorted(BACKUP_DIR.glob("climate_advisor-*.tar.gz"), reverse=True)
+    if not backups:
+        fail("No backup tarballs found in backups/")
+        sys.exit(1)
+
+    info("Available backups:")
+    for i, b in enumerate(backups):
+        print(f"   [{i}] {b.name}")
 
     if not test_ssh(config):
         sys.exit(1)
 
-    rpath = remote_path(config)
-    rc, output = run_ssh(config, f"ls -1d {rpath}.bak.* 2>/dev/null | sort -r")
+    latest = backups[0]
+    step(f"Restoring from: {latest.name}")
 
-    if rc != 0 or not output or "No such file" in output:
-        fail("No backups found on server")
+    rpath = remote_path(config)
+    target = ssh_target(config)
+    parent = f"{config['HA_CONFIG_PATH']}/custom_components"
+
+    # Upload tarball and extract on server
+    cmd = scp_args(config) + [str(latest), f"{target}:/tmp/ca_restore.tar.gz"]
+    rc, output = run_local(cmd)
+    if rc != 0:
+        fail(f"Upload failed: {output}")
         sys.exit(1)
 
-    backups = [b.strip() for b in output.splitlines() if b.strip()]
-    info("Available backups:")
-    for i, b in enumerate(backups):
-        name = b.rsplit("/", 1)[-1]
-        print(f"   [{i}] {name}")
-
-    latest = backups[0]
-    name = latest.rsplit("/", 1)[-1]
-    step(f"Restoring from: {name}")
-
-    run_ssh(config, f"rm -rf '{rpath}' && cp -r '{latest}' '{rpath}'")
+    run_ssh(config, f"rm -rf '{rpath}' && tar xzf /tmp/ca_restore.tar.gz -C '{parent}'")
+    run_ssh(config, "rm -f /tmp/ca_restore.tar.gz")
     ok("Backup restored")
 
     step("Restarting Home Assistant core")
@@ -404,6 +454,7 @@ def main() -> None:
     # Step 3: Backup
     create_backup(config)
     prune_backups(config)
+    clean_legacy_backups(config)
 
     # Step 4: Deploy
     if not deploy_files(config):

@@ -68,6 +68,7 @@ class ClimateAdvisorStatusView(HomeAssistantView):
             "compliance_score": data.get(ATTR_COMPLIANCE_SCORE, 1.0),
             "next_action": data.get(ATTR_NEXT_ACTION, ""),
             "automation_enabled": coordinator.automation_enabled,
+            "occupancy_mode": coordinator._occupancy_mode,
         })
 
 

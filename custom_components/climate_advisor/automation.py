@@ -25,11 +25,16 @@ from .const import (
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    ECONOMIZER_MORNING_END_HOUR,
+    ECONOMIZER_MORNING_START_HOUR,
+    ECONOMIZER_EVENING_END_HOUR,
+    ECONOMIZER_EVENING_START_HOUR,
     ECONOMIZER_TEMP_DELTA,
     FAN_MODE_BOTH,
     FAN_MODE_DISABLED,
     FAN_MODE_HVAC,
     FAN_MODE_WHOLE_HOUSE,
+    VACATION_SETBACK_EXTRA,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -371,6 +376,27 @@ class AutomationEngine:
             "Climate Advisor",
         )
 
+    async def handle_occupancy_vacation(self) -> None:
+        """Handle vacation mode — apply deeper setback for extended away."""
+        c = self._current_classification
+        if not c:
+            return
+
+        if c.hvac_mode == "heat":
+            setback = self.config["setback_heat"] + c.setback_modifier - VACATION_SETBACK_EXTRA
+            await self._set_temperature(
+                setback,
+                reason="vacation mode — deep heat setback (base %s + modifier %s - vacation %s)"
+                % (self.config["setback_heat"], c.setback_modifier, VACATION_SETBACK_EXTRA),
+            )
+        elif c.hvac_mode == "cool":
+            setback = self.config["setback_cool"] - c.setback_modifier + VACATION_SETBACK_EXTRA
+            await self._set_temperature(
+                setback,
+                reason="vacation mode — deep cool setback (base %s - modifier %s + vacation %s)"
+                % (self.config["setback_cool"], c.setback_modifier, VACATION_SETBACK_EXTRA),
+            )
+
     async def handle_bedtime(self) -> None:
         """Apply bedtime setback."""
         c = self._current_classification
@@ -499,7 +525,10 @@ class AutomationEngine:
             # Default: allow (caller didn't pass hour, skip time gate)
             in_window = True
         else:
-            in_window = (6 <= current_hour < 9) or (17 <= current_hour < 24)
+            in_window = (
+                (ECONOMIZER_MORNING_START_HOUR <= current_hour < ECONOMIZER_MORNING_END_HOUR)
+                or (ECONOMIZER_EVENING_START_HOUR <= current_hour < ECONOMIZER_EVENING_END_HOUR)
+            )
 
         # Conditions for economizer eligibility
         eligible = (

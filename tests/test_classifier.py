@@ -746,3 +746,101 @@ class TestHotDayWindowOpportunityFlags:
         assert result.day_type == DAY_TYPE_MILD
         assert result.window_opportunity_morning is False
         assert result.window_opportunity_evening is False
+
+
+# ---------------------------------------------------------------------------
+# Window opportunity time fields on HOT days (Issue #18)
+# ---------------------------------------------------------------------------
+
+class TestHotDayWindowOpportunityTimes:
+    """HOT days populate window_opportunity_morning/evening start and end
+    time fields based on today_low and tomorrow_low thresholds."""
+
+    def _classify_hot(self, today_low: float, tomorrow_low: float) -> object:
+        """Classify a HOT day with given lows and a stable trend."""
+        return classify_day(ForecastSnapshot(
+            today_high=90.0,
+            today_low=today_low,
+            tomorrow_high=90.0,
+            tomorrow_low=tomorrow_low,
+            current_outdoor_temp=85.0,
+        ))
+
+    # --- Morning opportunity times (today_low <= 80) ---
+
+    def test_hot_day_morning_opportunity_has_times(self):
+        """today_low=72 (<=80) → morning start=time(6,0), end=time(9,0)."""
+        result = self._classify_hot(today_low=72, tomorrow_low=85)
+        assert result.day_type == DAY_TYPE_HOT
+        assert result.window_opportunity_morning_start == time(6, 0)
+        assert result.window_opportunity_morning_end == time(9, 0)
+
+    # --- Evening opportunity times (tomorrow_low <= 80) ---
+
+    def test_hot_day_evening_opportunity_has_times(self):
+        """tomorrow_low=70 (<=80) → evening start=time(17,0), end=time(0,0)."""
+        result = self._classify_hot(today_low=85, tomorrow_low=70)
+        assert result.day_type == DAY_TYPE_HOT
+        assert result.window_opportunity_evening_start == time(17, 0)
+        assert result.window_opportunity_evening_end == time(0, 0)
+
+    # --- Both opportunity time windows ---
+
+    def test_hot_day_both_opportunities_have_times(self):
+        """today_low=72 and tomorrow_low=70 → all 4 time fields are populated."""
+        result = self._classify_hot(today_low=72, tomorrow_low=70)
+        assert result.day_type == DAY_TYPE_HOT
+        assert result.window_opportunity_morning_start == time(6, 0)
+        assert result.window_opportunity_morning_end == time(9, 0)
+        assert result.window_opportunity_evening_start == time(17, 0)
+        assert result.window_opportunity_evening_end == time(0, 0)
+
+    # --- No morning opportunity — times remain None ---
+
+    def test_hot_day_no_morning_opportunity_times_none(self):
+        """today_low=82 (>80) → morning start and end remain None."""
+        result = self._classify_hot(today_low=82, tomorrow_low=70)
+        assert result.day_type == DAY_TYPE_HOT
+        assert result.window_opportunity_morning_start is None
+        assert result.window_opportunity_morning_end is None
+
+    # --- No evening opportunity — times remain None ---
+
+    def test_hot_day_no_evening_opportunity_times_none(self):
+        """tomorrow_low=82 (>80) → evening start and end remain None."""
+        result = self._classify_hot(today_low=72, tomorrow_low=82)
+        assert result.day_type == DAY_TYPE_HOT
+        assert result.window_opportunity_evening_start is None
+        assert result.window_opportunity_evening_end is None
+
+    # --- Time fields absent on non-HOT days ---
+
+    def test_warm_day_no_opportunity_times(self):
+        """WARM day → all 4 opportunity time fields remain None."""
+        result = classify_day(ForecastSnapshot(
+            today_high=80.0,
+            today_low=60.0,
+            tomorrow_high=80.0,
+            tomorrow_low=60.0,
+            current_outdoor_temp=70.0,
+        ))
+        assert result.day_type == DAY_TYPE_WARM
+        assert result.window_opportunity_morning_start is None
+        assert result.window_opportunity_morning_end is None
+        assert result.window_opportunity_evening_start is None
+        assert result.window_opportunity_evening_end is None
+
+    def test_mild_day_no_opportunity_times(self):
+        """MILD day → all 4 opportunity time fields remain None."""
+        result = classify_day(ForecastSnapshot(
+            today_high=67.0,
+            today_low=50.0,
+            tomorrow_high=67.0,
+            tomorrow_low=50.0,
+            current_outdoor_temp=60.0,
+        ))
+        assert result.day_type == DAY_TYPE_MILD
+        assert result.window_opportunity_morning_start is None
+        assert result.window_opportunity_morning_end is None
+        assert result.window_opportunity_evening_start is None
+        assert result.window_opportunity_evening_end is None

@@ -37,6 +37,12 @@ from .const import (
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_WEATHER_SERVICE,
     TEMP_SOURCE_CLIMATE_FALLBACK,
+    CONF_HOME_TOGGLE,
+    CONF_HOME_TOGGLE_INVERT,
+    CONF_VACATION_TOGGLE,
+    CONF_VACATION_TOGGLE_INVERT,
+    CONF_GUEST_TOGGLE,
+    CONF_GUEST_TOGGLE_INVERT,
 )
 from .coordinator import ClimateAdvisorCoordinator
 
@@ -158,6 +164,20 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             config_entry, data=new_data, version=6
         )
         _LOGGER.info("Migration to version 6 complete")
+
+    if config_entry.version == 6:
+        _LOGGER.info("Migrating Climate Advisor config entry from version 6 to 7")
+        new_data = {**config_entry.data}
+        new_data.setdefault(CONF_HOME_TOGGLE, None)
+        new_data.setdefault(CONF_HOME_TOGGLE_INVERT, False)
+        new_data.setdefault(CONF_VACATION_TOGGLE, None)
+        new_data.setdefault(CONF_VACATION_TOGGLE_INVERT, False)
+        new_data.setdefault(CONF_GUEST_TOGGLE, None)
+        new_data.setdefault(CONF_GUEST_TOGGLE_INVERT, False)
+        hass.config_entries.async_update_entry(
+            config_entry, data=new_data, version=7
+        )
+        _LOGGER.info("Migration to version 7 complete")
 
     return True
 

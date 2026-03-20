@@ -28,6 +28,17 @@ from .learning import LearningEngine, DailyRecord
 from .state import StatePersistence
 from .const import (
     CONF_SENSOR_POLARITY_INVERTED,
+    CONF_HOME_TOGGLE,
+    CONF_HOME_TOGGLE_INVERT,
+    CONF_VACATION_TOGGLE,
+    CONF_VACATION_TOGGLE_INVERT,
+    CONF_GUEST_TOGGLE,
+    CONF_GUEST_TOGGLE_INVERT,
+    OCCUPANCY_HOME,
+    OCCUPANCY_AWAY,
+    OCCUPANCY_VACATION,
+    OCCUPANCY_GUEST,
+    ATTR_OCCUPANCY_MODE,
     DOMAIN,
     VERSION,
     DAY_TYPE_HOT,
@@ -53,6 +64,9 @@ from .const import (
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
+    ECONOMIZER_MORNING_END_HOUR,
+    ECONOMIZER_EVENING_START_HOUR,
+    ECONOMIZER_TEMP_DELTA,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,6 +121,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         # HVAC runtime tracking
         self._hvac_on_since: datetime | None = None
+
+        # Occupancy state machine
+        self._occupancy_mode: str = OCCUPANCY_HOME
+        self._occupancy_away_since: datetime | None = None
+        self._unsub_occupancy_listeners: list[Any] = []
 
     @property
     def automation_enabled(self) -> bool:
@@ -178,6 +197,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # Listeners: door/window sensors (resolve groups into individual sensors)
         self._resolved_sensors = self._resolve_monitored_sensors()
         self._subscribe_door_window_listeners()
+
+        # Listeners: occupancy toggles
+        self._subscribe_occupancy_listeners()
+        self._occupancy_mode = self._compute_occupancy_mode()
 
         # Listeners: thermostat state (for tracking manual overrides and runtime)
         self._unsub_listeners.append(
@@ -302,6 +325,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._automation_enabled = state.get("automation_enabled", True)
         self.automation_engine.dry_run = not self._automation_enabled
 
+        # Occupancy state
+        self._occupancy_mode = state.get("occupancy_mode", OCCUPANCY_HOME)
+        away_since = state.get("occupancy_away_since")
+        if away_since:
+            try:
+                self._occupancy_away_since = datetime.fromisoformat(away_since)
+            except (ValueError, TypeError):
+                self._occupancy_away_since = None
+
         _LOGGER.info("State restore complete")
 
     def _build_state_dict(self) -> dict[str, Any]:
@@ -328,6 +360,24 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     c.window_close_time.isoformat() if c.window_close_time else None
                 ),
                 "setback_modifier": c.setback_modifier,
+                "window_opportunity_morning": c.window_opportunity_morning,
+                "window_opportunity_evening": c.window_opportunity_evening,
+                "window_opportunity_morning_start": (
+                    c.window_opportunity_morning_start.isoformat()
+                    if c.window_opportunity_morning_start else None
+                ),
+                "window_opportunity_morning_end": (
+                    c.window_opportunity_morning_end.isoformat()
+                    if c.window_opportunity_morning_end else None
+                ),
+                "window_opportunity_evening_start": (
+                    c.window_opportunity_evening_start.isoformat()
+                    if c.window_opportunity_evening_start else None
+                ),
+                "window_opportunity_evening_end": (
+                    c.window_opportunity_evening_end.isoformat()
+                    if c.window_opportunity_evening_end else None
+                ),
             }
 
         record_dict = None
@@ -350,6 +400,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 "last_text": self._last_briefing,
             },
             "automation_enabled": self._automation_enabled,
+            "occupancy_mode": self._occupancy_mode,
+            "occupancy_away_since": (
+                self._occupancy_away_since.isoformat()
+                if self._occupancy_away_since
+                else None
+            ),
         }
 
     async def _async_save_state(self) -> None:
@@ -392,6 +448,121 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         for unsub in self._unsub_dw_listeners:
             unsub()
         self._unsub_dw_listeners.clear()
+
+    # ── Occupancy toggle methods ─────────────────────────────────────
+
+    def _is_toggle_on(self, entity_id: str, invert: bool) -> bool:
+        """Check if a toggle entity is effectively ON, respecting invert."""
+        state = self.hass.states.get(entity_id)
+        if not state or state.state in ("unavailable", "unknown"):
+            if state:
+                _LOGGER.warning(
+                    "Occupancy toggle %s is %s — treating as OFF",
+                    entity_id,
+                    state.state,
+                )
+            return False
+        raw_on = state.state == "on"
+        return not raw_on if invert else raw_on
+
+    def _compute_occupancy_mode(self) -> str:
+        """Compute effective occupancy mode from toggle entities (priority order)."""
+        cfg = self.config
+
+        # Guest (highest priority)
+        guest_entity = cfg.get(CONF_GUEST_TOGGLE)
+        if guest_entity and self._is_toggle_on(
+            guest_entity, cfg.get(CONF_GUEST_TOGGLE_INVERT, False)
+        ):
+            return OCCUPANCY_GUEST
+
+        # Vacation
+        vacation_entity = cfg.get(CONF_VACATION_TOGGLE)
+        if vacation_entity and self._is_toggle_on(
+            vacation_entity, cfg.get(CONF_VACATION_TOGGLE_INVERT, False)
+        ):
+            return OCCUPANCY_VACATION
+
+        # Home/Away
+        home_entity = cfg.get(CONF_HOME_TOGGLE)
+        if home_entity:
+            if self._is_toggle_on(
+                home_entity, cfg.get(CONF_HOME_TOGGLE_INVERT, False)
+            ):
+                return OCCUPANCY_HOME
+            return OCCUPANCY_AWAY
+
+        # No toggles configured
+        return OCCUPANCY_HOME
+
+    def _subscribe_occupancy_listeners(self) -> None:
+        """Subscribe to state changes for all configured occupancy toggles."""
+        for conf_key in (CONF_HOME_TOGGLE, CONF_VACATION_TOGGLE, CONF_GUEST_TOGGLE):
+            entity_id = self.config.get(conf_key)
+            if entity_id:
+                self._unsub_occupancy_listeners.append(
+                    async_track_state_change_event(
+                        self.hass,
+                        entity_id,
+                        self._async_occupancy_toggle_changed,
+                    )
+                )
+
+    def _unsubscribe_occupancy_listeners(self) -> None:
+        """Unsubscribe all occupancy toggle listeners."""
+        for unsub in self._unsub_occupancy_listeners:
+            unsub()
+        self._unsub_occupancy_listeners.clear()
+
+    @callback
+    async def _async_occupancy_toggle_changed(self, event: Event) -> None:
+        """Handle an occupancy toggle state change."""
+        new_mode = self._compute_occupancy_mode()
+
+        if new_mode == self._occupancy_mode:
+            return  # No effective change
+
+        old_mode = self._occupancy_mode
+        _LOGGER.info(
+            "Occupancy mode changed: %s -> %s (trigger: %s)",
+            old_mode,
+            new_mode,
+            event.data.get("entity_id", "unknown"),
+        )
+
+        # Track away minutes
+        now = dt_util.now()
+        present_modes = {OCCUPANCY_HOME, OCCUPANCY_GUEST}
+        was_present = old_mode in present_modes
+        is_present = new_mode in present_modes
+
+        if was_present and not is_present:
+            # Leaving home
+            self._occupancy_away_since = now
+        elif not was_present and is_present:
+            # Returning home
+            if self._occupancy_away_since and self._today_record:
+                elapsed = (now - self._occupancy_away_since).total_seconds() / 60.0
+                self._today_record.occupancy_away_minutes += elapsed
+                _LOGGER.debug(
+                    "Away duration: %.1f minutes added to daily record",
+                    elapsed,
+                )
+            self._occupancy_away_since = None
+
+        self._occupancy_mode = new_mode
+
+        # Call appropriate automation handler
+        if new_mode == OCCUPANCY_VACATION:
+            await self.automation_engine.handle_occupancy_vacation()
+        elif new_mode == OCCUPANCY_AWAY:
+            await self.automation_engine.handle_occupancy_away()
+        elif new_mode in present_modes:
+            await self.automation_engine.handle_occupancy_home()
+
+        await self._async_save_state()
+
+    # ── End occupancy methods ──────────────────────────────────────
 
     def _cancel_all_debounce_timers(self) -> None:
         """Cancel all pending door/window debounce timers.
@@ -518,6 +689,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_COMPLIANCE_SCORE: compliance.get("comfort_score", 1.0),
             ATTR_NEXT_AUTOMATION_ACTION: next_auto[0],
             ATTR_NEXT_AUTOMATION_TIME: next_auto[1],
+            ATTR_OCCUPANCY_MODE: self._occupancy_mode,
         }
 
     def _get_outdoor_temp(self, weather_attrs: dict) -> float:
@@ -962,6 +1134,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if not c:
             return "Waiting for forecast data..."
 
+        if self._occupancy_mode == OCCUPANCY_VACATION:
+            return "On vacation — deep energy-saving setback active."
+        if self._occupancy_mode == OCCUPANCY_AWAY:
+            return "You're away — automation managing temperature."
+
         now = dt_util.now().time()
 
         if c.windows_recommended:
@@ -971,10 +1148,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 return f"Close windows by {c.window_close_time.strftime('%I:%M %p')}"
 
         if c.day_type == DAY_TYPE_HOT:
-            if c.window_opportunity_morning and now < time(9, 0):
-                return "Check if it's cool enough to open windows this morning"
-            elif c.window_opportunity_evening and now >= time(17, 0):
-                return "Check outdoor temp — may be cool enough to open windows"
+            comfort_cool = self.config.get("comfort_cool", 75)
+            threshold = comfort_cool + ECONOMIZER_TEMP_DELTA
+            if c.window_opportunity_morning and now < time(ECONOMIZER_MORNING_END_HOUR, 0):
+                end_t = time(ECONOMIZER_MORNING_END_HOUR, 0).strftime("%I:%M %p").lstrip("0")
+                return f"Open windows if outdoor temp is below {threshold:.0f}°F (until {end_t})"
+            elif c.window_opportunity_evening and now >= time(ECONOMIZER_EVENING_START_HOUR, 0):
+                return f"Open windows if outdoor temp is below {threshold:.0f}°F"
             return "Keep windows and blinds closed. AC is handling it."
         elif c.day_type == DAY_TYPE_COLD:
             return "Keep doors closed — help the heater out."
@@ -990,6 +1170,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if self.automation_engine._grace_active:
             source = self.automation_engine._last_resume_source or "automation"
             return f"grace period ({source})"
+        if self._occupancy_mode == OCCUPANCY_VACATION:
+            return "active (vacation)"
+        if self._occupancy_mode == OCCUPANCY_AWAY:
+            return "active (away)"
+        if self._occupancy_mode == OCCUPANCY_GUEST:
+            return "active (guest)"
         return "active"
 
     def _compute_next_automation_action(
@@ -1106,6 +1292,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         return {
             "automation_enabled": self._automation_enabled,
+            "occupancy_mode": self._occupancy_mode,
             "paused_by_door": ae.is_paused_by_door,
             "pre_pause_mode": ae._pre_pause_mode,
             "grace_active": ae._grace_active,

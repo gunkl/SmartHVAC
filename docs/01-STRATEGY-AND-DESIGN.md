@@ -98,7 +98,40 @@ The system handles both heating and cooling:
 - "Just open windows" notifications when HVAC isn't needed
 - Separate comfort and setback setpoints for heat vs. cool
 
-## Configuration Metadata
+## Occupancy Awareness
+
+Climate Advisor can optionally track three occupancy states via user-configured toggle entities (switches, input_booleans, or any binary sensor). All toggles are optional; omit any you don't need.
+
+### Toggles
+
+| Toggle | Config Key | Effect |
+|--------|-----------|--------|
+| Home/Away | `occupancy_home_entity` | Away → apply occupancy setback; home → restore comfort |
+| Vacation | `occupancy_vacation_entity` | Vacation → deeper setback (`VACATION_SETBACK_EXTRA = 3°F` beyond normal setback) |
+| Guest | `occupancy_guest_entity` | Guest present → force comfort setpoint, override all setbacks |
+
+Each toggle has an `*_inverted` companion option (boolean) that flips the polarity. Use this when a sensor reports `on` to mean the opposite state (e.g., `on` = nobody home instead of someone home).
+
+### Priority Order
+
+When multiple toggles are active simultaneously the system resolves conflicts top-down:
+
+```
+Guest present  →  comfort (highest priority — always comfortable for guests)
+Vacation mode  →  deeper setback
+Away           →  standard setback
+Default        →  home/comfort (lowest priority — assumed home if no toggle configured)
+```
+
+### Behavior Details
+
+**Home/Away**: Equivalent to Layer 2 occupancy logic (see above) but driven by an explicit entity rather than thermostat presence sensing. The `occupancy_setback_delay_minutes` setting still applies — setback waits for the configured delay before activating to avoid reacting to brief departures.
+
+**Vacation**: Applies the normal setback temperature plus an additional `VACATION_SETBACK_EXTRA` offset (default 3°F). On return, restores comfort immediately. The daily briefing suppresses most action items while vacation mode is active.
+
+**Guest**: Overrides everything. No setbacks, no door/window pauses to HVAC (pause tracking still occurs), no occupancy setback. The briefing notes that guest mode is active so the user is aware comfort is locked in.
+
+### Configuration Metadata
 
 When adding new configuration options, update `CONFIG_METADATA` in `const.py` so the
 Settings tab in the dashboard displays the new option with its label, behavior
