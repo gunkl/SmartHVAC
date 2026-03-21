@@ -1121,7 +1121,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 async def _do_debounce() -> None:
                     self._door_open_timers.pop(eid, None)
                     if self._is_sensor_open(eid):
-                        _LOGGER.debug("Debounce expired, sensor still open: %s", eid)
+                        c = self._current_classification
+                        _LOGGER.debug(
+                            "Debounce expired, sensor still open: %s "
+                            "(classification=%s, hvac_mode=%s, windows_recommended=%s, "
+                            "planned_window_active=%s)",
+                            eid,
+                            c.day_type if c else "none",
+                            c.hvac_mode if c else "none",
+                            c.windows_recommended if c else False,
+                            self.automation_engine._is_within_planned_window_period(),
+                        )
                         await self.automation_engine.handle_door_window_open(eid)
                         if self._today_record:
                             self._today_record.door_window_pause_events += 1
@@ -1366,6 +1376,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         """Compute the current automation status string."""
         if not self._automation_enabled:
             return "disabled"
+        # Check if windows are open during a planned window period (not a pause)
+        if (
+            self.automation_engine._is_within_planned_window_period()
+            and self._any_sensor_open()
+        ):
+            return "windows open (as planned)"
         if self.automation_engine.is_paused_by_door:
             return "paused — door/window open"
         if self.automation_engine._grace_active:
@@ -1427,6 +1443,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         now = dt_util.now()
         now_time = now.time()
+
+        # Check if windows are open during planned window period
+        if (
+            self.automation_engine._is_within_planned_window_period()
+            and self._any_sensor_open()
+        ):
+            return ("Windows open as recommended", "")
 
         # Check if automation is paused
         if self.automation_engine.is_paused_by_door:

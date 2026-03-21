@@ -127,6 +127,27 @@ class AutomationEngine:
         """Whether HVAC is currently paused due to an open door/window."""
         return self._paused_by_door
 
+    def _is_within_planned_window_period(self) -> bool:
+        """Check if windows are recommended AND we're within the window period.
+
+        Returns True when ALL conditions hold:
+        1. Classification exists with windows_recommended=True
+        2. HVAC mode is "off" (no active heating/cooling to protect)
+        3. Current time is between window_open_time and window_close_time
+
+        When True, door/window sensor events should NOT trigger pause,
+        grace periods, or notifications — the user is following the plan.
+        """
+        c = self._current_classification
+        if not c or not c.windows_recommended:
+            return False
+        if c.hvac_mode != "off":
+            return False
+        if not c.window_open_time or not c.window_close_time:
+            return False
+        now_time = dt_util.now().time()
+        return c.window_open_time <= now_time <= c.window_close_time
+
     def _record_action(self, action: str, reason: str) -> None:
         """Record an HVAC action with timestamp and reason, and schedule a revisit."""
         self._last_action_time = dt_util.now().isoformat()
@@ -347,6 +368,15 @@ class AutomationEngine:
             )
             return
 
+        if self._is_within_planned_window_period():
+            _LOGGER.info(
+                "Door/window open (%s) during planned window period — not pausing "
+                "(windows recommended, HVAC off, day_type=%s)",
+                entity_id,
+                self._current_classification.day_type if self._current_classification else "unknown",
+            )
+            return
+
         # Get current mode before pausing
         state = self.hass.states.get(self.climate_entity)
         if state:
@@ -464,6 +494,19 @@ class AutomationEngine:
         @callback
         def _grace_expired(_now: Any) -> None:
             """Grace period has elapsed — re-check sensors before clearing."""
+            # If within planned window period, sensors open is expected — just clear grace
+            if self._is_within_planned_window_period():
+                _LOGGER.info(
+                    "%s grace expired during planned window period — sensors open as expected, clearing grace",
+                    source,
+                )
+                self._grace_active = False
+                self._last_resume_source = None
+                self._manual_grace_cancel = None
+                self._automation_grace_cancel = None
+                self.clear_manual_override()
+                return
+
             # If any contact sensor is still open, re-pause instead of clearing
             if self._sensor_check_callback and self._sensor_check_callback():
                 _LOGGER.info(
@@ -516,6 +559,11 @@ class AutomationEngine:
 
     async def _re_pause_for_open_sensor(self) -> None:
         """Re-pause HVAC because a sensor is still open when grace expired."""
+        if self._is_within_planned_window_period():
+            _LOGGER.info(
+                "Skipping re-pause — within planned window period (windows recommended)",
+            )
+            return
         state = self.hass.states.get(self.climate_entity)
         if state and state.state not in ("off", "unavailable", "unknown"):
             self._pre_pause_mode = state.state

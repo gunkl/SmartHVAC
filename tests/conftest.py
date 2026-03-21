@@ -94,8 +94,13 @@ class _MockDataUpdateCoordinator:
 
 sys.modules["homeassistant.helpers.update_coordinator"].DataUpdateCoordinator = _MockDataUpdateCoordinator
 
-# voluptuous is used by config_flow — mock it if not installed
-if "voluptuous" not in sys.modules:
+# voluptuous is used by config_flow — mock it only if not installed
+try:
+    import voluptuous as _vol_check  # noqa: F401
+
+    # Real voluptuous is available — also ensure its error submodule is importable
+    import voluptuous.error  # noqa: F401
+except ImportError:
     sys.modules["voluptuous"] = _make_mock_module("voluptuous")
     sys.modules["voluptuous.error"] = _make_mock_module("voluptuous.error")
 

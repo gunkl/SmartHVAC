@@ -107,13 +107,10 @@ def generate_briefing(
         return briefing_text
 
     # Structured header (kept for full briefing / email)
-    trend_desc = _trend_description(c)
+    # Note: Today/Tomorrow temps and Day Type are already in the TLDR table,
+    # so we only include the title and separator to avoid duplication (Issue #52).
     lines.append("🏠 Your Home Climate Plan for Today")
     lines.append(f"{'=' * 40}")
-    lines.append("")
-    lines.append(f"Today: High {c.today_high:.0f}°F / Low {c.today_low:.0f}°F")
-    lines.append(f"Tomorrow: High {c.tomorrow_high:.0f}°F / Low {c.tomorrow_low:.0f}°F")
-    lines.append(f"Day Type: {c.day_type.title()} | Trend: {trend_desc}")
     lines.append("")
     lines.extend(tldr_lines)
     lines.append("")

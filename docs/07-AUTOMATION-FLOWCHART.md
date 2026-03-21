@@ -131,21 +131,38 @@ graph TD
     G -->|No| H[Discard - closed in time]
     G -->|Yes| I{_grace_active?}
     I -->|Yes| J[Skip pause - grace active]
-    I -->|No| K{_paused_by_door\nalready True?}
-    K -->|Yes| L[Already paused - skip]
-    K -->|No| M[Store _pre_pause_mode]
-    M --> N{pre_pause_mode != off?}
-    N -->|No| O[HVAC already off - skip]
-    N -->|Yes| P[Set _hvac_command_pending = True\nRecord _hvac_command_time]
-    P --> Q[_paused_by_door = True\nSet HVAC off\nSend notification]
-    B -->|No| R[Cancel pending debounce\nfor this sensor]
-    R --> S{ALL sensors closed?}
-    S -->|No| T[Wait for more sensors]
-    S -->|Yes| U{_paused_by_door?}
-    U -->|No| V[Nothing to restore]
-    U -->|Yes| W[_paused_by_door = False\nRestore _pre_pause_mode\nRestore comfort temp]
-    W --> X[Start automation grace\ndefault 300s]
+    I -->|No| K{_is_within_planned_window_period?}
+    K -->|Yes| L[Skip pause\nlog 'not pausing - windows recommended']
+    K -->|No| M{_paused_by_door\nalready True?}
+    M -->|Yes| N[Already paused - skip]
+    M -->|No| O[Store _pre_pause_mode]
+    O --> P{pre_pause_mode != off?}
+    P -->|No| Q[HVAC already off - skip]
+    P -->|Yes| R[Set _hvac_command_pending = True\nRecord _hvac_command_time]
+    R --> S[_paused_by_door = True\nSet HVAC off\nSend notification]
+    B -->|No| T[Cancel pending debounce\nfor this sensor]
+    T --> U{ALL sensors closed?}
+    U -->|No| V[Wait for more sensors]
+    U -->|Yes| W{_paused_by_door?}
+    W -->|No| X[Nothing to restore]
+    W -->|Yes| Y[_paused_by_door = False\nRestore _pre_pause_mode\nRestore comfort temp]
+    Y --> Z[Start automation grace\ndefault 300s]
 ```
+
+### 4b. Grace Expiry with Planned Window Period Check
+
+When a grace period expires and a sensor is still open, `_grace_expired()` calls `_re_pause_for_open_sensor()`. Before re-pausing, the system first checks whether the open sensor is expected (i.e., within the planned window period for the current classification).
+
+```mermaid
+graph TD
+    A[Grace period expires] --> B{Any contact sensor\nstill open?}
+    B -->|No| C[Clear grace - resume normal automation]
+    B -->|Yes| D{_is_within_planned_window_period?}
+    D -->|Yes| E[Clear grace\nReturn - sensors open as expected\nno re-pause needed]
+    D -->|No| F[Re-pause HVAC\n_paused_by_door = True\nSet HVAC off\nSend notification]
+```
+
+**Key behavior:** The planned window period check in the grace expiry path prevents an annoying cycle where the system resumes HVAC after a grace period, immediately re-pauses because a window is still open, and then sends a duplicate notification — all during the time window when open windows are the intended state.
 
 ### 4a. Resume from Pause (User Action)
 
@@ -381,4 +398,4 @@ graph TD
 
 ---
 
-*Last Updated: 2026-03-20*
+*Last Updated: 2026-03-21*

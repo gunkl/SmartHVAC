@@ -70,17 +70,15 @@ def _generate(classification: DayClassification, **kwargs) -> str:
 class TestBriefingHeader:
     """The structured header should always contain key weather data."""
 
-    def test_contains_today_temps(self):
+    def test_contains_today_high(self):
         c = _make_classification("hot", today_high=95, today_low=72)
         result = _generate(c)
-        assert "95" in result
-        assert "72" in result
+        assert "95" in result  # Today's high appears in the TLDR table
 
-    def test_contains_tomorrow_temps(self):
+    def test_contains_tomorrow_high(self):
         c = _make_classification("mild", today_high=68, today_low=48, tomorrow_high=78, tomorrow_low=58)
         result = _generate(c)
-        assert "78" in result
-        assert "58" in result
+        assert "78" in result  # Tomorrow's high appears in the TLDR table
 
     def test_contains_day_type(self):
         for day_type in ("hot", "warm", "mild", "cool", "cold"):

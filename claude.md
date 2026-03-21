@@ -129,6 +129,21 @@ The briefing is the main way users interact with Climate Advisor. When making ch
 pytest tests/test_<file>.py -W error::pytest.PytestUnraisableExceptionWarning -W error::RuntimeWarning
 ```
 
+### Automation Logic Table (CRITICAL)
+
+**Decision**: The automation logic table in `docs/08-COMPUTATION-REFERENCE.md` is the definitive reference for expected behavior across all classification contexts and events.
+
+**Rules:**
+- This table MUST be updated whenever automation behavior changes (door/window handling, grace periods, classification application, occupancy, fan mode)
+- Every cell in the table must have corresponding test coverage
+- Test references are mapped in the table itself
+- Before modifying automation logic, check the table for affected cells and ensure tests exist
+
+**Key test files:**
+- `tests/test_windows_recommended_integration.py` — windows-recommended + door/window interaction
+- `tests/test_door_window.py` — pause/resume/grace mechanics
+- `tests/test_resume_from_pause.py` — resume behavior and grace recheck
+
 ### Project Memory
 
 Claude Code's built-in memory system stores project context, tooling locations, and hard-won facts so they don't have to be re-discovered every session. Claude reads memory automatically at session start.

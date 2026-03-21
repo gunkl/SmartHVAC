@@ -342,4 +342,96 @@ Complete list of all constants from `const.py` that affect runtime behavior.
 
 ---
 
-_Last Updated: 2026-03-20_
+## 16. Planned Window Period
+
+`_is_within_planned_window_period()` is a predicate in `AutomationEngine` that returns `True` when opening sensors should be treated as expected — because the current classification recommends opening windows right now.
+
+### The Three Conditions
+
+All three must be true simultaneously for the check to return `True`:
+
+| # | Condition | Details |
+|---|---|---|
+| 1 | `windows_recommended == True` | Classification set this flag at classification time — `warm` day (when `today_low` is low enough) or `mild` day (always) |
+| 2 | Current local time is within the recommended open window | `warm`: 6:00 AM – 10:00 AM; `mild`: 10:00 AM – 5:00 PM (constants: `WARM_WINDOW_OPEN_HOUR`, `WARM_WINDOW_CLOSE_HOUR`, `MILD_WINDOW_OPEN_HOUR`, `MILD_WINDOW_CLOSE_HOUR`) |
+| 3 | HVAC mode is `off` | The classification itself set HVAC to `off` for warm/mild days — if HVAC is running (e.g. classification changed to cool/heat), normal pause rules apply |
+
+### What It Suppresses
+
+When `_is_within_planned_window_period()` returns `True`, the following are suppressed:
+
+- **Pause** — `handle_door_window_open()` logs "not pausing (windows recommended)" and returns without pausing
+- **Re-pause after grace expiry** — `_grace_expired()` and `_re_pause_for_open_sensor()` clear grace and return without re-pausing
+- **Duplicate open notifications** — no notification is sent when the open sensor is expected
+
+### Where It Is Checked
+
+| Call site | Purpose |
+|---|---|
+| `handle_door_window_open()` | Blocks initial pause when sensor opens |
+| `_grace_expired()` | Blocks re-pause when grace timer fires with sensor still open |
+| `_re_pause_for_open_sensor()` | Blocks re-pause called from the grace expiry path |
+| `_compute_automation_status()` | Returns `"windows open (as planned)"` instead of a pause/warning status |
+| `_compute_next_automation_action()` | Returns `"Windows open as recommended"` in the next-action field |
+
+---
+
+## 17. Automation Logic Table
+
+This is the definitive reference for expected system behavior across all classification contexts and sensor/user events. Every cell describes what the automation engine does when a given event fires in a given classification context.
+
+### Classification Contexts
+
+| Code | Day Type | HVAC Mode | windows_recommended | Window Period |
+|------|----------|-----------|---------------------|---------------|
+| C1 | Hot | cool | False | N/A |
+| C2 | Warm | off | True | In period (6–10 AM) |
+| C3 | Warm | off | True | Outside period |
+| C4 | Warm | off | False | N/A (today_low too high) |
+| C5 | Mild | off | True | In period (10 AM – 5 PM) |
+| C6 | Cool | heat | False | N/A |
+| C7 | Cold | heat | False | N/A |
+
+### Events
+
+| Code | Event |
+|------|-------|
+| E1 | Door/window sensor opens (after debounce) |
+| E2 | All door/window sensors close |
+| E3 | Grace period expires with sensor still open |
+| E4 | Manual HVAC override during pause |
+| E5 | Fan mode change |
+| E6 | Classification changes (e.g., warm→hot) |
+| E7 | User clicks "Resume HVAC (override pause)" |
+
+### Expected Outcomes
+
+| | E1: Sensor Open | E2: All Closed | E3: Grace+Open | E4: Override | E5: Fan Change | E6: Class Change | E7: Resume |
+|---|---|---|---|---|---|---|---|
+| C1 (hot/cool) | Pause HVAC→off, notify | Resume to cool, auto grace | Re-pause, notify | Clear pause, manual grace | Fan override grace | Re-apply classification | Resume cool, manual grace |
+| **C2 (warm/off/win=T/in)** | **No pause** (planned window) | No-op (not paused) | **No re-pause** (planned) | N/A (not paused) | No grace (HVAC off) | Re-apply; if HVAC→cool/heat, normal rules apply | N/A (not paused) |
+| C3 (warm/off/win=T/out) | No pause (HVAC already off) | No-op | N/A | N/A | No grace | Re-apply | N/A |
+| C4 (warm/off/win=F) | No pause (HVAC already off) | No-op | N/A | N/A | No grace | Re-apply | N/A |
+| **C5 (mild/off/win=T/in)** | **No pause** (planned window) | No-op | **No re-pause** (planned) | N/A | No grace | Re-apply | N/A |
+| C6 (cool/heat) | Pause HVAC→off, notify | Resume to heat, auto grace | Re-pause, notify | Clear pause, manual grace | Fan override grace | Re-apply | Resume heat, manual grace |
+| C7 (cold/heat) | Pause HVAC→off, notify | Resume to heat, auto grace | Re-pause, notify | Clear pause, manual grace | Fan override grace | Re-apply | Resume heat, manual grace |
+
+**Bolded cells** have corresponding test coverage in `tests/test_windows_recommended_integration.py`.
+
+This logic table MUST be kept current for any changes to automation behavior.
+
+### Test Reference Mapping
+
+| Cell | Test File | Test Name |
+|------|-----------|-----------|
+| C2×E1 | test_windows_recommended_integration.py | test_no_pause_when_windows_recommended_warm_day |
+| C5×E1 | test_windows_recommended_integration.py | test_no_pause_when_windows_recommended_mild_day |
+| C1×E1 | test_windows_recommended_integration.py | test_pause_still_fires_for_hot_day |
+| C2×E1 (grace) | test_windows_recommended_integration.py | test_no_grace_when_windows_recommended |
+| C2×E3 | test_windows_recommended_integration.py | test_grace_expiry_no_repause_during_window_period |
+| C2→C1×E6 | test_windows_recommended_integration.py | test_classification_change_warm_to_hot_enables_pause |
+| C3×E1 | test_windows_recommended_integration.py | test_pause_fires_outside_window_period_with_active_hvac |
+
+---
+
+_Last Updated: 2026-03-21_
