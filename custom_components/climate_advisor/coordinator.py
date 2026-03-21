@@ -1377,10 +1377,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if not self._automation_enabled:
             return "disabled"
         # Check if windows are open during a planned window period (not a pause)
-        if (
-            self.automation_engine._is_within_planned_window_period()
-            and self._any_sensor_open()
-        ):
+        if self.automation_engine._is_within_planned_window_period() and self._any_sensor_open():
             return "windows open (as planned)"
         if self.automation_engine.is_paused_by_door:
             return "paused — door/window open"
@@ -1445,10 +1442,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         now_time = now.time()
 
         # Check if windows are open during planned window period
-        if (
-            self.automation_engine._is_within_planned_window_period()
-            and self._any_sensor_open()
-        ):
+        if self.automation_engine._is_within_planned_window_period() and self._any_sensor_open():
             return ("Windows open as recommended", "")
 
         # Check if automation is paused
