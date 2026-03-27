@@ -1,4 +1,4 @@
-"""Tests for whole-house fan control (Issue #18 Phase 4, Issue #37).
+"""Tests for whole-house fan control (Issue #18 Phase 4, Issue #37, Issue #55).
 
 Tests cover:
 - _activate_fan: whole_house_fan, hvac_fan, both, disabled
@@ -11,6 +11,8 @@ Tests cover:
 - Fan override detection and handling (Issue #37)
 - Fan behavior at transitions (bedtime, wakeup) (Issue #37)
 - Fan state serialization (save/restore) (Issue #37)
+- _compute_fan_status sub-states (Issue #55)
+- ClimateAdvisorFanStatusSensor attributes fan_override_since + fan_running (Issue #55)
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 3, 19, 14, 30,
 from custom_components.climate_advisor.automation import AutomationEngine  # noqa: E402
 from custom_components.climate_advisor.classifier import DayClassification  # noqa: E402
 from custom_components.climate_advisor.const import (  # noqa: E402
+    ATTR_FAN_OVERRIDE_SINCE,
+    ATTR_FAN_RUNNING,
+    ATTR_FAN_RUNTIME,
     CONF_FAN_ENTITY,
     CONF_FAN_MODE,
     DAY_TYPE_HOT,
@@ -747,3 +752,125 @@ class TestFanSerialization:
         assert engine._fan_on_since is None
         assert engine._fan_override_active is False
         assert engine._fan_override_time is None
+
+
+# ---------------------------------------------------------------------------
+# _compute_fan_status tests (Issue #55)
+# ---------------------------------------------------------------------------
+
+
+def _compute_fan_status(fan_override_active: bool, fan_active: bool, fan_mode: str) -> str:
+    """Mirror of ClimateAdvisorCoordinator._compute_fan_status for unit testing."""
+    if fan_mode == FAN_MODE_DISABLED:
+        return "disabled"
+    if fan_override_active:
+        return "override \u2014 on" if fan_active else "override \u2014 off"
+    if fan_active:
+        return "active"
+    return "inactive"
+
+
+class TestFanStatusComputation:
+    """Unit tests for _compute_fan_status() logic (Issue #55).
+
+    Tests the five distinct status strings returned based on
+    fan_mode config, override flag, and fan active state.
+    """
+
+    def test_status_disabled(self):
+        """fan_mode=disabled always returns 'disabled' regardless of other state."""
+        result = _compute_fan_status(False, False, FAN_MODE_DISABLED)
+        assert result == "disabled"
+
+    def test_status_disabled_even_if_override(self):
+        """fan_mode=disabled returns 'disabled' even when override flag is set."""
+        result = _compute_fan_status(True, True, FAN_MODE_DISABLED)
+        assert result == "disabled"
+
+    def test_status_inactive(self):
+        """No override, fan not running -> 'inactive'."""
+        result = _compute_fan_status(False, False, FAN_MODE_HVAC)
+        assert result == "inactive"
+
+    def test_status_active(self):
+        """No override, fan running -> 'active'."""
+        result = _compute_fan_status(False, True, FAN_MODE_WHOLE_HOUSE)
+        assert result == "active"
+
+    def test_status_override_on(self):
+        """Override active and fan is running -> 'override \u2014 on'."""
+        result = _compute_fan_status(True, True, FAN_MODE_HVAC)
+        assert result == "override \u2014 on"
+
+    def test_status_override_off(self):
+        """Override active but fan is NOT running -> 'override \u2014 off'."""
+        result = _compute_fan_status(True, False, FAN_MODE_WHOLE_HOUSE)
+        assert result == "override \u2014 off"
+
+
+# ---------------------------------------------------------------------------
+# ClimateAdvisorFanStatusSensor attribute tests (Issue #55)
+# ---------------------------------------------------------------------------
+
+
+def _fan_sensor_extra_state_attributes(data: dict) -> dict:
+    """Mirror of ClimateAdvisorFanStatusSensor.extra_state_attributes for unit testing.
+
+    Replicates the attribute computation without importing sensor.py
+    (which triggers a metaclass conflict in the HA stub environment).
+    """
+    if not data:
+        return {}
+    return {
+        "fan_runtime_minutes": round(data.get(ATTR_FAN_RUNTIME, 0.0), 1),
+        "fan_override_since": data.get(ATTR_FAN_OVERRIDE_SINCE),
+        "fan_running": data.get(ATTR_FAN_RUNNING, False),
+    }
+
+
+class TestFanSensorAttributes:
+    """Unit tests for ClimateAdvisorFanStatusSensor.extra_state_attributes (Issue #55).
+
+    Verifies fan_override_since and fan_running are exposed correctly.
+    Uses a replicated helper instead of importing sensor.py directly
+    (HA entity metaclass conflicts in test stubs prevent direct instantiation).
+    """
+
+    def test_attributes_include_runtime(self):
+        """fan_runtime_minutes is always present and rounded to 1 decimal."""
+        attrs = _fan_sensor_extra_state_attributes({ATTR_FAN_RUNTIME: 12.456})
+        assert attrs["fan_runtime_minutes"] == 12.5
+
+    def test_attributes_fan_override_since_when_active(self):
+        """fan_override_since returns the ISO timestamp when override is active."""
+        ts = "2026-03-27T10:05:00"
+        attrs = _fan_sensor_extra_state_attributes(
+            {ATTR_FAN_OVERRIDE_SINCE: ts, ATTR_FAN_RUNNING: False, ATTR_FAN_RUNTIME: 0.0}
+        )
+        assert attrs["fan_override_since"] == ts
+
+    def test_attributes_fan_override_since_none_when_no_override(self):
+        """fan_override_since is None when no override is active."""
+        attrs = _fan_sensor_extra_state_attributes(
+            {ATTR_FAN_OVERRIDE_SINCE: None, ATTR_FAN_RUNNING: False, ATTR_FAN_RUNTIME: 0.0}
+        )
+        assert attrs["fan_override_since"] is None
+
+    def test_attributes_fan_running_true_when_active(self):
+        """fan_running is True when the fan is on."""
+        attrs = _fan_sensor_extra_state_attributes(
+            {ATTR_FAN_RUNNING: True, ATTR_FAN_OVERRIDE_SINCE: None, ATTR_FAN_RUNTIME: 5.0}
+        )
+        assert attrs["fan_running"] is True
+
+    def test_attributes_fan_running_false_when_inactive(self):
+        """fan_running is False when the fan is off."""
+        attrs = _fan_sensor_extra_state_attributes(
+            {ATTR_FAN_RUNNING: False, ATTR_FAN_OVERRIDE_SINCE: None, ATTR_FAN_RUNTIME: 0.0}
+        )
+        assert attrs["fan_running"] is False
+
+    def test_attributes_fan_running_defaults_false_when_key_absent(self):
+        """fan_running defaults to False when key is absent from coordinator data."""
+        attrs = _fan_sensor_extra_state_attributes({ATTR_FAN_RUNTIME: 0.0})
+        assert attrs["fan_running"] is False

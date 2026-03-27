@@ -736,6 +736,14 @@ class AutomationEngine:
                     _LOGGER.warning("Activated %s fan (%s) — %s", domain, fan_entity, reason)
 
             if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+                hvac_state = self.hass.states.get(self.climate_entity)
+                hvac_mode = hvac_state.state if hvac_state else "unknown"
+                if hvac_mode == "off":
+                    _LOGGER.debug(
+                        "Activating HVAC fan-only mode while HVAC is 'off' — "
+                        "this is intentional (economizer maintain phase); "
+                        "most thermostats support fan circulation independent of heating/cooling"
+                    )
                 await self.hass.services.async_call(
                     "climate",
                     "set_fan_mode",

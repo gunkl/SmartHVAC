@@ -32,6 +32,8 @@ from .const import (
     ATTR_COMPLIANCE_SCORE,
     ATTR_CONTACT_STATUS,
     ATTR_DAY_TYPE,
+    ATTR_FAN_OVERRIDE_SINCE,
+    ATTR_FAN_RUNNING,
     ATTR_FAN_RUNTIME,
     ATTR_FAN_STATUS,
     ATTR_LAST_ACTION_REASON,
@@ -772,6 +774,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_LAST_ACTION_REASON: self.automation_engine._last_action_reason,
             ATTR_FAN_STATUS: self._compute_fan_status(),
             ATTR_FAN_RUNTIME: self.automation_engine._get_fan_runtime_minutes(),
+            ATTR_FAN_OVERRIDE_SINCE: self.automation_engine._fan_override_time,
+            ATTR_FAN_RUNNING: self.automation_engine._fan_active,
             ATTR_CONTACT_STATUS: self._compute_contact_status(),
         }
 
@@ -1401,7 +1405,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if fan_mode == FAN_MODE_DISABLED:
             return "disabled"
         if ae._fan_override_active:
-            return "override"
+            return "override — on" if ae._fan_active else "override — off"
         if ae._fan_active:
             return "active"
         return "inactive"

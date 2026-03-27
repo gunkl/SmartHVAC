@@ -135,6 +135,14 @@ The briefing is the main way users interact with Climate Advisor. When making ch
 pytest tests/test_<file>.py -W error::pytest.PytestUnraisableExceptionWarning -W error::RuntimeWarning
 ```
 
+### Pre-commit Hooks
+
+This project uses `pre-commit` with ruff, ruff-format, check-yaml, check-json, end-of-file-fixer, and trailing-whitespace hooks. The ruff hook runs with `--fix`, which can modify files during commit.
+
+**After running `ruff check --fix` or `ruff format`**, always re-stage modified files before committing. Otherwise pre-commit will fail because the staged content differs from the working copy.
+
+A `tools/validate.py` hook also runs on `custom_components/climate_advisor/` files.
+
 ### Automation Logic Table (CRITICAL)
 
 **Decision**: The automation logic table in `docs/08-COMPUTATION-REFERENCE.md` is the definitive reference for expected behavior across all classification contexts and events.

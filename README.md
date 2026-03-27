@@ -170,7 +170,7 @@ All settings are editable after setup, plus advanced options:
 | `sensor.climate_advisor_occupancy` | Current occupancy mode (home/away/vacation/guest) |
 | `sensor.climate_advisor_last_action_time` | Timestamp of last HVAC action |
 | `sensor.climate_advisor_last_action_reason` | Why the last HVAC action was taken |
-| `sensor.climate_advisor_fan_status` | Fan status (active/inactive/override/disabled) |
+| `sensor.climate_advisor_fan_status` | Fan status (active / inactive / override — on / override — off / disabled); attributes include `fan_override_since` and `fan_running` |
 | `sensor.climate_advisor_contact_status` | Door/window sensor summary with per-sensor details |
 
 ### Switches (1)

@@ -23,6 +23,8 @@ from .const import (
     ATTR_COMPLIANCE_SCORE,
     ATTR_CONTACT_STATUS,
     ATTR_DAY_TYPE,
+    ATTR_FAN_OVERRIDE_SINCE,
+    ATTR_FAN_RUNNING,
     ATTR_FAN_RUNTIME,
     ATTR_FAN_STATUS,
     ATTR_LAST_ACTION_REASON,
@@ -289,6 +291,8 @@ class ClimateAdvisorFanStatusSensor(ClimateAdvisorBaseSensor):
             return {}
         return {
             "fan_runtime_minutes": round(self.coordinator.data.get(ATTR_FAN_RUNTIME, 0.0), 1),
+            "fan_override_since": self.coordinator.data.get(ATTR_FAN_OVERRIDE_SINCE),
+            "fan_running": self.coordinator.data.get(ATTR_FAN_RUNNING, False),
         }
 
 

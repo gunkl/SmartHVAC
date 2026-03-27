@@ -209,6 +209,25 @@ At bedtime, both the fan and the economizer are explicitly shut down before the 
 
 Clearing the override flag at these transitions means the integration will not skip fan activation during the next economizer cycle just because the user had manually adjusted the fan during the previous day.
 
+### 9d. Fan Status Sensor Values
+
+The `sensor.climate_advisor_fan_status` entity exposes one of five state strings:
+
+| Sensor state | Meaning |
+|---|---|
+| `disabled` | Fan control is not configured (`fan_mode = disabled`) |
+| `inactive` | Fan is off; integration is in control |
+| `active` | Fan is on; integration activated it (economizer maintain phase) |
+| `override — on` | Fan is on; user turned it on manually — integration standing down |
+| `override — off` | Fan is off; user turned it off manually — integration standing down |
+
+The sensor also exposes these attributes:
+- `fan_runtime_minutes` — minutes since the integration last activated the fan (0.0 when inactive or in override)
+- `fan_override_since` — ISO timestamp of when the manual override was detected (`null` when no override is active)
+- `fan_running` — boolean; `true` when the fan is physically running regardless of who controls it
+
+**HVAC-off + fan-on (fan-only circulation):** When the economizer enters the maintain phase, HVAC mode is set to `off` but `climate.set_fan_mode: on` is called separately. This is the intended "fan-only circulation" mode — most thermostats support running the fan for air circulation independently of heating or cooling. A `DEBUG`-level log entry is emitted whenever the integration activates the HVAC fan while the thermostat reports `hvac_mode = off`.
+
 ---
 
 ## 10. Door/Window HVAC Pause
