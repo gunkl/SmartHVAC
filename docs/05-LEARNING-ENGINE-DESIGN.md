@@ -141,12 +141,13 @@ The `get_compliance_summary()` method returns a dict suitable for sensor attribu
 **Unit:** minutes
 **What it means:** Time during the day when the indoor temperature was outside the configured
 comfort range (`comfort_heat`–`comfort_cool` settings, default 70–75°F).
-**How it accumulates:** The coordinator checks indoor temperature every 30 minutes. Each
-30-minute poll window where the temperature is outside the comfort range adds 30 minutes
-to `comfort_violations_minutes`.
-**Maximum per day:** 1440 minutes (48 polls × 30 min). A reading of 1410 min means the indoor
-temperature was outside the comfort range for 47 out of 48 measurement windows (~98% of the day).
-This is expected when the HVAC is off and the home drifts outside the configured range.
+**How it accumulates:** The coordinator checks indoor temperature on every data update.
+Each check adds the **actual elapsed time** since the previous check (capped at 30 minutes)
+when the temperature is outside the comfort range. This prevents double-counting when the
+coordinator is refreshed more frequently than the 30-minute scheduled interval (e.g., after
+door/window events or automation revisits).
+**Maximum per day:** 1440 minutes (24 hours). Values above 1440 in historical records
+indicate data recorded before v0.2.x (fixed-30-min bug) and should be disregarded.
 
 #### Comfort Score (`comfort_score`)
 **Formula:** `1 − (sum of daily violation_minutes / (days_recorded × 1440))`

@@ -259,3 +259,11 @@ class TestComfortScoreCalculation:
         summary = engine.get_compliance_summary()
         assert "comfort_score" in summary
         assert 0.0 <= summary["comfort_score"] <= 1.0
+
+    def test_score_clamped_at_zero_when_violations_exceed_minutes(self, tmp_path):
+        """Score must not go negative even with over-inflated historical data."""
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        engine._state.records.append({"comfort_violations_minutes": 5000, "day_type": "mild"})
+        summary = engine.get_compliance_summary()
+        assert summary["comfort_score"] >= 0.0

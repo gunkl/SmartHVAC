@@ -141,6 +141,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         # HVAC runtime tracking
         self._hvac_on_since: datetime | None = None
+        self._last_violation_check: datetime | None = None
 
         # Occupancy state machine
         self._occupancy_mode: str = OCCUPANCY_HOME
@@ -707,12 +708,18 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             if forecast.current_indoor_temp is not None:
                 self._indoor_temp_history.append((now_str, forecast.current_indoor_temp))
 
-                # Track comfort violations (~30 min per update cycle)
+                # Track comfort violations (elapsed minutes since last check, capped at 30)
                 if self._today_record:
                     comfort_low = self.config.get("comfort_heat", 70)
                     comfort_high = self.config.get("comfort_cool", 75)
+                    now = dt_util.now()
+                    if self._last_violation_check is not None:
+                        elapsed_minutes = min((now - self._last_violation_check).total_seconds() / 60, 30.0)
+                    else:
+                        elapsed_minutes = 30.0
+                    self._last_violation_check = now
                     if forecast.current_indoor_temp < comfort_low or forecast.current_indoor_temp > comfort_high:
-                        self._today_record.comfort_violations_minutes += 30.0
+                        self._today_record.comfort_violations_minutes += elapsed_minutes
 
             # Check economizer opportunity (window cooling on hot days)
             if self._today_record:
@@ -1104,6 +1111,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._today_record = None
         self._briefing_sent_today = False
         self._hvac_on_since = None
+        self._last_violation_check = None
         self._outdoor_temp_history.clear()
         self._indoor_temp_history.clear()
         self._hourly_forecast_temps.clear()

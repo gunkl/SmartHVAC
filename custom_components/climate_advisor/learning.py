@@ -420,7 +420,7 @@ class LearningEngine:
         # Comfort score (% of time in comfort range)
         total_day_minutes = len(recent) * 1440  # Minutes in a day
         total_violations = sum(r.get("comfort_violations_minutes", 0) for r in recent)
-        comfort_score = 1 - (total_violations / total_day_minutes) if total_day_minutes else 1.0
+        comfort_score = max(0.0, 1 - (total_violations / total_day_minutes)) if total_day_minutes else 1.0
 
         return {
             "status": "active",
