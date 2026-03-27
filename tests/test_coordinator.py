@@ -21,7 +21,6 @@ if "homeassistant" not in sys.modules:
 
 from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.const import (
-    CONF_EMAIL_NOTIFY,
     DAY_TYPE_COLD,
     DAY_TYPE_HOT,
     ECONOMIZER_EVENING_START_HOUR,
@@ -234,7 +233,8 @@ class TestBriefingNotificationSplit:
             "setback_cool": 80,
             "wake_time": "06:30",
             "sleep_time": "22:30",
-            CONF_EMAIL_NOTIFY: True,
+            "push_briefing": True,
+            "email_briefing": True,
         }
         if config_overrides:
             config.update(config_overrides)
@@ -308,7 +308,7 @@ class TestBriefingNotificationSplit:
         """When email is disabled, only push notification is sent."""
         mock_classify.return_value = _make_classification()
 
-        coord = self._make_coordinator_stub({CONF_EMAIL_NOTIFY: False})
+        coord = self._make_coordinator_stub({"email_briefing": False})
         coord._get_forecast = AsyncMock(return_value=MagicMock())
         coord._get_hourly_forecast_data = AsyncMock(return_value=[])
         asyncio.run(coord._async_send_briefing(MagicMock()))

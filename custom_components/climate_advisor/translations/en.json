@@ -11,8 +11,7 @@
           "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
           "setback_heat": "Away/Sleep Heating Temperature (\u00b0F)",
           "setback_cool": "Away/Sleep Cooling Temperature (\u00b0F)",
-          "notify_service": "Notification Service",
-          "email_notify": "Also send email notifications"
+          "notify_service": "Notification Service"
         },
         "data_description": {
           "weather_entity": "The weather integration Climate Advisor uses for forecasts and outdoor conditions.",
@@ -21,8 +20,7 @@
           "comfort_cool": "Target temperature when cooling and someone is home.",
           "setback_heat": "Lower temperature used when away or sleeping to save energy.",
           "setback_cool": "Higher temperature used when away or sleeping to save energy.",
-          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone).",
-          "email_notify": "When enabled, Climate Advisor also sends all notifications via the send_email service."
+          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone)."
         }
       },
       "temperature_sources": {
@@ -65,9 +63,7 @@
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
           "sensor_debounce_seconds": "Open delay before pausing HVAC (minutes)",
           "manual_grace_seconds": "Pause after manual thermostat change (minutes)",
-          "manual_grace_notify": "Notify on manual override",
           "automation_grace_seconds": "Cooldown after automated change (minutes)",
-          "automation_grace_notify": "Notify on automation actions",
           "fan_mode": "Fan Control Mode",
           "fan_entity": "Fan Entity"
         },
@@ -76,16 +72,14 @@
           "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard.",
           "sensor_debounce_seconds": "How long a door/window must stay open before HVAC is paused. Prevents brief openings (like walking through a door) from triggering a pause.",
           "manual_grace_seconds": "How long to wait after you manually adjust the thermostat before Climate Advisor resumes automation. Gives you time to enjoy your chosen temperature.",
-          "manual_grace_notify": "Send a notification when Climate Advisor detects that you manually changed the thermostat.",
           "automation_grace_seconds": "How long to wait after Climate Advisor makes an automated change before allowing another one. Prevents rapid back-to-back adjustments.",
-          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat.",
           "fan_mode": "How to control fans for ventilation. 'Whole house fan' controls a dedicated fan entity. 'HVAC fan' uses the thermostat fan mode. 'Both' uses both.",
           "fan_entity": "The fan or switch entity to control (only needed for whole house fan mode)."
         }
       },
       "occupancy": {
         "title": "Occupancy Awareness",
-        "description": "Configure toggle entities that tell Climate Advisor who is home. All fields are optional — leave blank if you don't use that feature.",
+        "description": "Configure toggle entities that tell Climate Advisor who is home. All fields are optional \u2014 leave blank if you don't use that feature.",
         "data": {
           "home_toggle_entity": "Home/Away Toggle",
           "home_toggle_invert": "Invert Home Toggle",
@@ -99,7 +93,7 @@
           "home_toggle_invert": "Enable if your toggle reports ON when you're away and OFF when you're home.",
           "vacation_toggle_entity": "An entity that indicates vacation mode. When active, a deeper temperature setback is applied for extended energy savings.",
           "vacation_toggle_invert": "Enable if your toggle reports ON when you're NOT on vacation.",
-          "guest_toggle_entity": "An entity that indicates guests are present. Overrides vacation and away modes — comfort temperature is maintained.",
+          "guest_toggle_entity": "An entity that indicates guests are present. Overrides vacation and away modes \u2014 comfort temperature is maintained.",
           "guest_toggle_invert": "Enable if your toggle reports ON when guests are NOT present."
         }
       },
@@ -127,6 +121,20 @@
   "options": {
     "step": {
       "init": {
+        "title": "Climate Advisor Options",
+        "description": "Select a section to configure.",
+        "menu_options": {
+          "core": "Core Settings",
+          "temperature_sources": "Temperature Sources",
+          "sensors": "Sensors & Fan",
+          "occupancy": "Occupancy",
+          "schedule": "Schedule",
+          "notifications": "Notifications",
+          "advanced": "Learning & Behavior",
+          "save": "Save & Close"
+        }
+      },
+      "core": {
         "title": "Core Settings",
         "description": "Configure the main entities and temperature setpoints that Climate Advisor uses.",
         "data": {
@@ -136,8 +144,7 @@
           "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
           "setback_heat": "Away/Sleep Heating Temperature (\u00b0F)",
           "setback_cool": "Away/Sleep Cooling Temperature (\u00b0F)",
-          "notify_service": "Notification Service",
-          "email_notify": "Also send email notifications"
+          "notify_service": "Notification Service"
         },
         "data_description": {
           "weather_entity": "The weather integration Climate Advisor uses for forecasts and outdoor conditions.",
@@ -146,8 +153,7 @@
           "comfort_cool": "Target temperature when cooling and someone is home.",
           "setback_heat": "Lower temperature used when away or sleeping to save energy.",
           "setback_cool": "Higher temperature used when away or sleeping to save energy.",
-          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone).",
-          "email_notify": "When enabled, Climate Advisor also sends all notifications via the send_email service."
+          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone)."
         }
       },
       "temperature_sources": {
@@ -167,16 +173,14 @@
         }
       },
       "sensors": {
-        "title": "Door & Window Sensors",
-        "description": "Select binary sensors that Climate Advisor should monitor. When a sensor indicates a door or window is open, HVAC will be paused to avoid wasting energy.\n\nYou can select individual sensors or a binary sensor group entity that bundles multiple sensors together.\n\nThe polarity toggle controls how sensor states are interpreted. Most sensors use the Home Assistant standard where 'on' means open (unsafe). If your sensors report the opposite, enable the invert toggle.",
+        "title": "Sensors & Fan",
+        "description": "Configure door/window sensors and fan control. When a sensor indicates a door or window is open, HVAC will be paused to avoid wasting energy.",
         "data": {
           "door_window_sensors": "Door/Window Sensors",
           "sensor_polarity_inverted": "Invert sensor polarity (on = closed instead of open)",
           "sensor_debounce_seconds": "Open delay before pausing HVAC (minutes)",
           "manual_grace_seconds": "Pause after manual thermostat change (minutes)",
-          "manual_grace_notify": "Notify on manual override",
           "automation_grace_seconds": "Cooldown after automated change (minutes)",
-          "automation_grace_notify": "Notify on automation actions",
           "fan_mode": "Fan Control Mode",
           "fan_entity": "Fan Entity"
         },
@@ -185,16 +189,14 @@
           "sensor_polarity_inverted": "Enable this if your sensors report 'on' when closed and 'off' when open, which is the opposite of the Home Assistant standard.",
           "sensor_debounce_seconds": "How long a door/window must stay open before HVAC is paused. Prevents brief openings from triggering a pause.",
           "manual_grace_seconds": "How long to wait after you manually adjust the thermostat before Climate Advisor resumes automation.",
-          "manual_grace_notify": "Send a notification when Climate Advisor detects that you manually changed the thermostat.",
           "automation_grace_seconds": "How long to wait after Climate Advisor makes an automated change before allowing another one.",
-          "automation_grace_notify": "Send a notification whenever Climate Advisor automatically adjusts your thermostat.",
           "fan_mode": "How to control fans for ventilation. 'Whole house fan' controls a dedicated fan entity. 'HVAC fan' uses the thermostat fan mode. 'Both' uses both.",
           "fan_entity": "The fan or switch entity to control (only needed for whole house fan mode)."
         }
       },
       "occupancy": {
         "title": "Occupancy Awareness",
-        "description": "Configure toggle entities that tell Climate Advisor who is home. All fields are optional — leave blank if you don't use that feature.",
+        "description": "Configure toggle entities that tell Climate Advisor who is home. All fields are optional \u2014 leave blank if you don't use that feature.",
         "data": {
           "home_toggle_entity": "Home/Away Toggle",
           "home_toggle_invert": "Invert Home Toggle",
@@ -208,7 +210,7 @@
           "home_toggle_invert": "Enable if your toggle reports ON when you're away and OFF when you're home.",
           "vacation_toggle_entity": "An entity that indicates vacation mode. When active, a deeper temperature setback is applied for extended energy savings.",
           "vacation_toggle_invert": "Enable if your toggle reports ON when you're NOT on vacation.",
-          "guest_toggle_entity": "An entity that indicates guests are present. Overrides vacation and away modes — comfort temperature is maintained.",
+          "guest_toggle_entity": "An entity that indicates guests are present. Overrides vacation and away modes \u2014 comfort temperature is maintained.",
           "guest_toggle_invert": "Enable if your toggle reports ON when guests are NOT present."
         }
       },
@@ -224,6 +226,34 @@
           "wake_time": "When your household typically wakes up. Climate Advisor starts warming or cooling to your comfort temperature before this time.",
           "sleep_time": "When your household typically goes to bed. Climate Advisor switches to your away/sleep temperature at this time.",
           "briefing_time": "When to deliver the daily climate briefing notification with the day's forecast and HVAC plan."
+        }
+      },
+      "notifications": {
+        "title": "Notification Preferences",
+        "description": "Choose which notifications you receive and on which channels. Push notifications go to your mobile app; email notifications go via the send_email service.",
+        "data": {
+          "push_briefing": "Push: Daily briefing summary",
+          "push_door_window_pause": "Push: HVAC paused (door/window open)",
+          "push_occupancy_home": "Push: Welcome home",
+          "manual_grace_notify": "Push: Manual grace period expired",
+          "automation_grace_notify": "Push: Automation grace period expired",
+          "email_briefing": "Email: Full daily briefing",
+          "email_door_window_pause": "Email: HVAC paused (door/window open)",
+          "email_grace_expired": "Email: Grace period expired",
+          "email_grace_repause": "Email: Re-paused (door still open)",
+          "email_occupancy_home": "Email: Welcome home"
+        },
+        "data_description": {
+          "push_briefing": "Send a short TLDR briefing to your phone each morning.",
+          "push_door_window_pause": "Send a push notification when HVAC is paused because a door or window has been open too long.",
+          "push_occupancy_home": "Send a push notification when someone arrives home and comfort temperature is restored.",
+          "manual_grace_notify": "Send a push notification when the manual grace period expires and normal sensor behavior resumes.",
+          "automation_grace_notify": "Send a push notification when the automation grace period expires.",
+          "email_briefing": "Send the full daily briefing via email with complete forecast and plan details.",
+          "email_door_window_pause": "Send an email when HVAC is paused due to an open door or window.",
+          "email_grace_expired": "Send an email when a grace period expires and normal sensor behavior resumes.",
+          "email_grace_repause": "Send an email when HVAC is re-paused because a door/window is still open after grace expired.",
+          "email_occupancy_home": "Send an email when someone arrives home."
         }
       },
       "advanced": {

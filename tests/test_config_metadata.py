@@ -13,7 +13,14 @@ EXPECTED_KEYS = {
     "setback_heat",
     "setback_cool",
     "notify_service",
-    "email_notify",
+    "push_briefing",
+    "push_door_window_pause",
+    "push_occupancy_home",
+    "email_briefing",
+    "email_door_window_pause",
+    "email_grace_expired",
+    "email_grace_repause",
+    "email_occupancy_home",
     "outdoor_temp_source",
     "indoor_temp_source",
     "door_window_sensors",
@@ -38,7 +45,7 @@ EXPECTED_KEYS = {
     "guest_toggle_invert",
 }
 
-VALID_CATEGORIES = {"core", "sensors", "fan", "schedule", "advanced", "occupancy"}
+VALID_CATEGORIES = {"core", "sensors", "fan", "schedule", "advanced", "occupancy", "notifications"}
 
 
 class TestConfigMetadataHasAllKeys:

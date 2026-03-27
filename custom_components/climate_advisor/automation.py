@@ -18,7 +18,6 @@ from .classifier import DayClassification
 from .const import (
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
-    CONF_EMAIL_NOTIFY,
     CONF_FAN_ENTITY,
     CONF_FAN_MODE,
     CONF_MANUAL_GRACE_NOTIFY,
@@ -112,14 +111,17 @@ class AutomationEngine:
         self._resumed_from_pause: bool = False
         self._sensor_check_callback: Any | None = None  # Set by coordinator: returns True if any sensor open
 
-    async def _notify(self, message: str, title: str) -> None:
-        """Send a notification via the configured service, plus email if enabled."""
+    async def _notify(self, message: str, title: str, notification_type: str) -> None:
+        """Send a notification via configured channels, filtered by per-event preferences."""
         if self.dry_run:
             _LOGGER.info("[DRY RUN] Would send notification: %s — %s", title, message)
             return
+        push_key = f"push_{notification_type}"
+        email_key = f"email_{notification_type}"
         service_name = self.notify_service.split(".")[-1] if "." in self.notify_service else self.notify_service
-        await self.hass.services.async_call("notify", service_name, {"message": message, "title": title})
-        if self.config.get(CONF_EMAIL_NOTIFY, True):
+        if self.config.get(push_key, True):
+            await self.hass.services.async_call("notify", service_name, {"message": message, "title": title})
+        if self.config.get(email_key, True):
             await self.hass.services.async_call("notify", "send_email", {"message": message, "title": title})
 
     @property
@@ -397,6 +399,7 @@ class AutomationEngine:
                 f"{debounce_minutes} minutes. "
                 f"Heating/cooling will resume when it's closed.",
                 "Climate Advisor",
+                notification_type="door_window_pause",
             )
 
     async def handle_all_doors_windows_closed(self) -> None:
@@ -535,6 +538,7 @@ class AutomationEngine:
                         f"({duration // 60} minutes). HVAC will now respond "
                         f"normally to door/window sensor changes.",
                         "Climate Advisor",
+                        notification_type="grace_expired",
                     )
                 )
 
@@ -575,6 +579,7 @@ class AutomationEngine:
             await self._notify(
                 "Grace period expired but a door/window is still open. HVAC has been paused again.",
                 "Climate Advisor",
+                notification_type="grace_repause",
             )
         elif state and state.state == "off":
             # HVAC already off, just set the pause flag
@@ -624,6 +629,7 @@ class AutomationEngine:
         await self._notify(
             "🏠 Welcome home! Restoring comfort temperature. Should feel normal in about 20–30 minutes.",
             "Climate Advisor",
+            notification_type="occupancy_home",
         )
 
     async def handle_occupancy_vacation(self) -> None:

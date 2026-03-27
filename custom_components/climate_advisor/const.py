@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.2.4"
+VERSION = "0.3.0"
 
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
@@ -41,7 +41,19 @@ CONF_MANUAL_GRACE_PERIOD = "manual_grace_seconds"
 CONF_MANUAL_GRACE_NOTIFY = "manual_grace_notify"
 CONF_AUTOMATION_GRACE_PERIOD = "automation_grace_seconds"
 CONF_AUTOMATION_GRACE_NOTIFY = "automation_grace_notify"
-CONF_EMAIL_NOTIFY = "email_notify"
+CONF_EMAIL_NOTIFY = "email_notify"  # DEPRECATED — replaced by per-event toggles in v8
+
+# Per-event push notification toggles (Issue #50)
+CONF_PUSH_BRIEFING = "push_briefing"
+CONF_PUSH_DOOR_WINDOW_PAUSE = "push_door_window_pause"
+CONF_PUSH_OCCUPANCY_HOME = "push_occupancy_home"
+
+# Per-event email notification toggles (Issue #50)
+CONF_EMAIL_BRIEFING = "email_briefing"
+CONF_EMAIL_DOOR_WINDOW_PAUSE = "email_door_window_pause"
+CONF_EMAIL_GRACE_EXPIRED = "email_grace_expired"
+CONF_EMAIL_GRACE_REPAUSE = "email_grace_repause"
+CONF_EMAIL_OCCUPANCY_HOME = "email_occupancy_home"
 
 # Debounce and grace period defaults (seconds)
 DEFAULT_SENSOR_DEBOUNCE_SECONDS = 300  # 5 minutes
@@ -206,11 +218,6 @@ CONFIG_METADATA = {
         "description": "The HA notify service used for alerts and briefings (e.g., notify.mobile_app).",
         "category": "core",
     },
-    "email_notify": {
-        "label": "Email Notifications",
-        "description": "When enabled, briefings and alerts are also sent via the send_email notify service.",
-        "category": "core",
-    },
     "outdoor_temp_source": {
         "label": "Outdoor Temp Source",
         "description": (
@@ -262,9 +269,9 @@ CONFIG_METADATA = {
         "display_transform": "seconds_to_minutes",
     },
     "manual_grace_notify": {
-        "label": "Manual Grace Notifications",
-        "description": "Send a notification when the manual grace period expires and normal sensor behavior resumes.",
-        "category": "sensors",
+        "label": "Push: Manual Grace Expired",
+        "description": "Push notification when manual grace expires and normal behavior resumes.",
+        "category": "notifications",
     },
     "automation_grace_seconds": {
         "label": "Automation Grace Period (minutes)",
@@ -276,9 +283,9 @@ CONFIG_METADATA = {
         "display_transform": "seconds_to_minutes",
     },
     "automation_grace_notify": {
-        "label": "Automation Grace Notifications",
-        "description": "Send a notification when the automation grace period expires.",
-        "category": "sensors",
+        "label": "Push: Automation Grace Expired",
+        "description": "Send a push notification when the automation grace period expires.",
+        "category": "notifications",
     },
     "fan_mode": {
         "label": "Fan Control Mode",
@@ -376,5 +383,45 @@ CONFIG_METADATA = {
             " When disabled, AC actively cools to comfort when outdoor temps drop."
         ),
         "category": "advanced",
+    },
+    "push_briefing": {
+        "label": "Push: Daily Briefing",
+        "description": "Send a short TLDR briefing summary to your phone each morning.",
+        "category": "notifications",
+    },
+    "push_door_window_pause": {
+        "label": "Push: HVAC Paused",
+        "description": "Send a push notification when HVAC is paused due to an open door or window.",
+        "category": "notifications",
+    },
+    "push_occupancy_home": {
+        "label": "Push: Welcome Home",
+        "description": "Send a push notification when someone arrives home and comfort temperature is restored.",
+        "category": "notifications",
+    },
+    "email_briefing": {
+        "label": "Email: Full Daily Briefing",
+        "description": "Send the full daily briefing via email with complete forecast and plan details.",
+        "category": "notifications",
+    },
+    "email_door_window_pause": {
+        "label": "Email: HVAC Paused",
+        "description": "Send an email when HVAC is paused due to an open door or window.",
+        "category": "notifications",
+    },
+    "email_grace_expired": {
+        "label": "Email: Grace Period Expired",
+        "description": "Send an email when a grace period expires and normal sensor behavior resumes.",
+        "category": "notifications",
+    },
+    "email_grace_repause": {
+        "label": "Email: Re-paused",
+        "description": "Email when HVAC is re-paused because a door/window is still open after grace.",
+        "category": "notifications",
+    },
+    "email_occupancy_home": {
+        "label": "Email: Welcome Home",
+        "description": "Send an email when someone arrives home and comfort temperature is restored.",
+        "category": "notifications",
     },
 }

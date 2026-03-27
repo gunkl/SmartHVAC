@@ -25,13 +25,21 @@ from .api import API_VIEWS
 from .const import (
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
+    CONF_EMAIL_BRIEFING,
+    CONF_EMAIL_DOOR_WINDOW_PAUSE,
+    CONF_EMAIL_GRACE_EXPIRED,
+    CONF_EMAIL_GRACE_REPAUSE,
     CONF_EMAIL_NOTIFY,
+    CONF_EMAIL_OCCUPANCY_HOME,
     CONF_GUEST_TOGGLE,
     CONF_GUEST_TOGGLE_INVERT,
     CONF_HOME_TOGGLE,
     CONF_HOME_TOGGLE_INVERT,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
+    CONF_PUSH_BRIEFING,
+    CONF_PUSH_DOOR_WINDOW_PAUSE,
+    CONF_PUSH_OCCUPANCY_HOME,
     CONF_SENSOR_DEBOUNCE,
     CONF_SENSOR_POLARITY_INVERTED,
     CONF_VACATION_TOGGLE,
@@ -167,6 +175,24 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         new_data.setdefault(CONF_GUEST_TOGGLE_INVERT, False)
         hass.config_entries.async_update_entry(config_entry, data=new_data, version=7)
         _LOGGER.info("Migration to version 7 complete")
+
+    if config_entry.version == 7:
+        _LOGGER.info("Migrating Climate Advisor config entry from version 7 to 8")
+        new_data = {**config_entry.data}
+        # Replace global email_notify with per-event toggles
+        old_email = new_data.pop(CONF_EMAIL_NOTIFY, True)
+        # Email toggles inherit from old global setting
+        new_data.setdefault(CONF_EMAIL_BRIEFING, old_email)
+        new_data.setdefault(CONF_EMAIL_DOOR_WINDOW_PAUSE, old_email)
+        new_data.setdefault(CONF_EMAIL_GRACE_EXPIRED, old_email)
+        new_data.setdefault(CONF_EMAIL_GRACE_REPAUSE, old_email)
+        new_data.setdefault(CONF_EMAIL_OCCUPANCY_HOME, old_email)
+        # Push toggles all default True (preserves current behavior)
+        new_data.setdefault(CONF_PUSH_BRIEFING, True)
+        new_data.setdefault(CONF_PUSH_DOOR_WINDOW_PAUSE, True)
+        new_data.setdefault(CONF_PUSH_OCCUPANCY_HOME, True)
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=8)
+        _LOGGER.info("Migration to version 8 complete")
 
     return True
 

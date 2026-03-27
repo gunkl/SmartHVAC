@@ -139,7 +139,7 @@ class TestDryRunPrimitiveGuards:
         engine.dry_run = True
 
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
-            asyncio.run(engine._notify("Hello world", "Test Title"))
+            asyncio.run(engine._notify("Hello world", "Test Title", notification_type="door_window_pause"))
 
         engine.hass.services.async_call.assert_not_called()
         dry_run_msgs = [r.message for r in caplog.records if "[DRY RUN]" in r.message]
@@ -162,7 +162,7 @@ class TestNormalModeAllowsCalls:
 
         asyncio.run(engine._set_hvac_mode("heat", reason="normal"))
         asyncio.run(engine._set_temperature(70, reason="normal"))
-        asyncio.run(engine._notify("msg", "title"))
+        asyncio.run(engine._notify("msg", "title", notification_type="door_window_pause"))
 
         # 3 climate calls + 2 notify calls (notify + send_email default)
         assert engine.hass.services.async_call.call_count >= 3

@@ -1,4 +1,4 @@
-"""Tests for config flow — multi-step wizard and entry migration.
+"""Tests for config flow — multi-step wizard, entry migration, and menu-based options.
 
 Covers:
 - Initial config flow wizard (async_step_user → temperature_sources → conditional
@@ -8,7 +8,9 @@ Covers:
 - _needs_entity() and _entity_selector_for_source() helper logic
 - v1→v2 migration: outdoor_temp_entity present → sensor/input_number source;
   absent → weather_service (and indoor equivalent)
-- Options flow multi-step data accumulation (existing tests retained)
+- v7→v8 migration: email_notify → per-event notification toggles
+- Options flow menu navigation (Issue #50)
+- Notifications step — per-event push/email toggles
 """
 
 from __future__ import annotations
@@ -55,12 +57,31 @@ FULL_CONFIG = {
     "manual_grace_notify": False,
     "automation_grace_seconds": 300,
     "automation_grace_notify": True,
-    "email_notify": True,
+    "push_briefing": True,
+    "push_door_window_pause": True,
+    "push_occupancy_home": True,
+    "email_briefing": True,
+    "email_door_window_pause": True,
+    "email_grace_expired": True,
+    "email_grace_repause": True,
+    "email_occupancy_home": True,
     "wake_time": "06:30:00",
     "sleep_time": "22:30:00",
     "briefing_time": "06:00:00",
     "learning_enabled": True,
     "aggressive_savings": False,
+    "home_toggle_entity": None,
+    "home_toggle_invert": False,
+    "vacation_toggle_entity": None,
+    "vacation_toggle_invert": False,
+    "guest_toggle_entity": None,
+    "guest_toggle_invert": False,
+}
+
+# v7 config (before migration to v8) — has email_notify instead of per-event toggles
+FULL_CONFIG_V7 = {
+    **{k: v for k, v in FULL_CONFIG.items() if not k.startswith(("push_", "email_"))},
+    "email_notify": True,
 }
 
 
@@ -249,9 +270,7 @@ class TestConfigFlowDataAccumulation:
                 "sensor_polarity_inverted": False,
                 "sensor_debounce_seconds": 300,
                 "manual_grace_seconds": 1800,
-                "manual_grace_notify": False,
                 "automation_grace_seconds": 300,
-                "automation_grace_notify": True,
             }
         )
 
@@ -599,7 +618,8 @@ class TestMigrationViaRealFunction:
 
         def capture_update(entry, *, data, version):
             # The migration calls this multiple times (once per version hop).
-            # Merge successive calls so we see the final state.
+            # Replace with latest so we see the final state (not accumulated).
+            written_data.clear()
             written_data.update(data)
             written_version.append(version)
             # Also update entry.data so subsequent migration steps see the new data
@@ -647,14 +667,15 @@ class TestMigrationViaRealFunction:
         data, _ = self._call_migrate(v1)
         assert data["indoor_temp_source"] == "input_number"
 
-    def test_v1_chain_migration_produces_v5_fields(self):
-        """A v1 entry should chain through all migrations and gain v4+v5 fields."""
+    def test_v1_chain_migration_produces_v8_fields(self):
+        """A v1 entry should chain through all migrations and gain v8 fields."""
         from custom_components.climate_advisor.const import (
             CONF_AUTOMATION_GRACE_NOTIFY,
             CONF_AUTOMATION_GRACE_PERIOD,
-            CONF_EMAIL_NOTIFY,
+            CONF_EMAIL_BRIEFING,
             CONF_MANUAL_GRACE_NOTIFY,
             CONF_MANUAL_GRACE_PERIOD,
+            CONF_PUSH_BRIEFING,
             CONF_SENSOR_DEBOUNCE,
             DEFAULT_AUTOMATION_GRACE_SECONDS,
             DEFAULT_MANUAL_GRACE_SECONDS,
@@ -670,13 +691,14 @@ class TestMigrationViaRealFunction:
         assert data.get(CONF_MANUAL_GRACE_NOTIFY) is False
         assert data.get(CONF_AUTOMATION_GRACE_PERIOD) == DEFAULT_AUTOMATION_GRACE_SECONDS
         assert data.get(CONF_AUTOMATION_GRACE_NOTIFY) is True
-        # v5 field
-        assert data.get(CONF_EMAIL_NOTIFY) is True
+        # v8 fields (per-event notification toggles)
+        assert data.get(CONF_EMAIL_BRIEFING) is True
+        assert data.get(CONF_PUSH_BRIEFING) is True
+        # email_notify should be removed after v7→v8 migration
+        assert "email_notify" not in data
 
     def test_v4_entry_migrates_to_v5_with_email_notify(self):
         """A v4 entry should gain email_notify=True via v4→v5 migration."""
-        from custom_components.climate_advisor.const import CONF_EMAIL_NOTIFY
-
         v4 = {
             "weather_entity": "weather.forecast_home",
             "climate_entity": "climate.living_room",
@@ -684,22 +706,222 @@ class TestMigrationViaRealFunction:
         }
         data, ok = self._call_migrate(v4, start_version=4)
         assert ok is True
-        assert data.get(CONF_EMAIL_NOTIFY) is True
+        # After chaining through v5→v6→v7→v8, per-event toggles should exist
+        assert data.get("email_briefing") is True
+        assert data.get("push_briefing") is True
 
-    def test_already_v5_entry_migrates_to_v6(self):
-        """A v5 entry should migrate to v6 (weather entity validation)."""
-        v5 = dict(FULL_CONFIG)
+    def test_already_v5_entry_migrates_through_to_v8(self):
+        """A v5 entry should migrate through v6, v7, v8."""
+        v5 = dict(FULL_CONFIG_V7)
         entry = _make_config_entry(v5, version=5)
         hass = _make_hass()
+
+        versions_seen = []
+
+        def capture_update(entry, *, data, version):
+            versions_seen.append(version)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
 
         from custom_components.climate_advisor import async_migrate_entry
 
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
-        # v5→v6 migration should have been applied
-        hass.config_entries.async_update_entry.assert_called_once()
-        call_kwargs = hass.config_entries.async_update_entry.call_args
-        assert call_kwargs[1]["version"] == 6
+        assert 8 in versions_seen
+
+
+# ---------------------------------------------------------------------------
+# v7→v8 migration — per-event notification toggles (Issue #50)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV7ToV8:
+    """Test the v7→v8 migration that replaces email_notify with per-event toggles."""
+
+    def _run_v7_to_v8_migration(self, v7_data: dict) -> dict:
+        """Apply v7→v8 migration logic and return the resulting data dict."""
+        new_data = dict(v7_data)
+        old_email = new_data.pop("email_notify", True)
+        new_data.setdefault("email_briefing", old_email)
+        new_data.setdefault("email_door_window_pause", old_email)
+        new_data.setdefault("email_grace_expired", old_email)
+        new_data.setdefault("email_grace_repause", old_email)
+        new_data.setdefault("email_occupancy_home", old_email)
+        new_data.setdefault("push_briefing", True)
+        new_data.setdefault("push_door_window_pause", True)
+        new_data.setdefault("push_occupancy_home", True)
+        return new_data
+
+    def test_email_true_migrates_all_email_on(self):
+        """Old email_notify=True → all per-event email toggles True."""
+        result = self._run_v7_to_v8_migration({"email_notify": True})
+        assert result["email_briefing"] is True
+        assert result["email_door_window_pause"] is True
+        assert result["email_grace_expired"] is True
+        assert result["email_grace_repause"] is True
+        assert result["email_occupancy_home"] is True
+
+    def test_email_false_migrates_all_email_off(self):
+        """Old email_notify=False → all per-event email toggles False."""
+        result = self._run_v7_to_v8_migration({"email_notify": False})
+        assert result["email_briefing"] is False
+        assert result["email_door_window_pause"] is False
+        assert result["email_grace_expired"] is False
+        assert result["email_grace_repause"] is False
+        assert result["email_occupancy_home"] is False
+
+    def test_push_toggles_always_default_true(self):
+        """Push toggles default to True regardless of old email_notify value."""
+        for old_email in (True, False):
+            result = self._run_v7_to_v8_migration({"email_notify": old_email})
+            assert result["push_briefing"] is True
+            assert result["push_door_window_pause"] is True
+            assert result["push_occupancy_home"] is True
+
+    def test_old_email_notify_key_removed(self):
+        """email_notify key should not be in migrated data."""
+        result = self._run_v7_to_v8_migration({"email_notify": True})
+        assert "email_notify" not in result
+
+    def test_missing_email_notify_defaults_to_true(self):
+        """When email_notify is absent, defaults to True (all email toggles on)."""
+        result = self._run_v7_to_v8_migration({})
+        assert result["email_briefing"] is True
+        assert result["email_occupancy_home"] is True
+
+    def test_existing_fields_preserved(self):
+        """Non-notification fields survive migration unchanged."""
+        v7 = {
+            "email_notify": False,
+            "weather_entity": "weather.forecast_home",
+            "comfort_heat": 72,
+        }
+        result = self._run_v7_to_v8_migration(v7)
+        assert result["weather_entity"] == "weather.forecast_home"
+        assert result["comfort_heat"] == 72
+
+    def test_via_real_function(self):
+        """Run the real async_migrate_entry for a v7 entry."""
+        from custom_components.climate_advisor import async_migrate_entry
+
+        v7 = dict(FULL_CONFIG_V7)
+        entry = _make_config_entry(v7, version=7)
+        hass = _make_hass()
+
+        final_data = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert "email_notify" not in final_data
+        assert final_data["email_briefing"] is True
+        assert final_data["push_briefing"] is True
+
+
+# ---------------------------------------------------------------------------
+# Options flow — menu navigation (Issue #50)
+# ---------------------------------------------------------------------------
+
+
+class TestOptionsFlowMenu:
+    """Test that the options flow menu is correctly structured."""
+
+    def test_menu_options_list(self):
+        """Verify the OPTIONS_MENU_OPTIONS constant has all expected sections."""
+        from custom_components.climate_advisor.config_flow import OPTIONS_MENU_OPTIONS
+
+        expected = [
+            "core",
+            "temperature_sources",
+            "sensors",
+            "occupancy",
+            "schedule",
+            "notifications",
+            "advanced",
+            "save",
+        ]
+        assert expected == OPTIONS_MENU_OPTIONS
+
+    def test_menu_has_notifications(self):
+        """Notifications must be a menu option."""
+        from custom_components.climate_advisor.config_flow import OPTIONS_MENU_OPTIONS
+
+        assert "notifications" in OPTIONS_MENU_OPTIONS
+
+    def test_menu_has_save(self):
+        """Save & Close must be a menu option."""
+        from custom_components.climate_advisor.config_flow import OPTIONS_MENU_OPTIONS
+
+        assert "save" in OPTIONS_MENU_OPTIONS
+
+    def test_save_merges_updates(self):
+        """Simulate the save step merging accumulated updates."""
+        original = dict(FULL_CONFIG)
+        updates = {"comfort_heat": 72, "learning_enabled": False}
+        merged = {**original, **updates}
+        assert merged["comfort_heat"] == 72
+        assert merged["learning_enabled"] is False
+        # Untouched fields preserved
+        assert merged["weather_entity"] == "weather.forecast_home"
+
+
+# ---------------------------------------------------------------------------
+# Options flow — notifications step (Issue #50)
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationsStep:
+    """Test the notification preferences step of the options flow."""
+
+    NOTIFICATION_KEYS = [
+        "push_briefing",
+        "push_door_window_pause",
+        "push_occupancy_home",
+        "manual_grace_notify",
+        "automation_grace_notify",
+        "email_briefing",
+        "email_door_window_pause",
+        "email_grace_expired",
+        "email_grace_repause",
+        "email_occupancy_home",
+    ]
+
+    def test_all_notification_keys_in_full_config(self):
+        """FULL_CONFIG includes all notification toggle keys."""
+        for key in self.NOTIFICATION_KEYS:
+            assert key in FULL_CONFIG, f"Missing notification key in FULL_CONFIG: {key}"
+
+    def test_notifications_defaults_from_config(self):
+        """Defaults for notification toggles should come from config entry data."""
+        config = dict(FULL_CONFIG)
+        config["push_briefing"] = False
+        config["email_occupancy_home"] = False
+        # Simulate reading defaults
+        assert config.get("push_briefing", True) is False
+        assert config.get("email_occupancy_home", True) is False
+        # Unmodified keys default True
+        assert config.get("email_briefing", True) is True
+
+    def test_notifications_saves_to_updates(self):
+        """Submitted notification values accumulate in _updates dict."""
+        updates: dict = {}
+        user_input = {
+            "push_briefing": False,
+            "email_grace_expired": False,
+            "manual_grace_notify": True,
+        }
+        updates.update(user_input)
+        assert updates["push_briefing"] is False
+        assert updates["email_grace_expired"] is False
+        assert updates["manual_grace_notify"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -710,8 +932,8 @@ class TestMigrationViaRealFunction:
 class TestOptionsFlowMultiStep:
     """Test that the multi-step options flow merges data correctly."""
 
-    def test_step_init_merges_core_settings(self):
-        """Step 1 (init) collects core entity and temperature settings."""
+    def test_step_core_merges_core_settings(self):
+        """Core step collects entity and temperature settings."""
         original = dict(FULL_CONFIG)
         step1_input = {
             "weather_entity": "weather.home",
@@ -730,11 +952,11 @@ class TestOptionsFlowMultiStep:
         assert merged["notify_service"] == "notify.notify"
 
     def test_multi_step_accumulation(self):
-        """All 5 steps accumulate into a single merged result."""
+        """All menu sections accumulate into a single merged result."""
         original = dict(FULL_CONFIG)
         updates = {}
 
-        # Step 1: init
+        # Core
         updates.update(
             {
                 "weather_entity": "weather.home",
@@ -747,7 +969,7 @@ class TestOptionsFlowMultiStep:
             }
         )
 
-        # Step 2: temperature_sources
+        # Temperature sources
         updates.update(
             {
                 "outdoor_temp_source": "sensor",
@@ -756,20 +978,18 @@ class TestOptionsFlowMultiStep:
             }
         )
 
-        # Step 3: sensors
+        # Sensors
         updates.update(
             {
                 "door_window_sensors": ["binary_sensor.back_door"],
                 "sensor_polarity_inverted": True,
                 "sensor_debounce_seconds": 600,
                 "manual_grace_seconds": 900,
-                "manual_grace_notify": True,
                 "automation_grace_seconds": 1800,
-                "automation_grace_notify": False,
             }
         )
 
-        # Step 4: schedule
+        # Schedule
         updates.update(
             {
                 "wake_time": "07:00:00",
@@ -778,7 +998,17 @@ class TestOptionsFlowMultiStep:
             }
         )
 
-        # Step 5: advanced
+        # Notifications
+        updates.update(
+            {
+                "push_briefing": False,
+                "email_briefing": False,
+                "manual_grace_notify": True,
+                "automation_grace_notify": False,
+            }
+        )
+
+        # Advanced
         updates.update(
             {
                 "learning_enabled": False,
@@ -800,6 +1030,8 @@ class TestOptionsFlowMultiStep:
         assert merged["wake_time"] == "07:00:00"
         assert merged["sleep_time"] == "23:00:00"
         assert merged["briefing_time"] == "06:30:00"
+        assert merged["push_briefing"] is False
+        assert merged["email_briefing"] is False
         assert merged["learning_enabled"] is False
         assert merged["aggressive_savings"] is True
 

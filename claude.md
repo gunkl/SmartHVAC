@@ -13,6 +13,12 @@ Claude is a development assistant that helps with:
 
 **Important**: The human developer remains responsible for all code review, commits, and architectural decisions.
 
+## Skills
+
+The following custom skills are available to enhance your workflow:
+
+- **[end-of-session](.claude/skills/end-of-session.md)** — Review conversation and suggest additions to CLAUDE.md files that will improve future sessions. Use this when wrapping up work for the day to capture lessons learned and preferences.
+
 ## Critical Project Decisions
 
 ### Modular Architecture (DO NOT CHANGE)

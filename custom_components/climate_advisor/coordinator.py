@@ -44,7 +44,6 @@ from .const import (
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
     CONF_AUTOMATION_GRACE_PERIOD,
-    CONF_EMAIL_NOTIFY,
     CONF_FAN_ENTITY,
     CONF_FAN_MODE,
     CONF_GUEST_TOGGLE,
@@ -1047,13 +1046,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # Send push notification — short TLDR summary
         _notify_svc = self.config["notify_service"]
         _notify_name = _notify_svc.split(".")[-1] if "." in _notify_svc else _notify_svc
-        await self.hass.services.async_call(
-            "notify",
-            _notify_name,
-            {"message": briefing_short, "title": "🏠 Your Home Climate Plan for Today"},
-        )
+        if self.config.get("push_briefing", True):
+            await self.hass.services.async_call(
+                "notify",
+                _notify_name,
+                {"message": briefing_short, "title": "🏠 Your Home Climate Plan for Today"},
+            )
         # Send email — full briefing
-        if self.config.get(CONF_EMAIL_NOTIFY, True):
+        if self.config.get("email_briefing", True):
             await self.hass.services.async_call(
                 "notify",
                 "send_email",

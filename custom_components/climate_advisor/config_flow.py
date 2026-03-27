@@ -14,7 +14,11 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
-    CONF_EMAIL_NOTIFY,
+    CONF_EMAIL_BRIEFING,
+    CONF_EMAIL_DOOR_WINDOW_PAUSE,
+    CONF_EMAIL_GRACE_EXPIRED,
+    CONF_EMAIL_GRACE_REPAUSE,
+    CONF_EMAIL_OCCUPANCY_HOME,
     CONF_FAN_ENTITY,
     CONF_FAN_MODE,
     CONF_GUEST_TOGGLE,
@@ -23,6 +27,9 @@ from .const import (
     CONF_HOME_TOGGLE_INVERT,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
+    CONF_PUSH_BRIEFING,
+    CONF_PUSH_DOOR_WINDOW_PAUSE,
+    CONF_PUSH_OCCUPANCY_HOME,
     CONF_SENSOR_DEBOUNCE,
     CONF_SENSOR_POLARITY_INVERTED,
     CONF_VACATION_TOGGLE,
@@ -69,6 +76,18 @@ INDOOR_SOURCE_OPTIONS = [
     selector.SelectOptionDict(value=TEMP_SOURCE_INPUT_NUMBER, label="Input helper (input_number)"),
 ]
 
+# Menu options for the options flow (Issue #50)
+OPTIONS_MENU_OPTIONS = [
+    "core",
+    "temperature_sources",
+    "sensors",
+    "occupancy",
+    "schedule",
+    "notifications",
+    "advanced",
+    "save",
+]
+
 
 def _needs_entity(source: str) -> bool:
     """Return True if the source type requires an entity selection."""
@@ -86,7 +105,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 7
+    VERSION = 8
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -139,7 +158,6 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         selector.NumberSelectorConfig(min=75, max=90, step=1, unit_of_measurement="°F", mode="slider")
                     ),
                     vol.Required("notify_service", default="notify.notify"): selector.TextSelector(),
-                    vol.Optional(CONF_EMAIL_NOTIFY, default=True): selector.BooleanSelector(),
                 }
             ),
             errors=errors,
@@ -261,7 +279,6 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode="box",
                         )
                     ),
-                    vol.Optional(CONF_MANUAL_GRACE_NOTIFY, default=False): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_AUTOMATION_GRACE_PERIOD, default=DEFAULT_AUTOMATION_GRACE_SECONDS // 60
                     ): selector.NumberSelector(
@@ -273,7 +290,6 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode="box",
                         )
                     ),
-                    vol.Optional(CONF_AUTOMATION_GRACE_NOTIFY, default=True): selector.BooleanSelector(),
                     vol.Optional(CONF_FAN_MODE, default=DEFAULT_FAN_MODE): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=FAN_MODE_OPTIONS,
@@ -361,14 +377,25 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
-    """Handle options for Climate Advisor."""
+    """Handle options for Climate Advisor — menu-based navigation (Issue #50)."""
 
     def __init__(self) -> None:
         """Initialize the options flow."""
         self._updates: dict[str, Any] = {}
 
+    # ---- Menu ----
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
-        """Step 1: Core entities and temperature setpoints."""
+        """Show the options menu."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=OPTIONS_MENU_OPTIONS,
+        )
+
+    # ---- Core Settings ----
+
+    async def async_step_core(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
+        """Core entities and temperature setpoints."""
         errors: dict[str, str] = {}
         if user_input is not None:
             # Validate notify_service format
@@ -383,12 +410,12 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
 
             if not errors:
                 self._updates.update(user_input)
-                return await self.async_step_temperature_sources()
+                return await self.async_step_init()
 
         current = self.config_entry.data
 
         return self.async_show_form(
-            step_id="init",
+            step_id="core",
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -451,19 +478,17 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         "notify_service",
                         default=current.get("notify_service", "notify.notify"),
                     ): selector.TextSelector(),
-                    vol.Optional(
-                        CONF_EMAIL_NOTIFY,
-                        default=current.get(CONF_EMAIL_NOTIFY, True),
-                    ): selector.BooleanSelector(),
                 }
             ),
             errors=errors,
         )
 
+    # ---- Temperature Sources ----
+
     async def async_step_temperature_sources(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Step 2: Temperature source selection."""
+        """Temperature source selection."""
         if user_input is not None:
             self._updates.update(user_input)
             _LOGGER.debug(
@@ -471,7 +496,7 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                 user_input.get("outdoor_temp_source"),
                 user_input.get("indoor_temp_source"),
             )
-            return await self.async_step_sensors()
+            return await self.async_step_init()
 
         current = self.config_entry.data
 
@@ -509,15 +534,17 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
+    # ---- Sensors & Fan ----
+
     async def async_step_sensors(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
-        """Step 3: Door/window sensor configuration."""
+        """Door/window sensor and fan configuration."""
         if user_input is not None:
             # Convert minutes (UI) to seconds (internal storage)
             for key in (CONF_SENSOR_DEBOUNCE, CONF_MANUAL_GRACE_PERIOD, CONF_AUTOMATION_GRACE_PERIOD):
                 if key in user_input:
                     user_input[key] = int(user_input[key] * 60)
             self._updates.update(user_input)
-            return await self.async_step_occupancy()
+            return await self.async_step_init()
 
         current = self.config_entry.data
 
@@ -563,10 +590,6 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         )
                     ),
                     vol.Optional(
-                        CONF_MANUAL_GRACE_NOTIFY,
-                        default=current.get(CONF_MANUAL_GRACE_NOTIFY, False),
-                    ): selector.BooleanSelector(),
-                    vol.Optional(
                         CONF_AUTOMATION_GRACE_PERIOD,
                         default=current.get(CONF_AUTOMATION_GRACE_PERIOD, DEFAULT_AUTOMATION_GRACE_SECONDS) // 60,
                     ): selector.NumberSelector(
@@ -578,10 +601,6 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                             mode="box",
                         )
                     ),
-                    vol.Optional(
-                        CONF_AUTOMATION_GRACE_NOTIFY,
-                        default=current.get(CONF_AUTOMATION_GRACE_NOTIFY, True),
-                    ): selector.BooleanSelector(),
                     vol.Optional(
                         CONF_FAN_MODE,
                         default=current.get(CONF_FAN_MODE, DEFAULT_FAN_MODE),
@@ -599,11 +618,13 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
+    # ---- Occupancy ----
+
     async def async_step_occupancy(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
-        """Step 4: Occupancy awareness configuration."""
+        """Occupancy awareness configuration."""
         if user_input is not None:
             self._updates.update(user_input)
-            return await self.async_step_schedule()
+            return await self.async_step_init()
 
         current = self.config_entry.data
 
@@ -645,11 +666,13 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
+    # ---- Schedule ----
+
     async def async_step_schedule(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
-        """Step 5: Daily schedule configuration."""
+        """Daily schedule configuration."""
         if user_input is not None:
             self._updates.update(user_input)
-            return await self.async_step_advanced()
+            return await self.async_step_init()
 
         current = self.config_entry.data
         _time_selector = selector.TimeSelector()
@@ -674,18 +697,75 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
-    async def async_step_advanced(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
-        """Step 5: Learning and behavior settings."""
+    # ---- Notifications (Issue #50) ----
+
+    async def async_step_notifications(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Notification preferences — per-event push and email toggles."""
         if user_input is not None:
             self._updates.update(user_input)
-            # Final step — merge all updates and save
-            self.hass.config_entries.async_update_entry(
-                self.config_entry,
-                data={**self.config_entry.data, **self._updates},
-            )
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            _LOGGER.info("Options updated — reload triggered")
-            return self.async_create_entry(title="", data={})
+            return await self.async_step_init()
+
+        current = self.config_entry.data
+
+        return self.async_show_form(
+            step_id="notifications",
+            data_schema=vol.Schema(
+                {
+                    # Push notification toggles
+                    vol.Optional(
+                        CONF_PUSH_BRIEFING,
+                        default=current.get(CONF_PUSH_BRIEFING, True),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_PUSH_DOOR_WINDOW_PAUSE,
+                        default=current.get(CONF_PUSH_DOOR_WINDOW_PAUSE, True),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_PUSH_OCCUPANCY_HOME,
+                        default=current.get(CONF_PUSH_OCCUPANCY_HOME, True),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_MANUAL_GRACE_NOTIFY,
+                        default=current.get(CONF_MANUAL_GRACE_NOTIFY, False),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_AUTOMATION_GRACE_NOTIFY,
+                        default=current.get(CONF_AUTOMATION_GRACE_NOTIFY, True),
+                    ): selector.BooleanSelector(),
+                    # Email notification toggles
+                    vol.Optional(
+                        CONF_EMAIL_BRIEFING,
+                        default=current.get(CONF_EMAIL_BRIEFING, True),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_EMAIL_DOOR_WINDOW_PAUSE,
+                        default=current.get(CONF_EMAIL_DOOR_WINDOW_PAUSE, True),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_EMAIL_GRACE_EXPIRED,
+                        default=current.get(CONF_EMAIL_GRACE_EXPIRED, True),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_EMAIL_GRACE_REPAUSE,
+                        default=current.get(CONF_EMAIL_GRACE_REPAUSE, True),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_EMAIL_OCCUPANCY_HOME,
+                        default=current.get(CONF_EMAIL_OCCUPANCY_HOME, True),
+                    ): selector.BooleanSelector(),
+                }
+            ),
+        )
+
+    # ---- Advanced ----
+
+    async def async_step_advanced(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
+        """Learning and behavior settings."""
+        if user_input is not None:
+            self._updates.update(user_input)
+            return await self.async_step_init()
 
         current = self.config_entry.data
 
@@ -704,3 +784,15 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                 }
             ),
         )
+
+    # ---- Save & Close ----
+
+    async def async_step_save(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
+        """Merge all updates and save."""
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            data={**self.config_entry.data, **self._updates},
+        )
+        await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+        _LOGGER.info("Options updated — reload triggered")
+        return self.async_create_entry(title="", data={})
