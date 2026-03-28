@@ -77,9 +77,11 @@ FULL_CONFIG = {
     "guest_toggle_entity": None,
     "guest_toggle_invert": False,
     "temp_unit": "fahrenheit",
+    "welcome_home_debounce_seconds": 3600,
 }
 
-FULL_CONFIG_V8 = {k: v for k, v in FULL_CONFIG.items() if k != "temp_unit"}
+FULL_CONFIG_V9 = {k: v for k, v in FULL_CONFIG.items() if k != "welcome_home_debounce_seconds"}
+FULL_CONFIG_V8 = {k: v for k, v in FULL_CONFIG_V9.items() if k != "temp_unit"}
 
 # v7 config (before migration to v8) — has email_notify instead of per-event toggles
 FULL_CONFIG_V7 = {
@@ -715,8 +717,8 @@ class TestMigrationViaRealFunction:
         assert data.get("email_briefing") is True
         assert data.get("push_briefing") is True
 
-    def test_already_v5_entry_migrates_through_to_v9(self):
-        """A v5 entry should migrate through v6, v7, v8, v9."""
+    def test_already_v5_entry_migrates_through_to_v10(self):
+        """A v5 entry should migrate through v6, v7, v8, v9, v10."""
         v5 = dict(FULL_CONFIG_V7)
         entry = _make_config_entry(v5, version=5)
         hass = _make_hass()
@@ -736,6 +738,7 @@ class TestMigrationViaRealFunction:
         assert result is True
         assert 8 in versions_seen
         assert 9 in versions_seen
+        assert 10 in versions_seen
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +893,7 @@ class TestMigrationV8ToV9:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 9
+        assert entry.version == 10
 
     def test_chain_from_v1_includes_temp_unit(self):
         """v1 entry chains through all migrations and ends up with temp_unit."""
@@ -922,7 +925,100 @@ class TestMigrationV8ToV9:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 9
+        assert entry.version == 10
+
+
+# ---------------------------------------------------------------------------
+# v9→v10 migration — welcome home debounce (Issue #59)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV9ToV10:
+    """Tests for config entry migration from version 9 to version 10."""
+
+    def _run_v9_to_v10_migration(self, v9_data: dict) -> dict:
+        """Inline replication of v9→v10 migration logic for isolated testing."""
+        new_data = {**v9_data}
+        new_data.setdefault("welcome_home_debounce_seconds", 3600)
+        return new_data
+
+    def test_debounce_added_with_default(self):
+        """v9 data without debounce key gets welcome_home_debounce_seconds=3600."""
+        result = self._run_v9_to_v10_migration(dict(FULL_CONFIG_V9))
+        assert result["welcome_home_debounce_seconds"] == 3600
+
+    def test_existing_debounce_not_overwritten(self):
+        """If key already exists, setdefault preserves it."""
+        v9_with_debounce = {**FULL_CONFIG_V9, "welcome_home_debounce_seconds": 0}
+        result = self._run_v9_to_v10_migration(v9_with_debounce)
+        assert result["welcome_home_debounce_seconds"] == 0
+
+    def test_other_fields_preserved(self):
+        """All existing v9 fields survive migration unchanged."""
+        result = self._run_v9_to_v10_migration(dict(FULL_CONFIG_V9))
+        for key in FULL_CONFIG_V9:
+            assert result[key] == FULL_CONFIG_V9[key], f"Field {key!r} changed unexpectedly"
+
+    def test_only_debounce_added(self):
+        """Migration adds exactly one key."""
+        result = self._run_v9_to_v10_migration(dict(FULL_CONFIG_V9))
+        new_keys = set(result) - set(FULL_CONFIG_V9)
+        assert new_keys == {"welcome_home_debounce_seconds"}
+
+    def test_via_real_function_v9_entry(self):
+        """Real async_migrate_entry() adds welcome_home_debounce_seconds to a v9 entry."""
+        import asyncio
+
+        from custom_components.climate_advisor import async_migrate_entry
+
+        v9 = dict(FULL_CONFIG_V9)
+        entry = _make_config_entry(v9, version=9)
+        hass = _make_hass()
+        final_data: dict = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.clear()
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert final_data.get("welcome_home_debounce_seconds") == 3600
+        assert entry.version == 10
+
+    def test_chain_from_v1_includes_debounce(self):
+        """v1 entry chains through all migrations and ends up with welcome_home_debounce_seconds."""
+        import asyncio
+
+        from custom_components.climate_advisor import async_migrate_entry
+
+        v1_data = {
+            "weather_entity": "weather.forecast_home",
+            "climate_entity": "climate.thermostat",
+            "notify_service": "notify.mobile_app",
+            "comfort_heat": 70,
+            "comfort_cool": 75,
+            "setback_heat": 60,
+            "setback_cool": 80,
+        }
+        entry = _make_config_entry(v1_data, version=1)
+        hass = _make_hass()
+        final_data: dict = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.clear()
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert final_data.get("welcome_home_debounce_seconds") == 3600
+        assert final_data.get("temp_unit") == "fahrenheit"
+        assert entry.version == 10
 
 
 # ---------------------------------------------------------------------------

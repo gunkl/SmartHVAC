@@ -45,6 +45,7 @@ CONF_MANUAL_GRACE_PERIOD = "manual_grace_seconds"
 CONF_MANUAL_GRACE_NOTIFY = "manual_grace_notify"
 CONF_AUTOMATION_GRACE_PERIOD = "automation_grace_seconds"
 CONF_AUTOMATION_GRACE_NOTIFY = "automation_grace_notify"
+CONF_WELCOME_HOME_DEBOUNCE = "welcome_home_debounce_seconds"
 CONF_EMAIL_NOTIFY = "email_notify"  # DEPRECATED — replaced by per-event toggles in v8
 
 # Per-event push notification toggles (Issue #50)
@@ -63,6 +64,7 @@ CONF_EMAIL_OCCUPANCY_HOME = "email_occupancy_home"
 DEFAULT_SENSOR_DEBOUNCE_SECONDS = 300  # 5 minutes
 DEFAULT_MANUAL_GRACE_SECONDS = 1800  # 30 minutes
 DEFAULT_AUTOMATION_GRACE_SECONDS = 300  # 5 minutes
+DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS = 3600  # 60 minutes
 OCCUPANCY_SETBACK_MINUTES = 15
 MAX_CONTINUOUS_RUNTIME_HOURS = 3
 
@@ -356,6 +358,14 @@ CONFIG_METADATA = {
     "guest_toggle_invert": {
         "label": "Invert Guest Toggle",
         "description": "Enable if your toggle reports ON when guests are NOT present.",
+        "category": "occupancy",
+    },
+    "welcome_home_debounce_seconds": {
+        "label": "Welcome Home Quiet Period (minutes)",
+        "description": (
+            "Minimum time between welcome home notifications. If someone leaves and returns"
+            " within this window, the notification is suppressed. Set to 0 to always notify."
+        ),
         "category": "occupancy",
     },
     "wake_time": {

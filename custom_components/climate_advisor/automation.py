@@ -23,10 +23,12 @@ from .const import (
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
     CONF_SENSOR_DEBOUNCE,
+    CONF_WELCOME_HOME_DEBOUNCE,
     DAY_TYPE_HOT,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS,
     ECONOMIZER_EVENING_END_HOUR,
     ECONOMIZER_EVENING_START_HOUR,
     ECONOMIZER_MORNING_END_HOUR,
@@ -37,9 +39,12 @@ from .const import (
     FAN_MODE_HVAC,
     FAN_MODE_WHOLE_HOUSE,
     REVISIT_DELAY_SECONDS,
+    TEMP_SOURCE_CLIMATE_FALLBACK,
+    TEMP_SOURCE_INPUT_NUMBER,
+    TEMP_SOURCE_SENSOR,
     VACATION_SETBACK_EXTRA,
 )
-from .temperature import format_temp, format_temp_delta, from_fahrenheit
+from .temperature import format_temp, format_temp_delta, from_fahrenheit, to_fahrenheit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,6 +116,9 @@ class AutomationEngine:
         # Resume-from-pause tracking (Issue #47)
         self._resumed_from_pause: bool = False
         self._sensor_check_callback: Any | None = None  # Set by coordinator: returns True if any sensor open
+
+        # Welcome home notification debounce (Issue #59)
+        self._last_welcome_home_notified: datetime | None = None
 
     async def _notify(self, message: str, title: str, notification_type: str) -> None:
         """Send a notification via configured channels, filtered by per-event preferences."""
@@ -648,7 +656,36 @@ class AutomationEngine:
         if c.hvac_mode in ("heat", "cool"):
             await self._set_temperature_for_mode(c, reason=f"occupancy home — restoring {c.hvac_mode} comfort")
 
-        # Notify with estimated recovery time
+        # Check 1: Temperature proximity — skip notification if house already near comfort.
+        indoor_temp = self._get_indoor_temp_f()
+        if indoor_temp is not None and c.hvac_mode in ("heat", "cool"):
+            comfort = self.config["comfort_heat"] if c.hvac_mode == "heat" else self.config["comfort_cool"]
+            setback = self.config["setback_heat"] if c.hvac_mode == "heat" else self.config["setback_cool"]
+            if abs(indoor_temp - comfort) < abs(indoor_temp - setback):
+                _LOGGER.info(
+                    "Welcome home notification suppressed — indoor %.1f\u00b0F already near comfort %.1f\u00b0F"
+                    " (dist_comfort=%.1f < dist_setback=%.1f)",
+                    indoor_temp,
+                    comfort,
+                    abs(indoor_temp - comfort),
+                    abs(indoor_temp - setback),
+                )
+                self._last_welcome_home_notified = dt_util.now()
+                return
+
+        # Check 2: Debounce — skip notification if one was sent recently.
+        debounce_seconds = self.config.get(CONF_WELCOME_HOME_DEBOUNCE, DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS)
+        if debounce_seconds > 0 and self._last_welcome_home_notified is not None:
+            elapsed = (dt_util.now() - self._last_welcome_home_notified).total_seconds()
+            if elapsed < debounce_seconds:
+                _LOGGER.info(
+                    "Welcome home notification suppressed — debounce active (%.0fs elapsed, window=%ds)",
+                    elapsed,
+                    debounce_seconds,
+                )
+                return
+
+        self._last_welcome_home_notified = dt_util.now()
         await self._notify(
             "🏠 Welcome home! Restoring comfort temperature. Should feel normal in about 20–30 minutes.",
             "Climate Advisor",
@@ -956,6 +993,30 @@ class AutomationEngine:
             )
         _LOGGER.info("Economizer deactivated: outdoor=%s", format_temp(outdoor_temp, unit))
 
+    def _get_indoor_temp_f(self) -> float | None:
+        """Read indoor temperature in °F from the configured source."""
+        source = self.config.get("indoor_temp_source", TEMP_SOURCE_CLIMATE_FALLBACK)
+        unit = self.config.get("temp_unit", "fahrenheit")
+        if source in (TEMP_SOURCE_SENSOR, TEMP_SOURCE_INPUT_NUMBER):
+            entity_id = self.config.get("indoor_temp_entity")
+            if entity_id:
+                state = self.hass.states.get(entity_id)
+                if state:
+                    try:
+                        return to_fahrenheit(float(state.state), unit)
+                    except (ValueError, TypeError):
+                        _LOGGER.warning(
+                            "Indoor temp entity %s has non-numeric state %r; skipping proximity check",
+                            entity_id,
+                            state.state,
+                        )
+            return None
+        climate_state = self.hass.states.get(self.climate_entity)
+        if climate_state:
+            temp = climate_state.attributes.get("current_temperature")
+            return to_fahrenheit(float(temp), unit) if temp is not None else None
+        return None
+
     def restore_state(self, state: dict[str, Any]) -> None:
         """Restore automation state from persisted data.
 
@@ -975,6 +1036,14 @@ class AutomationEngine:
         self._fan_on_since = state.get("fan_on_since")
         self._fan_override_active = state.get("fan_override_active", False)
         self._fan_override_time = state.get("fan_override_time")
+        last_notified = state.get("last_welcome_home_notified")
+        if last_notified:
+            try:
+                self._last_welcome_home_notified = datetime.fromisoformat(last_notified)
+            except (ValueError, TypeError):
+                self._last_welcome_home_notified = None
+        else:
+            self._last_welcome_home_notified = None
         # Grace timers cannot be restored — clear on restart
         self._grace_active = False
         self._last_resume_source = None
@@ -1008,6 +1077,9 @@ class AutomationEngine:
             "fan_on_since": self._fan_on_since,
             "fan_override_active": self._fan_override_active,
             "fan_override_time": self._fan_override_time,
+            "last_welcome_home_notified": (
+                self._last_welcome_home_notified.isoformat() if self._last_welcome_home_notified else None
+            ),
             "current_classification": (
                 {
                     "day_type": self._current_classification.day_type,

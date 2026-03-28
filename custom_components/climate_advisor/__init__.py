@@ -45,9 +45,11 @@ from .const import (
     CONF_TEMP_UNIT,
     CONF_VACATION_TOGGLE,
     CONF_VACATION_TOGGLE_INVERT,
+    CONF_WELCOME_HOME_DEBOUNCE,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS,
     DOMAIN,
     PANEL_FRONTEND_PATH,
     PANEL_URL,
@@ -202,6 +204,13 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         new_data.setdefault(CONF_TEMP_UNIT, "fahrenheit")
         hass.config_entries.async_update_entry(config_entry, data=new_data, version=9)
         _LOGGER.info("Migration to version 9 complete")
+
+    if config_entry.version == 9:
+        _LOGGER.info("Migrating Climate Advisor config entry from version 9 to 10")
+        new_data = {**config_entry.data}
+        new_data.setdefault(CONF_WELCOME_HOME_DEBOUNCE, DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS)
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=10)
+        _LOGGER.info("Migration to version 10 complete")
 
     return True
 

@@ -86,7 +86,8 @@
           "vacation_toggle_entity": "Vacation Mode Toggle",
           "vacation_toggle_invert": "Invert Vacation Toggle",
           "guest_toggle_entity": "Guest Mode Toggle",
-          "guest_toggle_invert": "Invert Guest Toggle"
+          "guest_toggle_invert": "Invert Guest Toggle",
+          "welcome_home_debounce_seconds": "Welcome Home Quiet Period (minutes)"
         },
         "data_description": {
           "home_toggle_entity": "An entity (input_boolean, switch, etc.) that indicates whether someone is home. ON = home, OFF = away.",
@@ -94,7 +95,8 @@
           "vacation_toggle_entity": "An entity that indicates vacation mode. When active, a deeper temperature setback is applied for extended energy savings.",
           "vacation_toggle_invert": "Enable if your toggle reports ON when you're NOT on vacation.",
           "guest_toggle_entity": "An entity that indicates guests are present. Overrides vacation and away modes \u2014 comfort temperature is maintained.",
-          "guest_toggle_invert": "Enable if your toggle reports ON when guests are NOT present."
+          "guest_toggle_invert": "Enable if your toggle reports ON when guests are NOT present.",
+          "welcome_home_debounce_seconds": "Minimum time between welcome home notifications. If you leave and return within this window, the notification is suppressed. Set to 0 to always notify."
         }
       },
       "schedule": {
@@ -203,7 +205,8 @@
           "vacation_toggle_entity": "Vacation Mode Toggle",
           "vacation_toggle_invert": "Invert Vacation Toggle",
           "guest_toggle_entity": "Guest Mode Toggle",
-          "guest_toggle_invert": "Invert Guest Toggle"
+          "guest_toggle_invert": "Invert Guest Toggle",
+          "welcome_home_debounce_seconds": "Welcome Home Quiet Period (minutes)"
         },
         "data_description": {
           "home_toggle_entity": "An entity (input_boolean, switch, etc.) that indicates whether someone is home. ON = home, OFF = away.",
@@ -211,7 +214,8 @@
           "vacation_toggle_entity": "An entity that indicates vacation mode. When active, a deeper temperature setback is applied for extended energy savings.",
           "vacation_toggle_invert": "Enable if your toggle reports ON when you're NOT on vacation.",
           "guest_toggle_entity": "An entity that indicates guests are present. Overrides vacation and away modes \u2014 comfort temperature is maintained.",
-          "guest_toggle_invert": "Enable if your toggle reports ON when guests are NOT present."
+          "guest_toggle_invert": "Enable if your toggle reports ON when guests are NOT present.",
+          "welcome_home_debounce_seconds": "Minimum time between welcome home notifications. If you leave and return within this window, the notification is suppressed. Set to 0 to always notify."
         }
       },
       "schedule": {

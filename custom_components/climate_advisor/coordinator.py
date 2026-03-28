@@ -771,7 +771,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_TREND_MAGNITUDE: c.trend_magnitude if c else 0,
             ATTR_BRIEFING: self._last_briefing,
             ATTR_BRIEFING_SHORT: self._last_briefing_short,
-            ATTR_NEXT_ACTION: self._compute_next_action(c),
+            ATTR_NEXT_ACTION: self._compute_next_action(c, self._get_indoor_temp()),
             ATTR_AUTOMATION_STATUS: self._compute_automation_status(),
             ATTR_LEARNING_SUGGESTIONS: suggestions,
             ATTR_COMPLIANCE_SCORE: compliance.get("comfort_score", 1.0),
@@ -1362,7 +1362,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             )
             self.automation_engine.handle_fan_manual_override()
 
-    def _compute_next_action(self, c: DayClassification | None) -> str:
+    def _compute_next_action(self, c: DayClassification | None, indoor_temp: float | None = None) -> str:
         """Compute the next recommended human action for display."""
         if not c:
             return "Waiting for forecast data..."
@@ -1373,17 +1373,19 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return "You're away — automation managing temperature."
 
         now = dt_util.now().time()
+        unit = self.config.get("temp_unit", "fahrenheit")
+        comfort_cool = self.config.get("comfort_cool", 75)
 
         if c.windows_recommended:
             if c.window_open_time and now < c.window_open_time:
                 return f"Open windows at {c.window_open_time.strftime('%I:%M %p')}"
             elif c.window_close_time and now < c.window_close_time:
                 return f"Close windows by {c.window_close_time.strftime('%I:%M %p')}"
+            elif now >= time(ECONOMIZER_EVENING_START_HOUR, 0):
+                return "Open windows to cool down — outdoor air may be cooler now."
 
         if c.day_type == DAY_TYPE_HOT:
-            comfort_cool = self.config.get("comfort_cool", 75)
             threshold = comfort_cool + ECONOMIZER_TEMP_DELTA
-            unit = self.config.get("temp_unit", "fahrenheit")
             if c.window_opportunity_morning and now < time(ECONOMIZER_MORNING_END_HOUR, 0):
                 end_t = time(ECONOMIZER_MORNING_END_HOUR, 0).strftime("%I:%M %p").lstrip("0")
                 return f"Open windows if outdoor temp is below {format_temp(threshold, unit)} (until {end_t})"
@@ -1392,6 +1394,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return "Keep windows and blinds closed. AC is handling it."
         elif c.day_type == DAY_TYPE_COLD:
             return "Keep doors closed — help the heater out."
+
+        if indoor_temp is not None and indoor_temp > comfort_cool:
+            return f"Indoor temp is {format_temp(indoor_temp, unit)} — open windows or turn on a fan to cool down."
 
         return "No action needed right now. Automation is handling it."
 

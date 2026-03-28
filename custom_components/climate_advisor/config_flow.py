@@ -35,6 +35,7 @@ from .const import (
     CONF_TEMP_UNIT,
     CONF_VACATION_TOGGLE,
     CONF_VACATION_TOGGLE_INVERT,
+    CONF_WELCOME_HOME_DEBOUNCE,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_COMFORT_COOL,
     DEFAULT_COMFORT_HEAT,
@@ -44,6 +45,7 @@ from .const import (
     DEFAULT_SETBACK_COOL,
     DEFAULT_SETBACK_HEAT,
     DEFAULT_TEMP_UNIT,
+    DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS,
     DOMAIN,
     FAN_MODE_BOTH,
     FAN_MODE_DISABLED,
@@ -113,7 +115,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 9
+    VERSION = 10
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -381,6 +383,8 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_occupancy(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Handle the occupancy awareness step."""
         if user_input is not None:
+            if CONF_WELCOME_HOME_DEBOUNCE in user_input:
+                user_input[CONF_WELCOME_HOME_DEBOUNCE] = int(user_input[CONF_WELCOME_HOME_DEBOUNCE] * 60)
             self._data.update(user_input)
             return await self.async_step_schedule()
 
@@ -409,6 +413,18 @@ class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         selector.EntitySelectorConfig(domain=["input_boolean", "binary_sensor", "switch"])
                     ),
                     vol.Optional(CONF_GUEST_TOGGLE_INVERT, default=False): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_WELCOME_HOME_DEBOUNCE,
+                        default=DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS // 60,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=480,
+                            step=5,
+                            unit_of_measurement="minutes",
+                            mode="box",
+                        )
+                    ),
                 }
             ),
         )
@@ -741,6 +757,8 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
     async def async_step_occupancy(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Occupancy awareness configuration."""
         if user_input is not None:
+            if CONF_WELCOME_HOME_DEBOUNCE in user_input:
+                user_input[CONF_WELCOME_HOME_DEBOUNCE] = int(user_input[CONF_WELCOME_HOME_DEBOUNCE] * 60)
             self._updates.update(user_input)
             return await self.async_step_init()
 
@@ -780,6 +798,18 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         CONF_GUEST_TOGGLE_INVERT,
                         default=current.get(CONF_GUEST_TOGGLE_INVERT, False),
                     ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_WELCOME_HOME_DEBOUNCE,
+                        default=current.get(CONF_WELCOME_HOME_DEBOUNCE, DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS) // 60,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=480,
+                            step=5,
+                            unit_of_measurement="minutes",
+                            mode="box",
+                        )
+                    ),
                 }
             ),
         )

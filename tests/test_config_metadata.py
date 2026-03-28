@@ -44,6 +44,7 @@ EXPECTED_KEYS = {
     "guest_toggle_entity",
     "guest_toggle_invert",
     "temp_unit",
+    "welcome_home_debounce_seconds",
 }
 
 VALID_CATEGORIES = {"core", "sensors", "fan", "schedule", "advanced", "occupancy", "notifications"}

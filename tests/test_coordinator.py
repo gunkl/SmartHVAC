@@ -23,9 +23,12 @@ from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.const import (
     DAY_TYPE_COLD,
     DAY_TYPE_HOT,
+    DAY_TYPE_MILD,
+    DAY_TYPE_WARM,
     ECONOMIZER_EVENING_START_HOUR,
     ECONOMIZER_MORNING_END_HOUR,
     ECONOMIZER_TEMP_DELTA,
+    WARM_WINDOW_CLOSE_HOUR,
 )
 
 # ---------------------------------------------------------------------------
@@ -59,19 +62,27 @@ def _make_classification(**overrides):
     return c
 
 
-def _compute_next_action(c: DayClassification | None, config: dict, now_time: time) -> str:
+def _compute_next_action(
+    c: DayClassification | None,
+    config: dict,
+    now_time: time,
+    indoor_temp: float | None = None,
+) -> str:
     """Replicate _compute_next_action from coordinator.py."""
     if not c:
         return "Waiting for forecast data..."
+
+    comfort_cool = config.get("comfort_cool", 75)
 
     if c.windows_recommended:
         if c.window_open_time and now_time < c.window_open_time:
             return f"Open windows at {c.window_open_time.strftime('%I:%M %p')}"
         elif c.window_close_time and now_time < c.window_close_time:
             return f"Close windows by {c.window_close_time.strftime('%I:%M %p')}"
+        elif now_time >= time(ECONOMIZER_EVENING_START_HOUR, 0):
+            return "Open windows to cool down — outdoor air may be cooler now."
 
     if c.day_type == DAY_TYPE_HOT:
-        comfort_cool = config.get("comfort_cool", 75)
         threshold = comfort_cool + ECONOMIZER_TEMP_DELTA
         if c.window_opportunity_morning and now_time < time(ECONOMIZER_MORNING_END_HOUR, 0):
             end_t = time(ECONOMIZER_MORNING_END_HOUR, 0).strftime("%I:%M %p").lstrip("0")
@@ -81,6 +92,9 @@ def _compute_next_action(c: DayClassification | None, config: dict, now_time: ti
         return "Keep windows and blinds closed. AC is handling it."
     elif c.day_type == DAY_TYPE_COLD:
         return "Keep doors closed — help the heater out."
+
+    if indoor_temp is not None and indoor_temp > comfort_cool:
+        return f"Indoor temp is {indoor_temp:.0f}°F — open windows or turn on a fan to cool down."
 
     return "No action needed right now. Automation is handling it."
 
@@ -192,6 +206,81 @@ class TestComputeNextAction:
         c = _make_classification(day_type="mild")
         result = _compute_next_action(c, {}, time(12, 0))
         assert "No action needed" in result
+
+    def test_next_action_warm_day_after_close_before_evening(self):
+        """WARM day after 10 AM close, before 5 PM — mid-day gap, no window guidance."""
+        c = _make_classification(
+            day_type=DAY_TYPE_WARM,
+            windows_recommended=True,
+            window_open_time=time(6, 0),
+            window_close_time=time(WARM_WINDOW_CLOSE_HOUR, 0),
+        )
+        result = _compute_next_action(c, {}, time(13, 0))
+        assert "No action needed" in result
+
+    def test_next_action_warm_day_after_close_at_evening_start(self):
+        """WARM day after 10 AM close, at exactly 5 PM — evening ventilation suggested."""
+        c = _make_classification(
+            day_type=DAY_TYPE_WARM,
+            windows_recommended=True,
+            window_open_time=time(6, 0),
+            window_close_time=time(WARM_WINDOW_CLOSE_HOUR, 0),
+        )
+        result = _compute_next_action(c, {}, time(ECONOMIZER_EVENING_START_HOUR, 0))
+        assert "Open windows" in result
+
+    def test_next_action_warm_day_after_close_in_evening(self):
+        """WARM day, well into the evening — evening ventilation suggested."""
+        c = _make_classification(
+            day_type=DAY_TYPE_WARM,
+            windows_recommended=True,
+            window_open_time=time(6, 0),
+            window_close_time=time(WARM_WINDOW_CLOSE_HOUR, 0),
+        )
+        result = _compute_next_action(c, {}, time(20, 0))
+        assert "Open windows" in result
+
+    def test_next_action_indoor_above_comfort_shows_guidance(self):
+        """Indoor temp above comfort_cool → actionable guidance, not 'no action'."""
+        c = _make_classification(day_type=DAY_TYPE_MILD, windows_recommended=False)
+        result = _compute_next_action(c, {"comfort_cool": 75}, time(14, 0), indoor_temp=78.0)
+        assert "78" in result
+        assert "No action needed" not in result
+
+    def test_next_action_indoor_at_comfort_boundary_no_guidance(self):
+        """Indoor temp exactly at comfort_cool boundary (not above) → no alert."""
+        c = _make_classification(day_type=DAY_TYPE_MILD, windows_recommended=False)
+        result = _compute_next_action(c, {"comfort_cool": 75}, time(14, 0), indoor_temp=75.0)
+        assert "No action needed" in result
+
+    def test_next_action_indoor_none_falls_back_to_no_action(self):
+        """When indoor_temp is None — no comfort alert, falls back to default."""
+        c = _make_classification(day_type=DAY_TYPE_MILD, windows_recommended=False)
+        result = _compute_next_action(c, {"comfort_cool": 75}, time(14, 0), indoor_temp=None)
+        assert "No action needed" in result
+
+    def test_next_action_warm_day_midday_indoor_above_comfort(self):
+        """WARM day mid-day with indoor above comfort — comfort guidance wins over 'no action'."""
+        c = _make_classification(
+            day_type=DAY_TYPE_WARM,
+            windows_recommended=True,
+            window_open_time=time(6, 0),
+            window_close_time=time(WARM_WINDOW_CLOSE_HOUR, 0),
+        )
+        result = _compute_next_action(c, {"comfort_cool": 75}, time(13, 0), indoor_temp=79.0)
+        assert "79" in result
+        assert "No action needed" not in result
+
+    def test_next_action_hot_day_indoor_above_comfort_still_shows_ac_message(self):
+        """HOT day: HOT branch always returns before indoor check — AC message wins."""
+        c = _make_classification(
+            day_type=DAY_TYPE_HOT,
+            window_opportunity_morning=False,
+            window_opportunity_evening=False,
+        )
+        result = _compute_next_action(c, {"comfort_cool": 75}, time(14, 0), indoor_temp=80.0)
+        assert "Keep windows and blinds closed" in result
+        assert "AC is handling it" in result
 
 
 # ---------------------------------------------------------------------------
