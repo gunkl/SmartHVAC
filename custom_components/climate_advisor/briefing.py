@@ -55,6 +55,9 @@ def generate_briefing(
     fan_mode: str = FAN_MODE_DISABLED,
     occupancy_mode: str = "home",
     temp_unit: str = FAHRENHEIT,
+    bedtime_setback_heat: float | None = None,
+    bedtime_setback_cool: float | None = None,
+    adaptive_thermal_active: bool = False,
 ) -> str:
     """Generate the daily climate briefing message.
 
@@ -99,7 +102,13 @@ def generate_briefing(
         "sleep_time": sleep_time,
         "wake_time": wake_time,
     }
-    tldr_lines = _generate_tldr_table(c, config, temp_unit=temp_unit)
+    tldr_lines = _generate_tldr_table(
+        c,
+        config,
+        temp_unit=temp_unit,
+        bedtime_setback_heat=bedtime_setback_heat,
+        bedtime_setback_cool=bedtime_setback_cool,
+    )
 
     if verbosity == "tldr_only":
         briefing_text = "\n".join(tldr_lines).rstrip()
@@ -128,9 +137,29 @@ def generate_briefing(
     elif c.day_type == DAY_TYPE_MILD:
         lines.extend(_mild_day_plan(c, comfort_heat, wake_time, sleep_time, temp_unit=temp_unit))
     elif c.day_type == DAY_TYPE_COOL:
-        lines.extend(_cool_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time, temp_unit=temp_unit))
+        lines.extend(
+            _cool_day_plan(
+                c,
+                comfort_heat,
+                setback_heat,
+                wake_time,
+                sleep_time,
+                temp_unit=temp_unit,
+                bedtime_setback_heat=bedtime_setback_heat,
+            )
+        )
     elif c.day_type == DAY_TYPE_COLD:
-        lines.extend(_cold_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time, temp_unit=temp_unit))
+        lines.extend(
+            _cold_day_plan(
+                c,
+                comfort_heat,
+                setback_heat,
+                wake_time,
+                sleep_time,
+                temp_unit=temp_unit,
+                bedtime_setback_heat=bedtime_setback_heat,
+            )
+        )
 
     _LOGGER.debug("Dispatched %s day plan", c.day_type)
 
@@ -156,7 +185,16 @@ def generate_briefing(
         _LOGGER.debug("Grace section included — source=%s", grace_source)
 
     lines.append("")
-    lines.extend(_tonight_preview(c, comfort_heat, comfort_cool, sleep_time, temp_unit=temp_unit))
+    lines.extend(
+        _tonight_preview(
+            c,
+            comfort_heat,
+            comfort_cool,
+            sleep_time,
+            temp_unit=temp_unit,
+            adaptive_thermal_active=adaptive_thermal_active,
+        )
+    )
 
     # Learning suggestions (kept structured for accept/dismiss clarity)
     if learning_suggestions:
@@ -179,7 +217,13 @@ def generate_briefing(
     return briefing_text
 
 
-def _generate_tldr_table(c: DayClassification, config: dict, temp_unit: str = FAHRENHEIT) -> list[str]:
+def _generate_tldr_table(
+    c: DayClassification,
+    config: dict,
+    temp_unit: str = FAHRENHEIT,
+    bedtime_setback_heat: float | None = None,
+    bedtime_setback_cool: float | None = None,
+) -> list[str]:
     """Generate a plain-text aligned TLDR summary table.
 
     Args:
@@ -187,6 +231,8 @@ def _generate_tldr_table(c: DayClassification, config: dict, temp_unit: str = FA
         config: Dict with comfort_heat, comfort_cool, setback_heat, setback_cool,
             sleep_time, wake_time keys.
         temp_unit: Display unit — "fahrenheit" or "celsius".
+        bedtime_setback_heat: Adaptive bedtime heat setback temperature, if learned.
+        bedtime_setback_cool: Adaptive bedtime cool setback temperature, if learned.
 
     Returns:
         List of lines forming a plain-text aligned table.
@@ -231,10 +277,10 @@ def _generate_tldr_table(c: DayClassification, config: dict, temp_unit: str = FA
     sleep_str = sleep_time.strftime(_FMT_HOUR)
     if c.hvac_mode == "cool":
         # setback for cool days goes up (warmer is fine when sleeping)
-        bedtime_temp = comfort_cool + 3  # standard cool setback
+        bedtime_temp = bedtime_setback_cool if bedtime_setback_cool is not None else comfort_cool + 3
         bedtime_val = f"{format_temp(bedtime_temp, temp_unit)} at {sleep_str}"
     elif c.hvac_mode == "heat":
-        bedtime_temp = comfort_heat - 4  # standard heat setback
+        bedtime_temp = bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - 4
         bedtime_val = f"{format_temp(bedtime_temp, temp_unit)} at {sleep_str}"
     else:
         bedtime_val = "No setback"
@@ -422,19 +468,36 @@ def _mild_day_plan(c, comfort_heat, wake_time, sleep_time, temp_unit: str = FAHR
     return lines
 
 
-def _cool_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time, temp_unit: str = FAHRENHEIT) -> list[str]:
+def _cool_day_plan(
+    c,
+    comfort_heat,
+    setback_heat,
+    wake_time,
+    sleep_time,
+    temp_unit: str = FAHRENHEIT,
+    bedtime_setback_heat: float | None = None,
+) -> list[str]:
     """Conversational plan for cool days (45-59\u00b0F)."""
+    setback_display = bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - 4
     return [
         f"Heater day \u2014 too cool outside for windows. I'll hold {format_temp(comfort_heat, temp_unit)}"
         f" through the morning, ease back a couple degrees midday to ride any solar"
         f" gain, then return to {format_temp(comfort_heat, temp_unit)} as the sun drops.",
         "",
-        f"At bedtime I'll set back to {format_temp(comfort_heat - 4, temp_unit)}"
+        f"At bedtime I'll set back to {format_temp(setback_display, temp_unit)}"
         " \u2014 most people sleep better a little cooler.",
     ]
 
 
-def _cold_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time, temp_unit: str = FAHRENHEIT) -> list[str]:
+def _cold_day_plan(
+    c,
+    comfort_heat,
+    setback_heat,
+    wake_time,
+    sleep_time,
+    temp_unit: str = FAHRENHEIT,
+    bedtime_setback_heat: float | None = None,
+) -> list[str]:
     """Conversational plan for cold days (below 45\u00b0F)."""
     lines = [
         "Cold day \u2014 heater runs all day. Help it out: close north-side curtains,"
@@ -451,9 +514,10 @@ def _cold_day_plan(c, comfort_heat, setback_heat, wake_time, sleep_time, temp_un
             f" If the house feels extra warm before bed, that's on purpose."
         )
 
+    setback_display = bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - 3
     lines.append("")
     lines.append(
-        f"Tonight I'm using a conservative setback \u2014 {format_temp(comfort_heat - 3, temp_unit)}"
+        f"Tonight I'm using a conservative setback \u2014 {format_temp(setback_display, temp_unit)}"
         f" instead of the usual {format_temp(setback_heat, temp_unit)}. When it's this cold, a"
         f" deeper setback takes too long to recover from in the morning."
     )
@@ -614,7 +678,14 @@ def _grace_period_section(
         ]
 
 
-def _tonight_preview(c, comfort_heat, comfort_cool, sleep_time, temp_unit: str = FAHRENHEIT) -> list[str]:
+def _tonight_preview(
+    c,
+    comfort_heat,
+    comfort_cool,
+    sleep_time,
+    temp_unit: str = FAHRENHEIT,
+    adaptive_thermal_active: bool = False,
+) -> list[str]:
     """Conversational preview of tonight and tomorrow based on trend."""
     _LOGGER.debug(
         "Tonight preview \u2014 trend=%s, magnitude=%.1f\u00b0F",
@@ -622,20 +693,23 @@ def _tonight_preview(c, comfort_heat, comfort_cool, sleep_time, temp_unit: str =
         c.trend_magnitude,
     )
     if c.trend_direction == "warming" and c.trend_magnitude >= 5:
-        return [
+        lines = [
             f"Looking ahead \u2014 tomorrow's warmer at {format_temp(c.tomorrow_high, temp_unit)}, so"
             f" I'm going to set back a bit more aggressively tonight. Less"
             f" heating needed means energy saved while you sleep.",
         ]
     elif c.trend_direction == "cooling" and c.trend_magnitude >= 5:
-        return [
+        lines = [
             f"Looking ahead \u2014 tomorrow's cooler at {format_temp(c.tomorrow_high, temp_unit)}, so"
             f" I'll bank some extra warmth this evening and go easy on the"
             f" overnight setback. If the house feels a touch warmer than usual"
             f" before bed, that's intentional.",
         ]
     else:
-        return [
+        lines = [
             f"Tomorrow looks pretty similar to today \u2014 {format_temp(c.tomorrow_high, temp_unit)}"
             f" for a high. Nothing special planned overnight.",
         ]
+    if adaptive_thermal_active:
+        lines.append("Bedtime setback and pre-heat timing are tuned to your home's actual heating performance.")
+    return lines

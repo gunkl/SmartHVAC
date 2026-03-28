@@ -66,3 +66,19 @@ def format_temp_delta(delta_fahrenheit: float, unit: str, decimals: int = 0) -> 
     delta = delta_fahrenheit * 5.0 / 9.0 if unit == CELSIUS else float(delta_fahrenheit)
     symbol = UNIT_SYMBOL.get(unit, "°F")
     return f"{delta:.{decimals}f}{symbol}"
+
+
+def convert_delta(value_fahrenheit: float, unit: str) -> float:
+    """Convert a temperature delta from °F to the display unit (scale only, no offset).
+
+    Unlike convert_temp, this applies scale conversion only — appropriate for
+    rates (°F/hr → °C/hr) and differences where the +32/-32 offset does not apply.
+
+    Examples:
+        convert_delta(9.0, FAHRENHEIT)  → 9.0
+        convert_delta(9.0, CELSIUS)     → 5.0
+        convert_delta(0.0, CELSIUS)     → 0.0
+    """
+    if unit == CELSIUS:
+        return value_fahrenheit * 5.0 / 9.0
+    return float(value_fahrenheit)

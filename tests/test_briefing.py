@@ -59,6 +59,7 @@ def _generate(classification: DayClassification, **kwargs) -> str:
         wake_time=kwargs.get("wake_time", DEFAULT_WAKE),
         sleep_time=kwargs.get("sleep_time", DEFAULT_SLEEP),
         learning_suggestions=kwargs.get("learning_suggestions"),
+        bedtime_setback_heat=kwargs.get("bedtime_setback_heat"),
     )
 
 
@@ -373,6 +374,22 @@ class TestColdDayBriefing:
         result = _generate(c)
         # Should NOT mention pre-heating
         assert "pre-heat" not in result.lower() or "bank extra heat" not in result.lower()
+
+    def test_cold_day_plan_uses_adaptive_setback_heat(self):
+        """_cold_day_plan uses bedtime_setback_heat when provided, not comfort_heat - 3."""
+        c = _make_classification("cold", today_high=38, today_low=22)
+        result = _generate(c, comfort_heat=70.0, bedtime_setback_heat=65.0)
+        # The adaptive value 65 should appear; the default fallback 67 (70-3) should not
+        assert "65" in result
+        assert "67" not in result
+
+    def test_cold_day_plan_falls_back_to_default_when_setback_none(self):
+        """_cold_day_plan falls back to comfort_heat - 3 when bedtime_setback_heat is None."""
+        c = _make_classification("cold", today_high=38, today_low=22)
+        # bedtime_setback_heat defaults to None in _generate when not supplied
+        result = _generate(c, comfort_heat=70.0)
+        # Fallback: 70 - 3 = 67 should appear in the cold-day plan text
+        assert "67" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1031,6 +1048,70 @@ class TestVerbosity:
             verbosity="normal",
         )
         assert len(tldr) < len(normal)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5G: adaptive thermal briefing tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptiveThermalBriefing:
+    """Tests for bedtime_setback_heat and adaptive_thermal_active parameters."""
+
+    def test_tldr_table_uses_passed_bedtime_setback_heat(self):
+        """generate_briefing with bedtime_setback_heat=62 on a heat day → 62 appears in output."""
+        c = _make_classification("cool", today_high=55, today_low=35)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            bedtime_setback_heat=62.0,
+        )
+        assert "62" in result
+
+    def test_tldr_table_falls_back_to_default_when_none(self):
+        """generate_briefing with bedtime_setback_heat=None → uses comfort_heat - 4."""
+        from custom_components.climate_advisor.const import DEFAULT_SETBACK_DEPTH_F
+
+        c = _make_classification("cool", today_high=55, today_low=35)
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            bedtime_setback_heat=None,
+        )
+        # Default: comfort_heat (70) - DEFAULT_SETBACK_DEPTH_F (4) = 66
+        expected = str(int(COMFORT_HEAT - DEFAULT_SETBACK_DEPTH_F))
+        assert expected in result
+
+    def test_adaptive_thermal_active_adds_sentence(self):
+        """adaptive_thermal_active=True → 'tuned to your home's actual heating performance' appears."""
+        c = _make_classification(
+            "cool",
+            today_high=55,
+            today_low=35,
+            trend_direction="stable",
+            trend_magnitude=1.0,
+        )
+        result = generate_briefing(
+            classification=c,
+            comfort_heat=COMFORT_HEAT,
+            comfort_cool=COMFORT_COOL,
+            setback_heat=SETBACK_HEAT,
+            setback_cool=SETBACK_COOL,
+            wake_time=DEFAULT_WAKE,
+            sleep_time=DEFAULT_SLEEP,
+            adaptive_thermal_active=True,
+        )
+        assert "tuned to your home's actual heating performance" in result
 
     def test_verbosity_verbose_has_body(self):
         """verbose should include body text (same as normal for now)."""

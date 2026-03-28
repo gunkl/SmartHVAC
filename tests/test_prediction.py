@@ -10,6 +10,7 @@ import pytest
 from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.coordinator import (
     _build_outdoor_curve,
+    _compute_ramp_hours,
     _cosine_outdoor_curve,
     compute_predicted_temps,
 )
@@ -441,6 +442,77 @@ class TestCustomConfig:
         _, indoor = compute_predicted_temps(c, cfg)
         # Hour 22 is before sleep at 23:00 — should still be at comfort (70)
         assert indoor[22]["temp"] == pytest.approx(70.0, abs=1.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5G: _compute_ramp_hours and thermal model integration
+# ---------------------------------------------------------------------------
+
+
+class TestComputeRampHours:
+    """Tests for _compute_ramp_hours()."""
+
+    def test_ramp_duration_falls_back_to_30min_when_no_model(self):
+        """thermal_model=None → ramp is 0.5 hrs (30 min)."""
+        result = _compute_ramp_hours(10.0, "heat", None)
+        assert result == pytest.approx(0.5)
+
+    def test_ramp_duration_uses_thermal_model_heat(self):
+        """heating_rate=2.0°F/hr, delta=10°F → ramp is 5.0 hrs."""
+        model = {"confidence": "high", "heating_rate_f_per_hour": 2.0}
+        result = _compute_ramp_hours(10.0, "heat", model)
+        assert result == pytest.approx(5.0)
+
+    def test_ramp_duration_clamped_to_min_15min(self):
+        """Very fast house → ramp is at least 0.25 hrs (15 min)."""
+        model = {"confidence": "high", "heating_rate_f_per_hour": 1000.0}
+        result = _compute_ramp_hours(1.0, "heat", model)
+        assert result == pytest.approx(0.25)
+
+    def test_ramp_falls_back_to_30min_when_confidence_none(self):
+        """confidence='none' → ramp is 0.5 hrs regardless of rate."""
+        model = {"confidence": "none", "heating_rate_f_per_hour": 5.0}
+        result = _compute_ramp_hours(10.0, "heat", model)
+        assert result == pytest.approx(0.5)
+
+    def test_ramp_falls_back_to_30min_when_rate_is_none(self):
+        """Rate is None → ramp is 0.5 hrs."""
+        model = {"confidence": "high", "heating_rate_f_per_hour": None}
+        result = _compute_ramp_hours(10.0, "heat", model)
+        assert result == pytest.approx(0.5)
+
+    def test_ramp_uses_cooling_rate_for_cool_mode(self):
+        """Cool mode uses cooling_rate_f_per_hour."""
+        model = {"confidence": "high", "cooling_rate_f_per_hour": 5.0}
+        result = _compute_ramp_hours(10.0, "cool", model)
+        assert result == pytest.approx(2.0)
+
+
+class TestEveningRampUsesThermalModel:
+    """Test that thermal_model is passed to compute_predicted_temps and affects ramp."""
+
+    def test_evening_ramp_uses_thermal_model(self):
+        """Pass thermal_model → evening ramp differs from 0.5 default."""
+        c = _make_classification(
+            day_type="cold",
+            hvac_mode="heat",
+            windows_recommended=False,
+            window_open_time=None,
+            window_close_time=None,
+        )
+        # Slow house: rate=0.5°F/hr → ramp for 10°F delta (70-60) = 20 hrs (capped in practice by hours)
+        slow_model = {"confidence": "high", "heating_rate_f_per_hour": 0.5}
+        _, indoor_with_model = compute_predicted_temps(c, DEFAULT_CONFIG, thermal_model=slow_model)
+        _, indoor_no_model = compute_predicted_temps(c, DEFAULT_CONFIG, thermal_model=None)
+
+        # With a slow model, the morning ramp should be longer (start lower before reaching comfort)
+        # h=7 is within wake ramp (wake_h=6.5, ramp_no_model=0.5 → ramp ends at 7.0)
+        # With no model (ramp=0.5): h=7 is past ramp → comfort (70)
+        # With slow model (ramp=20): h=7 is still in ramp → below comfort
+        assert indoor_no_model[7]["temp"] == pytest.approx(70.0, abs=0.5)
+        assert indoor_with_model[7]["temp"] < 70.0, (
+            f"Slow model should still be ramping at h=7, got {indoor_with_model[7]['temp']}"
+        )
 
     def test_extreme_temp_range(self):
         c = _make_classification(today_high=110.0, today_low=30.0)

@@ -225,6 +225,50 @@ After 14+ days, a briefing might end with:
 Reply ACCEPT or DISMISS to any suggestion, or ignore to keep current behavior.
 ```
 
+---
+
+## Example: Adaptive Thermal Timing Active
+
+**When shown:** The thermal model has sufficient confidence (`"low"` or better) for both heating and cooling rates. The `adaptive_thermal_active=True` flag is set in the coordinator data. The adaptive timing sentence appears at the end of the briefing footer, after the "Looking ahead" paragraph.
+
+```
+Bedtime setback and pre-heat timing are tuned to your home's actual heating performance.
+```
+
+This sentence is only included when `adaptive_thermal_active` is `True`. When the model is still collecting data (confidence `"none"`), the sentence is absent — no explanation of the absence is shown to avoid confusion.
+
+---
+
+## Example: Forecast Bias Suggestion
+
+**When shown:** The learning engine's `get_weather_bias()` method finds a bias magnitude exceeding 3°F at `"medium"` or higher confidence. This suggestion appears in the learning suggestions block appended to the daily briefing.
+
+Example (weather service running warm):
+
+```
+💡 Suggestions Based on Recent Patterns
+----------------------------------------
+  • Your weather service appears to run warm by about 4°F on average
+    — I've seen this across 22 recent days. I've adjusted my timing
+    calculations to compensate. No action needed on your end, but you
+    may notice my pre-heat and setback timing has shifted slightly.
+```
+
+Example (weather service running cool):
+
+```
+💡 Suggestions Based on Recent Patterns
+----------------------------------------
+  • Your weather service appears to run cool by about 3°F on average
+    across the past 15 days. I've adjusted my timing calculations to
+    compensate. If you feel the house is too warm or too cool at key
+    times of day, this correction may resolve it.
+```
+
+The suggestion key is `forecast_bias_significant`. It is subject to the standard `SUGGESTION_COOLDOWN_DAYS = 7` cooldown and will not reappear until the bias remains significant after the cooldown expires.
+
+---
+
 ## Voice Rules
 
 - First person from the system: "I'll turn on the AC", not "the system will"

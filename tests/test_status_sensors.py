@@ -369,3 +369,190 @@ class TestNewConstants:
     def test_attr_next_automation_time_constant(self):
         """ATTR_NEXT_AUTOMATION_TIME should equal 'next_automation_time'."""
         assert ATTR_NEXT_AUTOMATION_TIME == "next_automation_time"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5G: Compliance sensor thermal attributes
+# ---------------------------------------------------------------------------
+
+
+def _compliance_sensor_extra_state_attributes_with_thermal(coordinator):
+    """Replicate ClimateAdvisorComplianceSensor.extra_state_attributes logic including thermal attrs."""
+    from custom_components.climate_advisor.const import (
+        ATTR_FORECAST_BIAS_CONFIDENCE,
+        ATTR_FORECAST_HIGH_BIAS,
+        ATTR_FORECAST_LOW_BIAS,
+        ATTR_THERMAL_CONFIDENCE,
+        ATTR_THERMAL_COOLING_RATE,
+        ATTR_THERMAL_HEATING_RATE,
+    )
+    from custom_components.climate_advisor.temperature import FAHRENHEIT, convert_delta
+
+    unit = coordinator.config.get("temp_unit", FAHRENHEIT)
+    thermal = coordinator.learning.get_thermal_model()
+    heat_rate_f = thermal.get("heating_rate_f_per_hour")
+    cool_rate_f = thermal.get("cooling_rate_f_per_hour")
+    attrs = {}
+    attrs[ATTR_THERMAL_HEATING_RATE] = convert_delta(heat_rate_f, unit) if heat_rate_f is not None else None
+    attrs[ATTR_THERMAL_COOLING_RATE] = convert_delta(cool_rate_f, unit) if cool_rate_f is not None else None
+    attrs[ATTR_THERMAL_CONFIDENCE] = thermal.get("confidence", "none")
+    attrs["thermal_observation_count"] = thermal.get("observation_count_heat", 0) + thermal.get(
+        "observation_count_cool", 0
+    )
+    weather_bias = coordinator.learning.get_weather_bias()
+    attrs[ATTR_FORECAST_HIGH_BIAS] = convert_delta(weather_bias.get("high_bias", 0.0), unit)
+    attrs[ATTR_FORECAST_LOW_BIAS] = convert_delta(weather_bias.get("low_bias", 0.0), unit)
+    attrs[ATTR_FORECAST_BIAS_CONFIDENCE] = weather_bias.get("confidence", "none")
+    return attrs
+
+
+def _make_coordinator_with_learning(tmp_path):
+    """Build a minimal coordinator with a real LearningEngine for thermal attribute tests."""
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+    from custom_components.climate_advisor.learning import LearningEngine
+
+    hass = MagicMock()
+    hass.config.config_dir = str(tmp_path)
+    hass.states.get = MagicMock(return_value=None)
+
+    config = {
+        "climate_entity": "climate.test",
+        "weather_entity": "weather.test",
+        "notify_service": "notify.test",
+        "comfort_heat": 70,
+        "comfort_cool": 75,
+        "setback_heat": 60,
+        "setback_cool": 80,
+        "wake_time": "06:30",
+        "sleep_time": "22:30",
+        "temp_unit": "fahrenheit",
+    }
+
+    coordinator = ClimateAdvisorCoordinator(hass, config)
+    coordinator.learning = LearningEngine(Path(tmp_path))
+    coordinator.learning.load_state()
+    coordinator.automation_engine = MagicMock()
+    return coordinator
+
+
+def _make_thermal_obs(mode: str = "heat", rate: float = 2.0) -> dict:
+    return {
+        "timestamp": "2026-03-27T10:00:00",
+        "date": "2026-03-27",
+        "hvac_mode": mode,
+        "session_minutes": 30.0,
+        "rate_f_per_hour": rate,
+        "outdoor_temp_f": 40.0,
+        "start_indoor_f": 65.0,
+        "end_indoor_f": 66.0,
+    }
+
+
+def _make_bias_record(i: int, forecast_high: float, observed_high: float) -> dict:
+    return {
+        "date": f"2026-03-{i + 1:02d}",
+        "day_type": "mild",
+        "trend_direction": "stable",
+        "forecast_high_f": forecast_high,
+        "observed_high_f": observed_high,
+        "forecast_low_f": 50.0,
+        "observed_low_f": 51.0,
+    }
+
+
+class TestComplianceSensorThermalAttributes:
+    """Tests for compliance sensor thermal attribute helper."""
+
+    def test_thermal_attributes_present_when_model_has_data(self, tmp_path):
+        """Inject observations → attrs have non-None rates."""
+        coordinator = _make_coordinator_with_learning(tmp_path)
+        for _ in range(5):
+            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 2.0))
+        attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
+
+        from custom_components.climate_advisor.const import ATTR_THERMAL_HEATING_RATE
+
+        assert attrs[ATTR_THERMAL_HEATING_RATE] is not None
+
+    def test_thermal_attributes_none_when_no_observations(self, tmp_path):
+        """Empty learning engine → rates are None, confidence is 'none'."""
+        coordinator = _make_coordinator_with_learning(tmp_path)
+        attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
+
+        from custom_components.climate_advisor.const import (
+            ATTR_THERMAL_CONFIDENCE,
+            ATTR_THERMAL_COOLING_RATE,
+            ATTR_THERMAL_HEATING_RATE,
+        )
+
+        assert attrs[ATTR_THERMAL_HEATING_RATE] is None
+        assert attrs[ATTR_THERMAL_COOLING_RATE] is None
+        assert attrs[ATTR_THERMAL_CONFIDENCE] == "none"
+
+    def test_thermal_confidence_exposed(self, tmp_path):
+        """Inject 5 observations → confidence == 'low'."""
+        coordinator = _make_coordinator_with_learning(tmp_path)
+        for _ in range(5):
+            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 2.0))
+        attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
+
+        from custom_components.climate_advisor.const import ATTR_THERMAL_CONFIDENCE
+
+        assert attrs[ATTR_THERMAL_CONFIDENCE] == "low"
+
+    def test_thermal_rate_converted_to_celsius_when_unit_is_celsius(self, tmp_path):
+        """With temp_unit='celsius', rate is scaled by 5/9."""
+        coordinator = _make_coordinator_with_learning(tmp_path)
+        coordinator.config["temp_unit"] = "celsius"
+        for _ in range(5):
+            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 9.0))
+        attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
+
+        from custom_components.climate_advisor.const import ATTR_THERMAL_HEATING_RATE
+
+        # 9°F/hr × 5/9 = 5.0°C/hr
+        assert attrs[ATTR_THERMAL_HEATING_RATE] == pytest.approx(5.0, abs=0.01)
+
+    def test_thermal_rate_unchanged_when_unit_is_fahrenheit(self, tmp_path):
+        """With temp_unit='fahrenheit', rate is not scaled."""
+        coordinator = _make_coordinator_with_learning(tmp_path)
+        coordinator.config["temp_unit"] = "fahrenheit"
+        for _ in range(5):
+            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 3.0))
+        attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
+
+        from custom_components.climate_advisor.const import ATTR_THERMAL_HEATING_RATE
+
+        assert attrs[ATTR_THERMAL_HEATING_RATE] == pytest.approx(3.0, abs=0.01)
+
+    def test_forecast_bias_converted_to_celsius_when_unit_is_celsius(self, tmp_path):
+        """With celsius unit, forecast bias is scaled."""
+        coordinator = _make_coordinator_with_learning(tmp_path)
+        coordinator.config["temp_unit"] = "celsius"
+        # Add 7 records with 9°F high bias → 5°C after conversion
+        for i in range(7):
+            coordinator.learning._state.records.append(_make_bias_record(i, 70.0, 79.0))
+        attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
+
+        from custom_components.climate_advisor.const import ATTR_FORECAST_HIGH_BIAS
+
+        # 9°F × 5/9 = 5.0°C
+        assert attrs[ATTR_FORECAST_HIGH_BIAS] == pytest.approx(5.0, abs=0.01)
+
+    def test_forecast_bias_zero_when_no_observations(self, tmp_path):
+        """No records → bias attrs are 0.0, confidence is 'none'."""
+        coordinator = _make_coordinator_with_learning(tmp_path)
+        attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
+
+        from custom_components.climate_advisor.const import (
+            ATTR_FORECAST_BIAS_CONFIDENCE,
+            ATTR_FORECAST_HIGH_BIAS,
+            ATTR_FORECAST_LOW_BIAS,
+        )
+
+        assert attrs[ATTR_FORECAST_HIGH_BIAS] == pytest.approx(0.0)
+        assert attrs[ATTR_FORECAST_LOW_BIAS] == pytest.approx(0.0)
+        assert attrs[ATTR_FORECAST_BIAS_CONFIDENCE] == "none"

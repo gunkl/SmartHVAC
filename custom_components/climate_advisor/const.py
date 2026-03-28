@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
@@ -38,6 +38,11 @@ CONF_SENSOR_POLARITY_INVERTED = "sensor_polarity_inverted"
 # Temperature unit preference (stored as canonical fahrenheit internally)
 CONF_TEMP_UNIT = "temp_unit"
 DEFAULT_TEMP_UNIT = "fahrenheit"
+
+# Thermal learning feature toggles (Issue #61)
+CONF_ADAPTIVE_PREHEAT = "adaptive_preheat_enabled"
+CONF_ADAPTIVE_SETBACK = "adaptive_setback_enabled"
+CONF_WEATHER_BIAS = "weather_bias_enabled"
 
 # Debounce and grace period config keys
 CONF_SENSOR_DEBOUNCE = "sensor_debounce_seconds"
@@ -400,6 +405,23 @@ CONFIG_METADATA = {
         ),
         "category": "advanced",
     },
+    "adaptive_preheat_enabled": {
+        "category": "advanced",
+        "label": "Adaptive Pre-heat Timing",
+        "description": "Use learned heating rate to compute pre-heat start time.",
+    },
+    "adaptive_setback_enabled": {
+        "category": "advanced",
+        "label": "Adaptive Bedtime Setback",
+        "description": "Use learned heating/cooling rate to compute maximum safe setback depth.",
+    },
+    "weather_bias_enabled": {
+        "category": "advanced",
+        "label": "Weather Forecast Bias Correction",
+        "description": (
+            "Apply a location-specific correction to tomorrow's forecast based on observed forecast accuracy."
+        ),
+    },
     "aggressive_savings": {
         "label": "Prefer Savings Over Comfort",
         "description": (
@@ -450,3 +472,35 @@ CONFIG_METADATA = {
         "category": "notifications",
     },
 }
+
+# ---------------------------------------------------------------------------
+# Thermal Model Learning (Issue #61)
+# ---------------------------------------------------------------------------
+MIN_THERMAL_SESSION_MINUTES = 10  # ignore sessions shorter than this
+MIN_THERMAL_OBSERVATIONS = 5  # min obs before model is trusted
+THERMAL_MODEL_MAX_OBS = 30  # use only most recent N observations
+MIN_THERMAL_RATE_F_PER_HOUR = 0.1  # outlier floor
+MAX_THERMAL_RATE_F_PER_HOUR = 15.0  # outlier ceiling (sensor spike)
+DEFAULT_PREHEAT_MINUTES = 120  # fallback when no model data
+MIN_PREHEAT_MINUTES = 30  # clamp floor
+MAX_PREHEAT_MINUTES = 240  # clamp ceiling (4 hrs)
+PREHEAT_SAFETY_MARGIN = 1.3  # multiply computed time by this
+DEFAULT_SETBACK_DEPTH_F = 4.0  # preserved fallback (current heat setback)
+DEFAULT_SETBACK_DEPTH_COOL_F = 3.0  # preserved fallback (current cool setback)
+MAX_SETBACK_DEPTH_F = 8.0  # never set back more than this
+SETBACK_RECOVERY_BUFFER_MINUTES = 30  # pre-heat leads wake_time by this much
+THERMAL_OBS_CAP = 200  # max observations in LearningState
+ATTR_THERMAL_HEATING_RATE = "thermal_heating_rate"
+ATTR_THERMAL_COOLING_RATE = "thermal_cooling_rate"
+ATTR_THERMAL_CONFIDENCE = "thermal_confidence"
+
+# ---------------------------------------------------------------------------
+# Weather Forecast Offset Learning (Issue #61)
+# ---------------------------------------------------------------------------
+MIN_WEATHER_BIAS_OBSERVATIONS = 7  # need a full week before applying bias
+WEATHER_BIAS_MAX_OBS = 30  # use last 30 days of forecast comparisons
+MIN_WEATHER_BIAS_APPLY_F = 0.5  # don't apply bias smaller than 0.5°F
+MAX_WEATHER_BIAS_APPLY_F = 8.0  # cap correction at 8°F (sanity limit)
+ATTR_FORECAST_HIGH_BIAS = "forecast_high_bias"
+ATTR_FORECAST_LOW_BIAS = "forecast_low_bias"
+ATTR_FORECAST_BIAS_CONFIDENCE = "forecast_bias_confidence"

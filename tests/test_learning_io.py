@@ -7,7 +7,9 @@ callers must explicitly invoke load_state() / save_state().
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -267,3 +269,59 @@ class TestComfortScoreCalculation:
         engine._state.records.append({"comfort_violations_minutes": 5000, "day_type": "mild"})
         summary = engine.get_compliance_summary()
         assert summary["comfort_score"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 5G: thermal observation round-trip tests
+# ---------------------------------------------------------------------------
+
+
+class TestThermalObservationRoundTrip:
+    """Thermal observations survive save → reload."""
+
+    def test_thermal_observations_round_trip(self, tmp_path: Path):
+        """Thermal observations saved to disk are reloaded correctly."""
+        mock_dt = MagicMock()
+        mock_dt.now.return_value.date.return_value = date(2026, 3, 27)
+
+        engine1 = LearningEngine(tmp_path)
+        obs = {
+            "timestamp": "2026-03-27T10:00:00",
+            "date": "2026-03-27",
+            "hvac_mode": "heat",
+            "session_minutes": 30.0,
+            "rate_f_per_hour": 2.5,
+            "outdoor_temp_f": 40.0,
+            "start_indoor_f": 65.0,
+            "end_indoor_f": 66.25,
+        }
+        with patch("custom_components.climate_advisor.learning.dt_util", mock_dt):
+            engine1.record_thermal_observation(obs)
+        engine1.save_state()
+
+        engine2 = LearningEngine(tmp_path)
+        engine2.load_state()
+        assert len(engine2._state.thermal_observations) == 1
+        assert engine2._state.thermal_observations[0]["rate_f_per_hour"] == pytest.approx(2.5)
+
+    def test_missing_thermal_observations_key_defaults_to_empty(self, tmp_path: Path):
+        """Loading state dict without thermal_observations key yields empty list."""
+        import json
+
+        from custom_components.climate_advisor.const import LEARNING_DB_FILE
+
+        db_path = tmp_path / LEARNING_DB_FILE
+        # Write state without thermal_observations key
+        db_path.write_text(
+            json.dumps(
+                {
+                    "records": [],
+                    "active_suggestions": [],
+                    "dismissed_suggestions": [],
+                    "settings_history": [],
+                }
+            )
+        )
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        assert engine._state.thermal_observations == []

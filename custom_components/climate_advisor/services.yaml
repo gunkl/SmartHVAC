@@ -34,3 +34,26 @@ dump_diagnostics:
     Log a comprehensive diagnostic snapshot of Climate Advisor's internal state
     for troubleshooting. Output is logged at INFO level — check Home Assistant
     logs to view the result.
+
+reset_learning_data:
+  name: Reset learning data
+  description: >-
+    Reset some or all of Climate Advisor's learned data.
+    Use after changing HVAC equipment, moving to a new location, or to start fresh.
+  fields:
+    scope:
+      name: Scope
+      description: >-
+        What data to reset. "all" wipes everything. "thermal_model" clears HVAC session
+        observations. "weather_bias" clears forecast accuracy records. "suggestions" allows
+        previously dismissed suggestions to reappear.
+      required: false
+      default: "all"
+      example: "thermal_model"
+      selector:
+        select:
+          options:
+            - "all"
+            - "thermal_model"
+            - "weather_bias"
+            - "suggestions"

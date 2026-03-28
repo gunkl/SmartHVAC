@@ -16,6 +16,8 @@ from homeassistant.util import dt as dt_util
 
 from .classifier import DayClassification
 from .const import (
+    CONF_ADAPTIVE_PREHEAT,
+    CONF_ADAPTIVE_SETBACK,
     CONF_AUTOMATION_GRACE_NOTIFY,
     CONF_AUTOMATION_GRACE_PERIOD,
     CONF_FAN_ENTITY,
@@ -47,6 +49,90 @@ from .const import (
 from .temperature import format_temp, format_temp_delta, from_fahrenheit, to_fahrenheit
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def compute_bedtime_setback(
+    config: dict,
+    thermal_model: dict | None,
+    c: DayClassification,
+) -> float:
+    """Compute bedtime setback target temperature using thermal model if available.
+
+    Uses learned heating/cooling rates to compute the maximum safe setback depth
+    that can be recovered from by wake_time. Falls back to hardcoded defaults when
+    the thermal model has insufficient data.
+
+    Returns the setback TARGET temperature (not the depth).
+    """
+    from .const import (
+        DEFAULT_SETBACK_DEPTH_COOL_F,
+        DEFAULT_SETBACK_DEPTH_F,
+        MAX_SETBACK_DEPTH_F,
+        SETBACK_RECOVERY_BUFFER_MINUTES,
+    )
+
+    hvac_mode = c.hvac_mode
+    setback_modifier = c.setback_modifier
+
+    if hvac_mode == "heat":
+        comfort = config.get("comfort_heat", 70)
+        floor = config.get("setback_heat", 60)
+        rate = (thermal_model or {}).get("heating_rate_f_per_hour")
+        default_depth = DEFAULT_SETBACK_DEPTH_F
+    elif hvac_mode == "cool":
+        comfort = config.get("comfort_cool", 75)
+        floor = config.get("setback_cool", 80)
+        rate = (thermal_model or {}).get("cooling_rate_f_per_hour")
+        default_depth = DEFAULT_SETBACK_DEPTH_COOL_F
+        setback_modifier = -setback_modifier  # cool setback goes up, not down
+    else:
+        return config.get("comfort_heat", 70)
+
+    if not config.get("learning_enabled", True) or not config.get(CONF_ADAPTIVE_SETBACK, True):
+        _LOGGER.debug(
+            "Adaptive setback disabled — using default depth %.1f°F (%s mode)",
+            DEFAULT_SETBACK_DEPTH_F if hvac_mode == "heat" else DEFAULT_SETBACK_DEPTH_COOL_F,
+            hvac_mode,
+        )
+        thermal_model = {}
+        rate = None
+
+    confidence = (thermal_model or {}).get("confidence", "none")
+    if confidence == "none" or rate is None or rate <= 0:
+        depth = default_depth
+    else:
+        # Parse wake and sleep times to compute overnight duration
+        wake_str = config.get("wake_time", "06:30")
+        sleep_str = config.get("sleep_time", "22:30")
+        wake_parts = wake_str.split(":")
+        sleep_parts = sleep_str.split(":")
+        wake_minutes = int(wake_parts[0]) * 60 + int(wake_parts[1])
+        sleep_minutes = int(sleep_parts[0]) * 60 + int(sleep_parts[1])
+        if wake_minutes <= sleep_minutes:
+            wake_minutes += 24 * 60  # crosses midnight
+        overnight_minutes = wake_minutes - sleep_minutes
+        available = overnight_minutes - SETBACK_RECOVERY_BUFFER_MINUTES
+        max_recoverable = rate * (available / 60.0)
+        depth = min(max(max_recoverable, 0.0), MAX_SETBACK_DEPTH_F)
+        if hvac_mode == "heat":
+            _adaptive_target = max(comfort - depth + setback_modifier, floor)
+        else:
+            _adaptive_target = min(comfort + depth + setback_modifier, floor)
+        _LOGGER.debug(
+            "Adaptive setback: rate=%.2f°F/hr overnight=%.0fmin → depth=%.1f°F target=%.1f°F (%s mode)",
+            rate,
+            available,
+            depth,
+            _adaptive_target,
+            hvac_mode,
+        )
+
+    if hvac_mode == "heat":
+        raw = comfort - depth + setback_modifier
+        return max(raw, floor)
+    else:  # cool
+        raw = comfort + depth + setback_modifier
+        return min(raw, floor)
 
 
 class AutomationEngine:
@@ -119,6 +205,9 @@ class AutomationEngine:
 
         # Welcome home notification debounce (Issue #59)
         self._last_welcome_home_notified: datetime | None = None
+
+        # Thermal model — set by coordinator before apply_classification()
+        self._thermal_model: dict = {}
 
     async def _notify(self, message: str, title: str, notification_type: str) -> None:
         """Send a notification via configured channels, filtered by per-event preferences."""
@@ -368,16 +457,69 @@ class AutomationEngine:
         """
         unit = self.config.get("temp_unit", "fahrenheit")
         if c.trend_direction == "cooling" and c.pre_condition_target and c.pre_condition_target > 0:
-            # Pre-heat: schedule a bump for 7pm
+            # Pre-heat: schedule a bump relative to sleep_time using adaptive timing
+            from .const import (
+                DEFAULT_PREHEAT_MINUTES,
+                MAX_PREHEAT_MINUTES,
+                MIN_PREHEAT_MINUTES,
+                PREHEAT_SAFETY_MARGIN,
+            )
+
             preheat_target = self.config["comfort_heat"] + c.pre_condition_target
+
+            # Compute adaptive pre-heat start time
+            thermal_model = self._thermal_model or {}
+            if not self.config.get("learning_enabled", True) or not self.config.get(CONF_ADAPTIVE_PREHEAT, True):
+                _LOGGER.debug(
+                    "Adaptive pre-heat disabled — using default %d min",
+                    DEFAULT_PREHEAT_MINUTES,
+                )
+                thermal_model = {}
+
+            confidence = thermal_model.get("confidence", "none")
+            heating_rate = thermal_model.get("heating_rate_f_per_hour")
+
+            # pre_condition_target is the degrees to raise (positive for heating)
+            temp_rise = getattr(c, "pre_condition_target", 2.0) or 2.0
+
+            _adaptive_preheat_active = False
+            if confidence == "none" or heating_rate is None or heating_rate <= 0:
+                minutes_needed = DEFAULT_PREHEAT_MINUTES
+            else:
+                minutes_needed = (temp_rise / heating_rate) * 60.0 * PREHEAT_SAFETY_MARGIN
+                minutes_needed = max(MIN_PREHEAT_MINUTES, min(MAX_PREHEAT_MINUTES, minutes_needed))
+                _adaptive_preheat_active = True
+
+            # Compute preheat start time relative to sleep_time
+            sleep_str = self.config.get("sleep_time", "22:30")
+            sleep_parts = sleep_str.split(":")
+            sleep_total_minutes = int(sleep_parts[0]) * 60 + int(sleep_parts[1])
+            preheat_total_minutes = sleep_total_minutes - int(minutes_needed)
+            if preheat_total_minutes < 0:
+                preheat_total_minutes += 24 * 60
+            preheat_hour = preheat_total_minutes // 60
+            preheat_minute = preheat_total_minutes % 60
+            preheat_time_str = f"{preheat_hour:02d}:{preheat_minute:02d}"
+
+            if _adaptive_preheat_active:
+                _LOGGER.debug(
+                    "Adaptive pre-heat: rate=%.2f°F/hr delta=%.1f°F → %d min (safety ×%.1f), start=%s",
+                    heating_rate,
+                    temp_rise,
+                    int(minutes_needed),
+                    PREHEAT_SAFETY_MARGIN,
+                    preheat_time_str,
+                )
+
             _LOGGER.info(
-                "Scheduling pre-heat to %s for this evening (cold front coming)",
+                "Scheduling pre-heat to %s at %s (cold front coming)",
                 format_temp(preheat_target, unit),
+                preheat_time_str,
             )
             # In a full implementation, this would register a time-based listener
             # For now, store the intent for the coordinator to act on
             self.config["_pending_preheat"] = {
-                "time": "19:00",
+                "time": preheat_time_str,
                 "target": preheat_target,
                 "duration_hours": 2,
             }
@@ -738,24 +880,23 @@ class AutomationEngine:
 
         unit = self.config.get("temp_unit", "fahrenheit")
         if c.hvac_mode == "heat":
-            bedtime_target = self.config["comfort_heat"] - 4 + c.setback_modifier
+            bedtime_target = compute_bedtime_setback(self.config, self._thermal_model, c)
             await self._set_temperature(
                 bedtime_target,
                 reason=(
                     f"bedtime — heat setback"
                     f" (comfort {format_temp(self.config['comfort_heat'], unit)}"
-                    f" - {format_temp_delta(4, unit)}"
                     f" + modifier {format_temp_delta(c.setback_modifier, unit)})"
                 ),
             )
         elif c.hvac_mode == "cool":
-            bedtime_target = self.config["comfort_cool"] + 3
+            bedtime_target = compute_bedtime_setback(self.config, self._thermal_model, c)
             await self._set_temperature(
                 bedtime_target,
                 reason=(
                     f"bedtime — cool setback"
                     f" (comfort {format_temp(self.config['comfort_cool'], unit)}"
-                    f" + {format_temp_delta(3, unit)})"
+                    f" + modifier {format_temp_delta(c.setback_modifier, unit)})"
                 ),
             )
 

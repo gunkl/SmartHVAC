@@ -82,6 +82,12 @@ FULL_CONFIG = {
 
 FULL_CONFIG_V9 = {k: v for k, v in FULL_CONFIG.items() if k != "welcome_home_debounce_seconds"}
 FULL_CONFIG_V8 = {k: v for k, v in FULL_CONFIG_V9.items() if k != "temp_unit"}
+# v10 = v9 + welcome_home_debounce_seconds; does NOT contain the three v11 adaptive keys
+FULL_CONFIG_V10 = {
+    k: v
+    for k, v in FULL_CONFIG.items()
+    if k not in ("adaptive_preheat_enabled", "adaptive_setback_enabled", "weather_bias_enabled")
+}
 
 # v7 config (before migration to v8) — has email_notify instead of per-event toggles
 FULL_CONFIG_V7 = {
@@ -893,7 +899,7 @@ class TestMigrationV8ToV9:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 10
+        assert entry.version == 11
 
     def test_chain_from_v1_includes_temp_unit(self):
         """v1 entry chains through all migrations and ends up with temp_unit."""
@@ -925,7 +931,7 @@ class TestMigrationV8ToV9:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 10
+        assert entry.version == 11
 
 
 # ---------------------------------------------------------------------------
@@ -986,7 +992,7 @@ class TestMigrationV9ToV10:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("welcome_home_debounce_seconds") == 3600
-        assert entry.version == 10
+        assert entry.version == 11
 
     def test_chain_from_v1_includes_debounce(self):
         """v1 entry chains through all migrations and ends up with welcome_home_debounce_seconds."""
@@ -1018,7 +1024,63 @@ class TestMigrationV9ToV10:
         assert result is True
         assert final_data.get("welcome_home_debounce_seconds") == 3600
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 10
+        assert entry.version == 11
+
+
+class TestMigrationV10ToV11:
+    """Tests for config entry migration from version 10 to version 11."""
+
+    def _run_v10_to_v11_migration(self, v10_data: dict) -> dict:
+        """Inline replication of v10→v11 migration logic for isolated testing."""
+        new_data = {**v10_data}
+        new_data.setdefault("adaptive_preheat_enabled", True)
+        new_data.setdefault("adaptive_setback_enabled", True)
+        new_data.setdefault("weather_bias_enabled", True)
+        return new_data
+
+    def test_v10_to_v11_adds_three_new_keys(self):
+        """v10 data without the three new keys gets them added with True defaults."""
+        result = self._run_v10_to_v11_migration(dict(FULL_CONFIG_V10))
+        assert result["adaptive_preheat_enabled"] is True
+        assert result["adaptive_setback_enabled"] is True
+        assert result["weather_bias_enabled"] is True
+
+    def test_v10_to_v11_does_not_overwrite_existing_false_value(self):
+        """If adaptive_preheat_enabled already exists as False, setdefault preserves it."""
+        v10_with_preheat = {**FULL_CONFIG_V10, "adaptive_preheat_enabled": False}
+        result = self._run_v10_to_v11_migration(v10_with_preheat)
+        assert result["adaptive_preheat_enabled"] is False
+
+    def test_v10_to_v11_preserves_other_fields(self):
+        """All existing v10 fields survive migration unchanged."""
+        result = self._run_v10_to_v11_migration(dict(FULL_CONFIG_V10))
+        for key in FULL_CONFIG_V10:
+            assert result[key] == FULL_CONFIG_V10[key], f"Field {key!r} changed unexpectedly"
+
+    def test_v10_to_v11_result_is_version_11(self):
+        """Real async_migrate_entry() bumps version to 11 for a v10 entry."""
+        import asyncio
+
+        from custom_components.climate_advisor import async_migrate_entry
+
+        v10 = dict(FULL_CONFIG_V10)
+        entry = _make_config_entry(v10, version=10)
+        hass = _make_hass()
+        final_data: dict = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.clear()
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert final_data.get("adaptive_preheat_enabled") is True
+        assert final_data.get("adaptive_setback_enabled") is True
+        assert final_data.get("weather_bias_enabled") is True
+        assert entry.version == 11
 
 
 # ---------------------------------------------------------------------------

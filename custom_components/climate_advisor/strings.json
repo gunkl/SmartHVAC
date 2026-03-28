@@ -265,10 +265,16 @@
         "description": "Configure how Climate Advisor learns from your preferences and balances comfort vs. savings.",
         "data": {
           "learning_enabled": "Enable Learning & Suggestions",
+          "adaptive_preheat_enabled": "Adaptive Pre-heat Timing",
+          "adaptive_setback_enabled": "Adaptive Bedtime Setback",
+          "weather_bias_enabled": "Weather Forecast Bias Correction",
           "aggressive_savings": "Prefer savings over comfort"
         },
         "data_description": {
           "learning_enabled": "When enabled, Climate Advisor learns from your manual adjustments and suggests improvements over time.",
+          "adaptive_preheat_enabled": "Use learned heating rate to compute pre-heat start time. Requires learning to be enabled.",
+          "adaptive_setback_enabled": "Use learned heating/cooling rate to compute maximum safe setback depth. Requires learning to be enabled.",
+          "weather_bias_enabled": "Apply a location-specific correction to tomorrow's forecast based on observed forecast accuracy. Requires learning to be enabled.",
           "aggressive_savings": "When enabled, Climate Advisor favors energy savings over comfort \u2014 for example, using wider temperature swings and earlier setbacks."
         }
       }

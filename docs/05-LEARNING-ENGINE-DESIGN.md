@@ -90,13 +90,96 @@ Suggestions are generated when `generate_suggestions()` is called (typically dur
    - **Dismiss:** Suggestion key added to dismissed list, won't reappear for SUGGESTION_COOLDOWN_DAYS (7)
    - **Ignore:** Suggestion reappears next day until acted on or pattern resolves
 
+## Thermal Model
+
+The thermal model records how quickly the house heats and cools under HVAC control. Observations accumulate over time to produce heating and cooling rate estimates that are used to compute adaptive bedtime setback depth and pre-heat start time.
+
+### `ThermalObservation` Dataclass
+
+| Field | Type | Purpose |
+|---|---|---|
+| `timestamp` | `datetime` | UTC time the observation was recorded |
+| `mode` | `str` | `"heat"` or `"cool"` — which HVAC mode was active |
+| `start_temp_f` | `float` | Indoor temperature (°F) at the start of the HVAC run |
+| `end_temp_f` | `float` | Indoor temperature (°F) at the end of the HVAC run |
+| `duration_minutes` | `float` | Length of the HVAC run in minutes |
+| `outdoor_temp_f` | `float \| None` | Outdoor temperature at observation time (for future stratification) |
+
+### `record_thermal_observation(mode, start_temp_f, end_temp_f, duration_minutes, outdoor_temp_f=None)`
+
+Called by the coordinator at the end of a completed heating or cooling run. Appends a `ThermalObservation` to the rolling history (capped at 90 observations). The observation is only recorded when `duration_minutes > 0` and the temperature delta is in the expected direction (indoor temp rose for heat, fell for cool).
+
+### `get_thermal_model() -> dict`
+
+Computes and returns the current thermal model from all stored observations.
+
+**Output dict structure:**
+
+```python
+{
+    "heating_rate_f_per_hour": float | None,   # degrees F gained per hour under heat mode
+    "cooling_rate_f_per_hour": float | None,   # degrees F lost per hour under cool mode
+    "confidence": str,                          # "none" | "low" | "medium" | "high"
+    "observation_count_heat": int,             # number of heat observations used
+    "observation_count_cool": int,             # number of cool observations used
+}
+```
+
+**Confidence levels:**
+
+| Level | Condition |
+|---|---|
+| `"none"` | Fewer than 3 observations of the relevant mode |
+| `"low"` | 3–9 observations |
+| `"medium"` | 10–19 observations |
+| `"high"` | 20+ observations |
+
+Rates are computed as the median of all per-observation rates (°F delta / duration hours) to reduce sensitivity to outliers.
+
+### `get_weather_bias() -> dict`
+
+Analyzes historical records where both forecast and observed temperatures are present to detect systematic forecast error (the weather service consistently running warm or cool).
+
+**Output dict structure:**
+
+```python
+{
+    "high_bias": float,       # mean forecast high error in °F (positive = forecast runs warm)
+    "low_bias": float,        # mean forecast low error in °F (positive = forecast runs warm)
+    "confidence": str,        # "none" | "low" | "medium" | "high"
+    "sample_count": int,      # number of days used to compute the bias
+}
+```
+
+**Confidence levels:** same thresholds as `get_thermal_model()` (3/10/20 observations).
+
+### Suggestion Keys for Thermal Learning
+
+| Suggestion Key | Detection | Suggestion Text |
+|---|---|---|
+| `thermal_model_ready` | `get_thermal_model()` confidence transitions from `"none"` to `"low"` or better for both heat and cool | "Your home's thermal profile is ready. Bedtime setback depth and pre-heat timing are now tuned to your home's actual heating performance." |
+| `forecast_bias_significant` | `get_weather_bias()` high or low bias magnitude exceeds 3°F at `"medium"` or higher confidence | "Your weather service appears to run [warm/cool] by about X°F on average. Climate Advisor has adjusted its timing calculations to compensate." |
+
+### Sensor Attributes (Compliance Sensor)
+
+The following attributes are added to `sensor.climate_advisor_comfort_score` when the thermal model is available:
+
+| Attribute | Type | Description |
+|---|---|---|
+| `thermal_heating_rate` | `float \| None` | Heating rate in user's configured unit per hour (`None` if no data) |
+| `thermal_cooling_rate` | `float \| None` | Cooling rate in user's configured unit per hour (`None` if no data) |
+| `thermal_confidence` | `str` | Confidence level: `"none"`, `"low"`, `"medium"`, or `"high"` |
+| `thermal_observation_count` | `int` | Total heat + cool observations recorded |
+| `forecast_high_bias` | `float` | Forecast high bias in user's configured unit (0.0 if no data) |
+| `forecast_low_bias` | `float` | Forecast low bias in user's configured unit (0.0 if no data) |
+| `forecast_bias_confidence` | `str` | Confidence level for weather bias estimate |
+
+---
+
 ## Future Learning Capabilities (v0.3+)
 
-### Thermal Model Learning
-Track how quickly the house heats/cools under different conditions to build a simple thermal model. This enables:
-- More accurate recovery time estimates
-- Better pre-heat/pre-cool timing
-- Optimized setback depth based on actual house performance
+### ~~Thermal Model Learning~~ _(Complete — see Thermal Model section above)_
+~~Track how quickly the house heats/cools under different conditions to build a simple thermal model.~~ Implemented in Phase 5. The thermal model now drives adaptive bedtime setback depth and pre-heat start time, and exposes rates via the compliance sensor.
 
 ### Seasonal Baselines
 After a full year of data, establish seasonal baselines for runtime, comfort scores, and energy use. Detect anomalies (e.g., "Your heating runtime this November is 30% higher than last November — possible insulation issue or thermostat drift").
@@ -118,6 +201,8 @@ With utility rate data, convert runtime minutes to estimated cost and show daily
 | `short_departures` | `occupancy_setback_minutes: 5` |
 | `comfort_violations` | `setback_modifier: +2`, `morning_preheat_offset_minutes: 15` |
 | `frequent_door_pauses` | `door_pause_seconds: 300` |
+| `thermal_model_ready` | No config change — informational notification only |
+| `forecast_bias_significant` | No config change — bias is applied internally at runtime |
 
 ## Compliance Summary API
 

@@ -27,6 +27,9 @@ from .const import (
     ATTR_FAN_RUNNING,
     ATTR_FAN_RUNTIME,
     ATTR_FAN_STATUS,
+    ATTR_FORECAST_BIAS_CONFIDENCE,
+    ATTR_FORECAST_HIGH_BIAS,
+    ATTR_FORECAST_LOW_BIAS,
     ATTR_LAST_ACTION_REASON,
     ATTR_LAST_ACTION_TIME,
     ATTR_LEARNING_SUGGESTIONS,
@@ -34,11 +37,15 @@ from .const import (
     ATTR_NEXT_AUTOMATION_ACTION,
     ATTR_NEXT_AUTOMATION_TIME,
     ATTR_OCCUPANCY_MODE,
+    ATTR_THERMAL_CONFIDENCE,
+    ATTR_THERMAL_COOLING_RATE,
+    ATTR_THERMAL_HEATING_RATE,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
     DOMAIN,
 )
 from .coordinator import ClimateAdvisorCoordinator
+from .temperature import FAHRENHEIT, convert_delta
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -216,16 +223,31 @@ class ClimateAdvisorComplianceSensor(ClimateAdvisorBaseSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Include learning suggestions count and comfort range context."""
+        """Include learning suggestions count, comfort range context, and thermal model data."""
         data = self.coordinator.data or {}
         suggestions = data.get(ATTR_LEARNING_SUGGESTIONS, [])
         today = self.coordinator.today_record
-        return {
+        attrs: dict[str, Any] = {
             "pending_suggestions": len(suggestions),
             "comfort_violations_minutes_today": today.comfort_violations_minutes if today else 0.0,
             "comfort_range_low": self.coordinator.config.get("comfort_heat", 70),
             "comfort_range_high": self.coordinator.config.get("comfort_cool", 75),
         }
+        unit = self.coordinator.config.get("temp_unit", FAHRENHEIT)
+        thermal = self.coordinator.learning.get_thermal_model()
+        heat_rate_f = thermal.get("heating_rate_f_per_hour")
+        cool_rate_f = thermal.get("cooling_rate_f_per_hour")
+        attrs[ATTR_THERMAL_HEATING_RATE] = convert_delta(heat_rate_f, unit) if heat_rate_f is not None else None
+        attrs[ATTR_THERMAL_COOLING_RATE] = convert_delta(cool_rate_f, unit) if cool_rate_f is not None else None
+        attrs[ATTR_THERMAL_CONFIDENCE] = thermal.get("confidence", "none")
+        attrs["thermal_observation_count"] = thermal.get("observation_count_heat", 0) + thermal.get(
+            "observation_count_cool", 0
+        )
+        weather_bias = self.coordinator.learning.get_weather_bias()
+        attrs[ATTR_FORECAST_HIGH_BIAS] = convert_delta(weather_bias.get("high_bias", 0.0), unit)
+        attrs[ATTR_FORECAST_LOW_BIAS] = convert_delta(weather_bias.get("low_bias", 0.0), unit)
+        attrs[ATTR_FORECAST_BIAS_CONFIDENCE] = weather_bias.get("confidence", "none")
+        return attrs
 
 
 class ClimateAdvisorStatusSensor(ClimateAdvisorBaseSensor):

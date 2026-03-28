@@ -115,7 +115,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 10
+    VERSION = 11
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -924,6 +924,18 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(
                         "learning_enabled",
                         default=current.get("learning_enabled", True),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        "adaptive_preheat_enabled",
+                        default=current.get("adaptive_preheat_enabled", True),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        "adaptive_setback_enabled",
+                        default=current.get("adaptive_setback_enabled", True),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        "weather_bias_enabled",
+                        default=current.get("weather_bias_enabled", True),
                     ): selector.BooleanSelector(),
                     vol.Required(
                         "aggressive_savings",

@@ -89,17 +89,51 @@ Default values used in examples: `comfort_heat = 70`, `comfort_cool = 75`, `setb
 | Away | `setback_heat + setback_modifier` | `setback_cool - setback_modifier` | 60°F (modifier=0) | 80°F (modifier=0) |
 | Vacation | `setback_heat + setback_modifier - VACATION_SETBACK_EXTRA` | `setback_cool - setback_modifier + VACATION_SETBACK_EXTRA` | 57°F (modifier=0) | 83°F (modifier=0) |
 | Guest | Same as Home — dispatches to `handle_occupancy_home()` | Same as Home | 70°F | 75°F |
-| Bedtime | `comfort_heat - 4 + setback_modifier` | `comfort_cool + 3` | 66°F (modifier=0) | 78°F |
+| Bedtime | `compute_bedtime_setback()` (see §5a) | `compute_bedtime_setback()` (see §5a) | 66°F (modifier=0, no model) | 78°F (no model) |
 | Morning Wakeup | `comfort_heat` | `comfort_cool` | 70°F | 75°F |
 | Pre-cool (hot day) | n/a | `comfort_cool - 2` | n/a | 73°F |
 | Pre-heat (cold front, moderate) | `comfort_heat + 2` | n/a | 72°F | n/a |
 | Pre-heat (cold front, significant) | `comfort_heat + 3` | n/a | 73°F | n/a |
 
 **Notes:**
-- Bedtime cool does **not** use `setback_modifier` — it is always `comfort_cool + 3`.
-- Bedtime heat **does** use `setback_modifier` — `comfort_heat - 4 + setback_modifier`.
+- Bedtime setback depth is now computed by `compute_bedtime_setback()` in `automation.py` (see §5a). The hardcoded `−4°F / +3°F` defaults remain as fallbacks when the thermal model confidence is `"none"`.
+- Bedtime cool still applies the same `+3°F` offset logic at default; when the thermal model is active, the depth is scaled to ensure the house warms/cools back to comfort within the overnight recovery window.
+- Bedtime heat continues to incorporate `setback_modifier` on top of the computed depth.
 - `VACATION_SETBACK_EXTRA = 3` degrees beyond the normal setback.
 - Guest mode calls `handle_occupancy_home()` directly — no separate handler.
+
+### 5a. Adaptive Bedtime Setback (`compute_bedtime_setback()`)
+
+Bedtime setback depth is computed from the thermal model heating/cooling rate and the overnight recovery window:
+
+| Condition | Heat Mode | Cool Mode |
+|---|---|---|
+| Thermal model confidence is `"none"` | Fall back to `DEFAULT_SETBACK_DEPTH_F = 4°F` below `comfort_heat` | Fall back to `DEFAULT_SETBACK_DEPTH_COOL_F = 3°F` above `comfort_cool` |
+| Model available | Depth = rate × recovery_window_hours; clamped to `[MIN_SETBACK_DEPTH, MAX_SETBACK_DEPTH]` | Same formula using cooling rate |
+
+`setback_modifier` is always added to the heat setback result regardless of whether the model or the fallback was used.
+
+### 5b. Adaptive Pre-heat Start Time
+
+The pre-heat start time is computed from the thermal model heating rate and the temperature delta to be recovered:
+
+| Condition | Pre-heat Start |
+|---|---|
+| No model data (`heating_rate_f_per_hour` is `None`) | Fall back to `DEFAULT_PREHEAT_MINUTES = 120` before wakeup |
+| Model available | `minutes = (temp_delta / heating_rate_f_per_hour) × 60 × 1.3` (1.3× safety margin); clamped to `[MIN_PREHEAT_MINUTES=30, MAX_PREHEAT_MINUTES=240]` |
+
+The temperature delta is `comfort_heat − bedtime_setpoint`. The safety margin of 1.3× ensures the house reaches comfort even on colder-than-average mornings.
+
+### 5c. Predicted Temperature Graph Ramps
+
+Temperature graph ramps in the briefing are computed from the thermal model rather than using a fixed 30-minute value:
+
+| Condition | Ramp Duration |
+|---|---|
+| No model data | Default 30-minute ramp |
+| Model available | `ramp_hours = temp_delta / rate`; minimum 15 minutes; computed by `_compute_ramp_hours()` |
+
+`_compute_ramp_hours()` uses whichever rate applies to the transition direction (heating rate for rising ramps, cooling rate for falling ramps).
 
 ---
 
@@ -356,6 +390,11 @@ Complete list of all constants from `const.py` that affect runtime behavior.
 | `COMPLIANCE_THRESHOLD_LOW` | `0.3` | ratio | Learning engine: below 30% compliance triggers a suggestion |
 | `COMPLIANCE_THRESHOLD_HIGH` | `0.8` | ratio | Learning engine: above 80% compliance means advice is working |
 | `DEFAULT_FAN_MODE` | `disabled` | — | Fan control default (no fan control) |
+| `DEFAULT_SETBACK_DEPTH_F` | `4` | °F | Bedtime heat setback depth fallback when thermal model confidence is `"none"` |
+| `DEFAULT_SETBACK_DEPTH_COOL_F` | `3` | °F | Bedtime cool setback depth fallback when thermal model confidence is `"none"` |
+| `DEFAULT_PREHEAT_MINUTES` | `120` | minutes | Pre-heat lead time fallback when no thermal model data |
+| `MIN_PREHEAT_MINUTES` | `30` | minutes | Minimum clamped pre-heat lead time |
+| `MAX_PREHEAT_MINUTES` | `240` | minutes | Maximum clamped pre-heat lead time |
 
 **User-facing config keys** (set via config flow, stored in the config entry):
 
@@ -467,4 +506,4 @@ This logic table MUST be kept current for any changes to automation behavior.
 
 ---
 
-_Last Updated: 2026-03-21_
+_Last Updated: 2026-03-27_

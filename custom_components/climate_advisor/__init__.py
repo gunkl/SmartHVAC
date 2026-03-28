@@ -212,6 +212,15 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         hass.config_entries.async_update_entry(config_entry, data=new_data, version=10)
         _LOGGER.info("Migration to version 10 complete")
 
+    if config_entry.version == 10:
+        _LOGGER.info("Migrating Climate Advisor config entry from version 10 to 11")
+        new_data = {**config_entry.data}
+        for key in ("adaptive_preheat_enabled", "adaptive_setback_enabled", "weather_bias_enabled"):
+            if key not in new_data or not isinstance(new_data[key], bool):
+                new_data[key] = True
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=11)
+        _LOGGER.info("Migration to version 11 complete")
+
     return True
 
 
@@ -346,6 +355,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "force_reclassify", handle_force_reclassify, schema=vol.Schema({}))
     hass.services.async_register(DOMAIN, "resend_briefing", handle_resend_briefing, schema=vol.Schema({}))
     hass.services.async_register(DOMAIN, "dump_diagnostics", handle_dump_diagnostics, schema=vol.Schema({}))
+
+    # Schema for reset_learning_data service
+    RESET_LEARNING_SCHEMA = vol.Schema(
+        {vol.Optional("scope", default="all"): vol.In(["thermal_model", "weather_bias", "suggestions", "all"])}
+    )
+
+    async def handle_reset_learning_data(call) -> None:
+        """Handle reset_learning_data service call."""
+        scope = call.data.get("scope", "all")
+        await hass.async_add_executor_job(coordinator.learning.reset, scope)
+        _LOGGER.info("Learning data reset via service: scope=%s", scope)
+
+    hass.services.async_register(
+        DOMAIN,
+        "reset_learning_data",
+        handle_reset_learning_data,
+        schema=RESET_LEARNING_SCHEMA,
+    )
 
     # Register REST API views for the dashboard panel
     for view_cls in API_VIEWS:
