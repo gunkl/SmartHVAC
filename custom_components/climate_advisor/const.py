@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
@@ -158,6 +158,8 @@ ATTR_FAN_OVERRIDE_SINCE = "fan_override_since"
 ATTR_FAN_RUNNING = "fan_running"
 ATTR_CURRENT_SETPOINT = "current_setpoint"
 ATTR_INDOOR_TEMP = "indoor_temp"
+ATTR_HVAC_ACTION = "hvac_action"
+ATTR_HVAC_RUNTIME_TODAY = "hvac_runtime_today"
 ATTR_CONTACT_STATUS = "contact_status"
 
 # Revisit delay — follow-up check after any HVAC action (seconds)

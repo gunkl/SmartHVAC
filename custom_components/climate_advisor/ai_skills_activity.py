@@ -14,6 +14,8 @@ from .const import (
     ATTR_CONTACT_STATUS,
     ATTR_DAY_TYPE,
     ATTR_FAN_STATUS,
+    ATTR_HVAC_ACTION,
+    ATTR_HVAC_RUNTIME_TODAY,
     ATTR_LAST_ACTION_REASON,
     ATTR_LAST_ACTION_TIME,
     ATTR_LEARNING_SUGGESTIONS,
@@ -60,6 +62,8 @@ async def async_build_activity_context(
     # --- Classification ---
     day_type = data.get(ATTR_DAY_TYPE, "unknown")
     trend = data.get(ATTR_TREND, "unknown")
+    hvac_action = data.get(ATTR_HVAC_ACTION, "unknown")
+    hvac_runtime_today = data.get(ATTR_HVAC_RUNTIME_TODAY, 0)
 
     climate_entity_id: str = options.get("climate_entity", "")
     hvac_mode = "unknown"
@@ -122,6 +126,8 @@ async def async_build_activity_context(
         f"  Day type:          {day_type}",
         f"  Trend direction:   {trend}",
         f"  HVAC mode:         {hvac_mode}",
+        f"  HVAC action:       {hvac_action}",
+        f"  HVAC runtime today:{hvac_runtime_today} min",
         f"  Indoor temp:       {current_temp}",
         "",
         "## AUTOMATION STATE",

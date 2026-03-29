@@ -43,6 +43,8 @@ from .const import (
     ATTR_FAN_RUNNING,
     ATTR_FAN_RUNTIME,
     ATTR_FAN_STATUS,
+    ATTR_HVAC_ACTION,
+    ATTR_HVAC_RUNTIME_TODAY,
     ATTR_LAST_ACTION_REASON,
     ATTR_LAST_ACTION_TIME,
     ATTR_LEARNING_SUGGESTIONS,
@@ -866,6 +868,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         suggestions = self.learning.generate_suggestions()
         compliance = self.learning.get_compliance_summary()
 
+        # HVAC action (compressor/fan actual operation state) and today's runtime
+        _climate_entity_id = self.config.get("climate_entity", "")
+        _cs = self.hass.states.get(_climate_entity_id) if _climate_entity_id else None
+        hvac_action = _cs.attributes.get("hvac_action", "") if _cs else ""
+        _base_runtime = self._today_record.hvac_runtime_minutes if self._today_record else 0.0
+        _session_elapsed = (dt_util.now() - self._hvac_on_since).total_seconds() / 60 if self._hvac_on_since else 0.0
+        hvac_runtime_today = round(_base_runtime + _session_elapsed, 1)
+
         next_auto = self._compute_next_automation_action(c)
         return {
             ATTR_DAY_TYPE: c.day_type if c else "unknown",
@@ -886,6 +896,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_FAN_RUNTIME: self.automation_engine._get_fan_runtime_minutes(),
             ATTR_FAN_OVERRIDE_SINCE: self.automation_engine._fan_override_time,
             ATTR_FAN_RUNNING: self.automation_engine._fan_active,
+            ATTR_HVAC_ACTION: hvac_action,
+            ATTR_HVAC_RUNTIME_TODAY: hvac_runtime_today,
             ATTR_CONTACT_STATUS: self._compute_contact_status(),
             ATTR_AI_STATUS: self.claude_client.get_status()["status"] if self.claude_client else "disabled",
         }
