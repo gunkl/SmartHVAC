@@ -15,6 +15,10 @@ if "homeassistant" not in sys.modules:
 from custom_components.climate_advisor.automation import AutomationEngine
 from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.const import (
+    CONF_DEFAULT_PREHEAT_MINUTES,
+    CONF_MAX_PREHEAT_MINUTES,
+    CONF_MIN_PREHEAT_MINUTES,
+    CONF_PREHEAT_SAFETY_MARGIN,
     MAX_PREHEAT_MINUTES,
     MIN_PREHEAT_MINUTES,
 )
@@ -199,3 +203,87 @@ class TestAdaptivePreheat:
         asyncio.run(engine._schedule_pre_condition(c))
 
         assert "_pending_preheat" not in engine.config
+
+
+# ---------------------------------------------------------------------------
+# Config override tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptivePreheatConfigOverrides:
+    """Tests for _schedule_pre_condition() with custom config threshold overrides."""
+
+    def test_custom_default_preheat_minutes_used_when_no_model(self):
+        """default_preheat_minutes=60 in config → uses 60 min, not 120, when no model."""
+        engine = _make_engine({CONF_DEFAULT_PREHEAT_MINUTES: 60})
+        engine._thermal_model = {}
+        c = _make_classification(pre_condition_target=2.0)
+        asyncio.run(engine._schedule_pre_condition(c))
+
+        preheat = engine.config.get("_pending_preheat")
+        assert preheat is not None
+        # 60 min before sleep_time=22:30 → 21:30
+        sleep_minutes = 22 * 60 + 30
+        start_minutes = sleep_minutes - 60
+        expected_time = f"{start_minutes // 60:02d}:{start_minutes % 60:02d}"
+        assert preheat["time"] == expected_time
+
+    def test_custom_safety_margin_applied_to_adaptive_timing(self):
+        """preheat_safety_margin=1.5 → 90 min result, not 78 from default 1.3."""
+        engine = _make_engine({CONF_PREHEAT_SAFETY_MARGIN: 1.5})
+        # heating_rate=2.0°F/hr, delta=2.0°F → raw=(2/2)*60=60 min
+        # with safety 1.5 → 60 * 1.5 = 90 min
+        # with default 1.3 → 60 * 1.3 = 78 min
+        engine._thermal_model = {
+            "confidence": "high",
+            "heating_rate_f_per_hour": 2.0,
+        }
+        c = _make_classification(pre_condition_target=2.0)
+        asyncio.run(engine._schedule_pre_condition(c))
+
+        preheat = engine.config.get("_pending_preheat")
+        assert preheat is not None
+        sleep_minutes = 22 * 60 + 30
+        start_minutes = sleep_minutes - 90
+        expected_time = f"{start_minutes // 60:02d}:{start_minutes % 60:02d}"
+        assert preheat["time"] == expected_time
+
+    def test_custom_min_preheat_clamps_floor(self):
+        """min_preheat_minutes=45 → clamps raw 3.9 min UP to 45, not the default 30."""
+        engine = _make_engine({CONF_MIN_PREHEAT_MINUTES: 45})
+        # heating_rate=10.0°F/hr, delta=0.5°F → raw=(0.5/10)*60*1.3=3.9 min
+        # custom floor 45 → clamped to 45
+        # default floor 30 → would clamp to 30
+        engine._thermal_model = {
+            "confidence": "high",
+            "heating_rate_f_per_hour": 10.0,
+        }
+        c = _make_classification(pre_condition_target=0.5)
+        asyncio.run(engine._schedule_pre_condition(c))
+
+        preheat = engine.config.get("_pending_preheat")
+        assert preheat is not None
+        sleep_minutes = 22 * 60 + 30
+        start_minutes = sleep_minutes - 45
+        expected_time = f"{start_minutes // 60:02d}:{start_minutes % 60:02d}"
+        assert preheat["time"] == expected_time
+
+    def test_custom_max_preheat_clamps_ceiling(self):
+        """max_preheat_minutes=100 → clamps raw 1560 min DOWN to 100, not the default 240."""
+        engine = _make_engine({CONF_MAX_PREHEAT_MINUTES: 100})
+        # heating_rate=0.5°F/hr, delta=10°F → raw=(10/0.5)*60*1.3=1560 min
+        # custom ceiling 100 → clamped to 100
+        # default ceiling 240 → would clamp to 240
+        engine._thermal_model = {
+            "confidence": "low",
+            "heating_rate_f_per_hour": 0.5,
+        }
+        c = _make_classification(pre_condition_target=10.0)
+        asyncio.run(engine._schedule_pre_condition(c))
+
+        preheat = engine.config.get("_pending_preheat")
+        assert preheat is not None
+        sleep_minutes = 22 * 60 + 30
+        start_minutes = sleep_minutes - 100
+        expected_time = f"{start_minutes // 60:02d}:{start_minutes % 60:02d}"
+        assert preheat["time"] == expected_time

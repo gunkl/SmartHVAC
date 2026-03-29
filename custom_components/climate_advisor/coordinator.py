@@ -22,7 +22,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from .automation import AutomationEngine
+from .automation import AutomationEngine, compute_bedtime_setback
 from .briefing import generate_briefing
 from .classifier import DayClassification, ForecastSnapshot, classify_day
 from .const import (
@@ -45,7 +45,6 @@ from .const import (
     ATTR_OCCUPANCY_MODE,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
-    CONF_ADAPTIVE_SETBACK,
     CONF_AUTOMATION_GRACE_PERIOD,
     CONF_FAN_ENTITY,
     CONF_FAN_MODE,
@@ -71,7 +70,6 @@ from .const import (
     ECONOMIZER_MORNING_END_HOUR,
     ECONOMIZER_TEMP_DELTA,
     FAN_MODE_DISABLED,
-    MAX_SETBACK_DEPTH_F,
     MAX_THERMAL_RATE_F_PER_HOUR,
     MAX_WEATHER_BIAS_APPLY_F,
     MIN_THERMAL_RATE_F_PER_HOUR,
@@ -82,7 +80,6 @@ from .const import (
     OCCUPANCY_HOME,
     OCCUPANCY_SETBACK_MINUTES,
     OCCUPANCY_VACATION,
-    SETBACK_RECOVERY_BUFFER_MINUTES,
     TEMP_SOURCE_CLIMATE_FALLBACK,
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_SENSOR,
@@ -91,7 +88,7 @@ from .const import (
 )
 from .learning import DailyRecord, LearningEngine
 from .state import StatePersistence
-from .temperature import format_temp, to_fahrenheit
+from .temperature import convert_delta, format_temp, to_fahrenheit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1103,9 +1100,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if classification is not None:
             hvac_mode = classification.hvac_mode
             if hvac_mode == "heat":
-                bedtime_setback_heat = self._compute_bedtime_target(classification, thermal_model)
+                bedtime_setback_heat = compute_bedtime_setback(self.config, thermal_model, classification)
             elif hvac_mode == "cool":
-                bedtime_setback_cool = self._compute_bedtime_target(classification, thermal_model)
+                bedtime_setback_cool = compute_bedtime_setback(self.config, thermal_model, classification)
+        if bedtime_setback_heat is not None or bedtime_setback_cool is not None:
+            _LOGGER.debug(
+                "Bedtime setback: heat=%s cool=%s (via compute_bedtime_setback)",
+                f"{bedtime_setback_heat:.1f}°F" if bedtime_setback_heat is not None else "n/a",
+                f"{bedtime_setback_cool:.1f}°F" if bedtime_setback_cool is not None else "n/a",
+            )
 
         briefing_kwargs = dict(
             classification=classification,
@@ -1664,7 +1667,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             unit = self.config.get("temp_unit", "fahrenheit")
             if c.hvac_mode in ("heat", "cool"):
                 thermal_model = getattr(self.automation_engine, "_thermal_model", None) or {}
-                bedtime_target = self._compute_bedtime_target(c, thermal_model)
+                bedtime_target = compute_bedtime_setback(self.config, thermal_model, c)
+                _LOGGER.debug(
+                    "Bedtime setback: %.1f°F (via compute_bedtime_setback)",
+                    bedtime_target,
+                )
                 mode_label = "heat" if c.hvac_mode == "heat" else "cool"
                 events.append((st, f"Bedtime — {mode_label} setback to {format_temp(bedtime_target, unit)}"))
             else:
@@ -1678,62 +1685,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         next_time, next_desc = events[0]
         time_str = next_time.strftime("%I:%M %p").lstrip("0")
         return (next_desc, time_str)
-
-    def _compute_bedtime_target(self, c: DayClassification, thermal_model: dict) -> float:
-        """Compute bedtime setback target temperature.
-
-        Uses thermal model if confident, otherwise falls back to hardcoded defaults.
-        """
-        if c.hvac_mode == "heat":
-            comfort = self.config.get("comfort_heat", 70)
-            floor = self.config.get("setback_heat", 60)
-            rate = thermal_model.get("heating_rate_f_per_hour")
-            default_depth = DEFAULT_SETBACK_DEPTH_F
-            setback_modifier = c.setback_modifier
-        elif c.hvac_mode == "cool":
-            comfort = self.config.get("comfort_cool", 75)
-            floor = self.config.get("setback_cool", 80)
-            rate = thermal_model.get("cooling_rate_f_per_hour")
-            default_depth = DEFAULT_SETBACK_DEPTH_COOL_F
-            setback_modifier = -c.setback_modifier
-        else:
-            return self.config.get("comfort_heat", 70)
-
-        if not self.config.get("learning_enabled", True) or not self.config.get(CONF_ADAPTIVE_SETBACK, True):
-            _LOGGER.debug(
-                "Adaptive setback disabled — using default depth %.1f°F (%s mode)",
-                default_depth,
-                c.hvac_mode,
-            )
-            depth = default_depth
-            if c.hvac_mode == "heat":
-                raw = comfort - depth + setback_modifier
-                return max(raw, floor)
-            else:
-                raw = comfort + depth + setback_modifier
-                return min(raw, floor)
-
-        confidence = thermal_model.get("confidence", "none")
-        if confidence == "none" or rate is None:
-            depth = default_depth
-        else:
-            wake = _parse_time(self.config.get("wake_time", "06:30"))
-            sleep = _parse_time(self.config.get("sleep_time", "22:30"))
-            sleep_minutes = sleep.hour * 60 + sleep.minute
-            wake_minutes = wake.hour * 60 + wake.minute
-            if wake_minutes < sleep_minutes:
-                wake_minutes += 24 * 60
-            overnight_minutes = wake_minutes - sleep_minutes
-            available = overnight_minutes - SETBACK_RECOVERY_BUFFER_MINUTES
-            max_recoverable = rate * (available / 60.0)
-            depth = min(max(max_recoverable, 0.0), MAX_SETBACK_DEPTH_F)
-
-        if c.hvac_mode == "heat":
-            raw = comfort - depth + setback_modifier
-            return max(raw, floor)
-        else:
-            raw = comfort + depth + setback_modifier
-            return min(raw, floor)
 
     @property
     def current_classification(self) -> DayClassification | None:
@@ -1804,12 +1755,36 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             thermal_model=getattr(self.automation_engine, "_thermal_model", None),
         )
 
+        thermal_model = self.learning.get_thermal_model() if self.learning else {}
+        unit = self.config.get("temp_unit", "fahrenheit")
+        _LOGGER.debug(
+            "Chart data: thermal_model confidence=%s heat_obs=%d cool_obs=%d",
+            thermal_model.get("confidence", "none"),
+            thermal_model.get("observation_count_heat", 0),
+            thermal_model.get("observation_count_cool", 0),
+        )
         return {
             "predicted_outdoor": predicted_outdoor,
             "predicted_indoor": predicted_indoor,
             "actual_outdoor": [{"time": ts, "temp": t} for ts, t in self._outdoor_temp_history],
             "actual_indoor": [{"time": ts, "temp": t} for ts, t in self._indoor_temp_history],
             "current_hour": round(current_hour, 1),
+            "thermal_model": {
+                "confidence": thermal_model.get("confidence", "none"),
+                "observation_count_heat": thermal_model.get("observation_count_heat", 0),
+                "observation_count_cool": thermal_model.get("observation_count_cool", 0),
+                "heating_rate": (
+                    convert_delta(thermal_model["heating_rate_f_per_hour"], unit)
+                    if "heating_rate_f_per_hour" in thermal_model
+                    else None
+                ),
+                "cooling_rate": (
+                    convert_delta(thermal_model["cooling_rate_f_per_hour"], unit)
+                    if "cooling_rate_f_per_hour" in thermal_model
+                    else None
+                ),
+                "unit": unit,
+            },
         }
 
     def get_debug_state(self) -> dict[str, Any]:

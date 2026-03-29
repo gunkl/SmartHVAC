@@ -88,6 +88,20 @@ FULL_CONFIG_V10 = {
     for k, v in FULL_CONFIG.items()
     if k not in ("adaptive_preheat_enabled", "adaptive_setback_enabled", "weather_bias_enabled")
 }
+# v11 = v10 + three adaptive keys; does NOT contain the five v12 preheat/setback threshold keys
+_V12_THRESHOLD_KEYS = (
+    "min_preheat_minutes",
+    "max_preheat_minutes",
+    "default_preheat_minutes",
+    "preheat_safety_margin",
+    "max_setback_depth_f",
+)
+FULL_CONFIG_V11 = {
+    **FULL_CONFIG,
+    "adaptive_preheat_enabled": True,
+    "adaptive_setback_enabled": True,
+    "weather_bias_enabled": True,
+}
 
 # v7 config (before migration to v8) — has email_notify instead of per-event toggles
 FULL_CONFIG_V7 = {
@@ -899,7 +913,7 @@ class TestMigrationV8ToV9:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 11
+        assert entry.version == 12
 
     def test_chain_from_v1_includes_temp_unit(self):
         """v1 entry chains through all migrations and ends up with temp_unit."""
@@ -931,7 +945,7 @@ class TestMigrationV8ToV9:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 11
+        assert entry.version == 12
 
 
 # ---------------------------------------------------------------------------
@@ -992,7 +1006,7 @@ class TestMigrationV9ToV10:
         result = asyncio.run(async_migrate_entry(hass, entry))
         assert result is True
         assert final_data.get("welcome_home_debounce_seconds") == 3600
-        assert entry.version == 11
+        assert entry.version == 12
 
     def test_chain_from_v1_includes_debounce(self):
         """v1 entry chains through all migrations and ends up with welcome_home_debounce_seconds."""
@@ -1024,7 +1038,7 @@ class TestMigrationV9ToV10:
         assert result is True
         assert final_data.get("welcome_home_debounce_seconds") == 3600
         assert final_data.get("temp_unit") == "fahrenheit"
-        assert entry.version == 11
+        assert entry.version == 12
 
 
 class TestMigrationV10ToV11:
@@ -1080,7 +1094,112 @@ class TestMigrationV10ToV11:
         assert final_data.get("adaptive_preheat_enabled") is True
         assert final_data.get("adaptive_setback_enabled") is True
         assert final_data.get("weather_bias_enabled") is True
-        assert entry.version == 11
+        assert entry.version == 12
+
+
+class TestMigrationV11ToV12:
+    """Tests for config entry migration from version 11 to version 12."""
+
+    def test_v11_to_v12_defaults_set(self):
+        """v11 entry with no threshold keys gets all five keys with correct defaults."""
+        from custom_components.climate_advisor import async_migrate_entry
+
+        entry = _make_config_entry(dict(FULL_CONFIG_V11), version=11)
+        hass = _make_hass()
+        final_data: dict = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.clear()
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert final_data.get("min_preheat_minutes") == 30
+        assert final_data.get("max_preheat_minutes") == 240
+        assert final_data.get("default_preheat_minutes") == 120
+        assert final_data.get("preheat_safety_margin") == 1.3
+        assert final_data.get("max_setback_depth_f") == 8.0
+        assert entry.version == 12
+
+    def test_v11_to_v12_existing_values_preserved(self):
+        """v11 entry with all threshold keys set retains those values after migration."""
+        from custom_components.climate_advisor import async_migrate_entry
+
+        v11_with_thresholds = {
+            **FULL_CONFIG_V11,
+            "min_preheat_minutes": 45,
+            "max_preheat_minutes": 180,
+            "default_preheat_minutes": 90,
+            "preheat_safety_margin": 1.5,
+            "max_setback_depth_f": 6.0,
+        }
+        entry = _make_config_entry(v11_with_thresholds, version=11)
+        hass = _make_hass()
+        final_data: dict = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.clear()
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert final_data.get("min_preheat_minutes") == 45
+        assert final_data.get("max_preheat_minutes") == 180
+        assert final_data.get("default_preheat_minutes") == 90
+        assert final_data.get("preheat_safety_margin") == 1.5
+        assert final_data.get("max_setback_depth_f") == 6.0
+        assert entry.version == 12
+
+    def test_v11_to_v12_invalid_type_replaced(self):
+        """v11 entry where min_preheat_minutes is a non-numeric string gets the default."""
+        from custom_components.climate_advisor import async_migrate_entry
+
+        v11_bad = {**FULL_CONFIG_V11, "min_preheat_minutes": "bad"}
+        entry = _make_config_entry(v11_bad, version=11)
+        hass = _make_hass()
+        final_data: dict = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.clear()
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert final_data.get("min_preheat_minutes") == 30
+        assert entry.version == 12
+
+    def test_v11_to_v12_from_v10_chain(self):
+        """v10 entry chains through v11 and v12 migrations; all five threshold keys get defaults."""
+        from custom_components.climate_advisor import async_migrate_entry
+
+        entry = _make_config_entry(dict(FULL_CONFIG_V10), version=10)
+        hass = _make_hass()
+        final_data: dict = {}
+
+        def capture_update(entry, *, data, version):
+            final_data.clear()
+            final_data.update(data)
+            entry.data = dict(data)
+            entry.version = version
+
+        hass.config_entries.async_update_entry.side_effect = capture_update
+        result = asyncio.run(async_migrate_entry(hass, entry))
+        assert result is True
+        assert entry.version == 12
+        assert final_data.get("min_preheat_minutes") == 30
+        assert final_data.get("max_preheat_minutes") == 240
+        assert final_data.get("default_preheat_minutes") == 120
+        assert final_data.get("preheat_safety_margin") == 1.3
+        assert final_data.get("max_setback_depth_f") == 8.0
 
 
 # ---------------------------------------------------------------------------

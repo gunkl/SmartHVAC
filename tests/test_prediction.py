@@ -9,6 +9,7 @@ import pytest
 
 from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.coordinator import (
+    ClimateAdvisorCoordinator,
     _build_outdoor_curve,
     _compute_ramp_hours,
     _cosine_outdoor_curve,
@@ -744,3 +745,107 @@ class TestHourlyForecastOutdoorPrediction:
 
         expected = _cosine_outdoor_curve(_HIGH, _LOW)
         assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# Phase 3F3: get_chart_data() thermal_model inclusion
+# ---------------------------------------------------------------------------
+
+
+def _make_chart_coordinator(temp_unit: str = "fahrenheit", thermal_model_return: dict | None = None) -> object:
+    """Create a minimal coordinator stub for testing get_chart_data()."""
+    coord = object.__new__(ClimateAdvisorCoordinator)
+    coord.config = {"temp_unit": temp_unit}
+    coord._current_classification = None
+    coord._hourly_forecast_temps = None
+    coord._outdoor_temp_history = []
+    coord._indoor_temp_history = []
+
+    ae = MagicMock()
+    ae._thermal_model = None
+    coord.automation_engine = ae
+
+    learning = MagicMock()
+    learning.get_thermal_model.return_value = thermal_model_return if thermal_model_return is not None else {}
+    coord.learning = learning
+
+    return coord
+
+
+def _mock_dt_util_fixed(hour: int = 12, minute: int = 0):
+    """Return a dt_util mock whose now() returns a fixed time."""
+    mock = MagicMock()
+    mock.now.return_value.hour = hour
+    mock.now.return_value.minute = minute
+    mock.as_local = lambda dt: dt
+    return mock
+
+
+class TestGetChartDataThermalModel:
+    """Tests verifying that get_chart_data() includes a correct thermal_model dict."""
+
+    def test_chart_data_includes_thermal_model_key(self):
+        """When model has no rates, thermal_model key includes confidence='none' and None rates."""
+        model_return = {
+            "confidence": "none",
+            "observation_count_heat": 0,
+            "observation_count_cool": 0,
+        }
+        coord = _make_chart_coordinator(temp_unit="fahrenheit", thermal_model_return=model_return)
+
+        with patch(
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util_fixed(12, 0),
+        ):
+            chart = coord.get_chart_data()
+
+        assert "thermal_model" in chart
+        tm = chart["thermal_model"]
+        assert tm["confidence"] == "none"
+        assert tm["heating_rate"] is None
+        assert tm["cooling_rate"] is None
+        assert tm["observation_count_heat"] == 0
+        assert tm["observation_count_cool"] == 0
+
+    def test_chart_data_thermal_model_rates_unit_converted(self):
+        """In Celsius mode, heating_rate is converted via *5/9; missing cooling_rate is None."""
+        model_return = {
+            "confidence": "low",
+            "observation_count_heat": 6,
+            "observation_count_cool": 0,
+            "heating_rate_f_per_hour": 2.0,
+        }
+        coord = _make_chart_coordinator(temp_unit="celsius", thermal_model_return=model_return)
+
+        with patch(
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util_fixed(12, 0),
+        ):
+            chart = coord.get_chart_data()
+
+        tm = chart["thermal_model"]
+        assert tm["heating_rate"] == pytest.approx(2.0 * 5 / 9)
+        assert tm["cooling_rate"] is None
+        assert tm["unit"] == "celsius"
+
+    def test_chart_data_thermal_model_fahrenheit_rates_unchanged(self):
+        """In Fahrenheit mode, heating_rate and cooling_rate are returned as-is."""
+        model_return = {
+            "confidence": "high",
+            "observation_count_heat": 20,
+            "observation_count_cool": 15,
+            "heating_rate_f_per_hour": 3.5,
+            "cooling_rate_f_per_hour": 2.0,
+        }
+        coord = _make_chart_coordinator(temp_unit="fahrenheit", thermal_model_return=model_return)
+
+        with patch(
+            "custom_components.climate_advisor.coordinator.dt_util",
+            _mock_dt_util_fixed(12, 0),
+        ):
+            chart = coord.get_chart_data()
+
+        tm = chart["thermal_model"]
+        assert tm["heating_rate"] == pytest.approx(3.5)
+        assert tm["cooling_rate"] == pytest.approx(2.0)
+        assert tm["unit"] == "fahrenheit"

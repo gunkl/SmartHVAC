@@ -268,6 +268,11 @@
           "adaptive_preheat_enabled": "Adaptive Pre-heat Timing",
           "adaptive_setback_enabled": "Adaptive Bedtime Setback",
           "weather_bias_enabled": "Weather Forecast Bias Correction",
+          "min_preheat_minutes": "Minimum Pre-heat Time (min)",
+          "max_preheat_minutes": "Maximum Pre-heat Time (min)",
+          "default_preheat_minutes": "Default Pre-heat Time (min)",
+          "preheat_safety_margin": "Pre-heat Safety Margin",
+          "max_setback_depth_f": "Maximum Setback Depth (\u00b0F)",
           "aggressive_savings": "Prefer savings over comfort"
         },
         "data_description": {
@@ -275,6 +280,11 @@
           "adaptive_preheat_enabled": "Use learned heating rate to compute pre-heat start time. Requires learning to be enabled.",
           "adaptive_setback_enabled": "Use learned heating/cooling rate to compute maximum safe setback depth. Requires learning to be enabled.",
           "weather_bias_enabled": "Apply a location-specific correction to tomorrow's forecast based on observed forecast accuracy. Requires learning to be enabled.",
+          "min_preheat_minutes": "Shortest pre-heat window the system will ever schedule.",
+          "max_preheat_minutes": "Longest pre-heat window the system will ever schedule.",
+          "default_preheat_minutes": "Pre-heat duration used before enough observations are collected.",
+          "preheat_safety_margin": "Multiplier applied to model-computed pre-heat time as a buffer (e.g. 1.2 = 20% extra).",
+          "max_setback_depth_f": "Largest overnight setback the adaptive engine may compute.",
           "aggressive_savings": "When enabled, Climate Advisor favors energy savings over comfort \u2014 for example, using wider temperature swings and earlier setbacks."
         }
       }

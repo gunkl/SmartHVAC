@@ -65,6 +65,7 @@ def compute_bedtime_setback(
     Returns the setback TARGET temperature (not the depth).
     """
     from .const import (
+        CONF_MAX_SETBACK_DEPTH,
         DEFAULT_SETBACK_DEPTH_COOL_F,
         DEFAULT_SETBACK_DEPTH_F,
         MAX_SETBACK_DEPTH_F,
@@ -113,7 +114,9 @@ def compute_bedtime_setback(
         overnight_minutes = wake_minutes - sleep_minutes
         available = overnight_minutes - SETBACK_RECOVERY_BUFFER_MINUTES
         max_recoverable = rate * (available / 60.0)
-        depth = min(max(max_recoverable, 0.0), MAX_SETBACK_DEPTH_F)
+        max_depth = config.get(CONF_MAX_SETBACK_DEPTH, MAX_SETBACK_DEPTH_F)
+        _LOGGER.debug("Max setback depth: %.1f°F (config=%s)", max_depth, CONF_MAX_SETBACK_DEPTH in config)
+        depth = min(max(max_recoverable, 0.0), max_depth)
         if hvac_mode == "heat":
             _adaptive_target = max(comfort - depth + setback_modifier, floor)
         else:
@@ -459,6 +462,10 @@ class AutomationEngine:
         if c.trend_direction == "cooling" and c.pre_condition_target and c.pre_condition_target > 0:
             # Pre-heat: schedule a bump relative to sleep_time using adaptive timing
             from .const import (
+                CONF_DEFAULT_PREHEAT_MINUTES,
+                CONF_MAX_PREHEAT_MINUTES,
+                CONF_MIN_PREHEAT_MINUTES,
+                CONF_PREHEAT_SAFETY_MARGIN,
                 DEFAULT_PREHEAT_MINUTES,
                 MAX_PREHEAT_MINUTES,
                 MIN_PREHEAT_MINUTES,
@@ -472,7 +479,7 @@ class AutomationEngine:
             if not self.config.get("learning_enabled", True) or not self.config.get(CONF_ADAPTIVE_PREHEAT, True):
                 _LOGGER.debug(
                     "Adaptive pre-heat disabled — using default %d min",
-                    DEFAULT_PREHEAT_MINUTES,
+                    self.config.get(CONF_DEFAULT_PREHEAT_MINUTES, DEFAULT_PREHEAT_MINUTES),
                 )
                 thermal_model = {}
 
@@ -482,12 +489,23 @@ class AutomationEngine:
             # pre_condition_target is the degrees to raise (positive for heating)
             temp_rise = getattr(c, "pre_condition_target", 2.0) or 2.0
 
+            min_min = self.config.get(CONF_MIN_PREHEAT_MINUTES, MIN_PREHEAT_MINUTES)
+            max_min = self.config.get(CONF_MAX_PREHEAT_MINUTES, MAX_PREHEAT_MINUTES)
+            default_min = self.config.get(CONF_DEFAULT_PREHEAT_MINUTES, DEFAULT_PREHEAT_MINUTES)
+            safety = self.config.get(CONF_PREHEAT_SAFETY_MARGIN, PREHEAT_SAFETY_MARGIN)
+            _LOGGER.debug(
+                "Pre-heat thresholds: min=%d max=%d default=%d safety=%.2f (from config)",
+                min_min,
+                max_min,
+                default_min,
+                safety,
+            )
             _adaptive_preheat_active = False
             if confidence == "none" or heating_rate is None or heating_rate <= 0:
-                minutes_needed = DEFAULT_PREHEAT_MINUTES
+                minutes_needed = default_min
             else:
-                minutes_needed = (temp_rise / heating_rate) * 60.0 * PREHEAT_SAFETY_MARGIN
-                minutes_needed = max(MIN_PREHEAT_MINUTES, min(MAX_PREHEAT_MINUTES, minutes_needed))
+                minutes_needed = (temp_rise / heating_rate) * 60.0 * safety
+                minutes_needed = max(min_min, min(max_min, minutes_needed))
                 _adaptive_preheat_active = True
 
             # Compute preheat start time relative to sleep_time
@@ -507,7 +525,7 @@ class AutomationEngine:
                     heating_rate,
                     temp_rise,
                     int(minutes_needed),
-                    PREHEAT_SAFETY_MARGIN,
+                    safety,
                     preheat_time_str,
                 )
 

@@ -48,6 +48,11 @@ EXPECTED_KEYS = {
     "guest_toggle_invert",
     "temp_unit",
     "welcome_home_debounce_seconds",
+    "min_preheat_minutes",
+    "max_preheat_minutes",
+    "default_preheat_minutes",
+    "preheat_safety_margin",
+    "max_setback_depth_f",
 }
 
 VALID_CATEGORIES = {"core", "sensors", "fan", "schedule", "advanced", "occupancy", "notifications"}

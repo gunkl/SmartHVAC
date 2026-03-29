@@ -325,6 +325,11 @@
     </div>
   </div>
 
+  <div id="thermal-model-panel" class="card" style="display:none">
+    <h2>Thermal Learning Model</h2>
+    <div id="thermal-model-content"></div>
+  </div>
+
   <div class="card">
     <h2>Actions</h2>
     <div class="btn-group">
@@ -682,10 +687,42 @@
     }
   }
 
+  function updateThermalPanel(tm) {
+    const panel = document.getElementById('thermal-model-panel');
+    const content = document.getElementById('thermal-model-content');
+    if (!tm) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    const badgeColors = { none: '#9e9e9e', low: '#ff9800', medium: '#2196f3', high: '#4caf50' };
+    const badgeColor = badgeColors[tm.confidence] || '#9e9e9e';
+    const confLabel = tm.confidence.charAt(0).toUpperCase() + tm.confidence.slice(1);
+    const unitLabel = tm.unit === 'celsius' ? '°C/hr' : '°F/hr';
+    const totalObs = (tm.observation_count_heat || 0) + (tm.observation_count_cool || 0);
+    const nextThreshold = totalObs < 5 ? 5 : totalObs < 15 ? 15 : totalObs < 30 ? 30 : 30;
+    const progressPct = totalObs >= 30 ? 100 : Math.round((totalObs / nextThreshold) * 100);
+    let rateHtml = '';
+    if (tm.confidence !== 'none') {
+      const hRate = tm.heating_rate != null ? tm.heating_rate.toFixed(2) : '—';
+      const cRate = tm.cooling_rate != null ? tm.cooling_rate.toFixed(2) : '—';
+      rateHtml = `<div style="margin-top:8px;font-size:0.85rem;color:var(--text-secondary,#666)">` +
+        `Heat rate: <strong>${hRate} ${unitLabel}</strong> &nbsp;|&nbsp; ` +
+        `Cool rate: <strong>${cRate} ${unitLabel}</strong></div>`;
+    }
+    content.innerHTML =
+      `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">` +
+      `<span style="background:${badgeColor};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;font-weight:600">${confLabel}</span>` +
+      `<span style="font-size:0.85rem">${totalObs} observations</span>` +
+      `</div>` +
+      `<div style="background:#e0e0e0;border-radius:4px;height:8px;overflow:hidden">` +
+      `<div style="background:${badgeColor};width:${progressPct}%;height:100%;transition:width 0.3s"></div>` +
+      `</div>` +
+      rateHtml;
+  }
+
   async function loadChart() {
     try {
       const data = await apiFetch('chart_data');
       drawChart(data);
+      updateThermalPanel(data.thermal_model || null);
     } catch (e) {
       console.error('Chart load failed:', e);
     }

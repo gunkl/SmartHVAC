@@ -15,6 +15,7 @@ if "homeassistant" not in sys.modules:
 from custom_components.climate_advisor.automation import compute_bedtime_setback
 from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.const import (
+    CONF_MAX_SETBACK_DEPTH,
     DEFAULT_SETBACK_DEPTH_COOL_F,
     DEFAULT_SETBACK_DEPTH_F,
     MAX_SETBACK_DEPTH_F,
@@ -138,3 +139,44 @@ class TestComputeBedtimeSetback:
         result = compute_bedtime_setback(_BASE_CONFIG, model, c)
         # With rate=10, depth=8 (capped), cool setback goes UP: 75+8=83 > setback_cool=80 → clamped to 80
         assert result == pytest.approx(_BASE_CONFIG["setback_cool"])
+
+
+class TestAdaptiveSetbackConfigOverrides:
+    """Tests for max_setback_depth_f config override in compute_bedtime_setback()."""
+
+    def test_custom_max_setback_depth_constrains_depth(self):
+        """Custom max_setback_depth_f=3.0 clamps depth below the computed max_recoverable."""
+        # comfort_heat=70, setback_heat=60, wake_time="07:00", sleep_time="23:00"
+        # overnight = 8h = 480 min, available = 480 - 30 = 450 min = 7.5h
+        # heating_rate=3.0 °F/hr → max_recoverable = 3.0 * 7.5 = 22.5°F
+        # With custom max_depth=3.0 → depth=min(22.5, 3.0)=3.0 → target=70-3.0=67
+        config = dict(
+            _BASE_CONFIG,
+            comfort_heat=70,
+            setback_heat=60,
+            wake_time="07:00",
+            sleep_time="23:00",
+            **{CONF_MAX_SETBACK_DEPTH: 3.0},
+        )
+        c = _make_classification(hvac_mode="heat")
+        model = {"confidence": "high", "heating_rate_f_per_hour": 3.0}
+        result = compute_bedtime_setback(config, model, c)
+        assert result == pytest.approx(67.0)
+
+    def test_default_max_setback_depth_used_when_not_in_config(self):
+        """When max_setback_depth_f is absent, the default 8.0 cap is applied."""
+        # comfort_heat=70, setback_heat=60, wake_time="07:00", sleep_time="23:00"
+        # overnight = 8h = 480 min, available = 480 - 30 = 450 min = 7.5h
+        # heating_rate=3.0 °F/hr → max_recoverable = 3.0 * 7.5 = 22.5°F
+        # Default max_depth=8.0 → depth=min(22.5, 8.0)=8.0 → target=70-8.0=62
+        config = dict(
+            _BASE_CONFIG,
+            comfort_heat=70,
+            setback_heat=60,
+            wake_time="07:00",
+            sleep_time="23:00",
+        )
+        c = _make_classification(hvac_mode="heat")
+        model = {"confidence": "high", "heating_rate_f_per_hour": 3.0}
+        result = compute_bedtime_setback(config, model, c)
+        assert result == pytest.approx(62.0)

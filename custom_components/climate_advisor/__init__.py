@@ -221,6 +221,25 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         hass.config_entries.async_update_entry(config_entry, data=new_data, version=11)
         _LOGGER.info("Migration to version 11 complete")
 
+    if config_entry.version == 11:
+        _LOGGER.info("Migrating Climate Advisor config entry from version 11 to 12")
+        new_data = {**config_entry.data}
+        new_data.setdefault("min_preheat_minutes", 30)
+        new_data.setdefault("max_preheat_minutes", 240)
+        new_data.setdefault("default_preheat_minutes", 120)
+        new_data.setdefault("preheat_safety_margin", 1.3)
+        new_data.setdefault("max_setback_depth_f", 8.0)
+        _int_defaults = {"min_preheat_minutes": 30, "max_preheat_minutes": 240, "default_preheat_minutes": 120}
+        for key, default in _int_defaults.items():
+            if not isinstance(new_data[key], (int, float)):
+                new_data[key] = default
+        _float_defaults = {"preheat_safety_margin": 1.3, "max_setback_depth_f": 8.0}
+        for key, default in _float_defaults.items():
+            if not isinstance(new_data[key], (int, float)):
+                new_data[key] = default
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=12)
+        _LOGGER.info("Migration to version 12 complete")
+
     return True
 
 

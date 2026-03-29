@@ -345,6 +345,7 @@ class TestBriefingNotificationSplit:
         coord.learning = MagicMock()
         coord.learning.generate_suggestions.return_value = []
         coord.learning.get_last_suggestion_keys.return_value = []
+        coord.learning.get_thermal_model.return_value = {}
         coord.learning.start_day = MagicMock()
 
         # Mock state saving

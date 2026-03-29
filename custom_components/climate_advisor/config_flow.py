@@ -115,7 +115,7 @@ def _entity_selector_for_source(source: str) -> selector.EntitySelector:
 class ClimateAdvisorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Climate Advisor."""
 
-    VERSION = 11
+    VERSION = 12
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -937,6 +937,36 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                         "weather_bias_enabled",
                         default=current.get("weather_bias_enabled", True),
                     ): selector.BooleanSelector(),
+                    vol.Required(
+                        "min_preheat_minutes",
+                        default=current.get("min_preheat_minutes", 30),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=5, max=60, step=5, mode=selector.NumberSelectorMode.BOX)
+                    ),
+                    vol.Required(
+                        "max_preheat_minutes",
+                        default=current.get("max_preheat_minutes", 240),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=30, max=240, step=15, mode=selector.NumberSelectorMode.BOX)
+                    ),
+                    vol.Required(
+                        "default_preheat_minutes",
+                        default=current.get("default_preheat_minutes", 120),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX)
+                    ),
+                    vol.Required(
+                        "preheat_safety_margin",
+                        default=current.get("preheat_safety_margin", 1.3),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=1.0, max=2.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
+                    ),
+                    vol.Required(
+                        "max_setback_depth_f",
+                        default=current.get("max_setback_depth_f", 8.0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=1.0, max=10.0, step=0.5, mode=selector.NumberSelectorMode.BOX)
+                    ),
                     vol.Required(
                         "aggressive_savings",
                         default=current.get("aggressive_savings", False),

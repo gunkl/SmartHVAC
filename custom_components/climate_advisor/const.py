@@ -44,6 +44,13 @@ CONF_ADAPTIVE_PREHEAT = "adaptive_preheat_enabled"
 CONF_ADAPTIVE_SETBACK = "adaptive_setback_enabled"
 CONF_WEATHER_BIAS = "weather_bias_enabled"
 
+# Thermal learning threshold config keys (Issue #62)
+CONF_MIN_PREHEAT_MINUTES = "min_preheat_minutes"
+CONF_MAX_PREHEAT_MINUTES = "max_preheat_minutes"
+CONF_DEFAULT_PREHEAT_MINUTES = "default_preheat_minutes"
+CONF_PREHEAT_SAFETY_MARGIN = "preheat_safety_margin"
+CONF_MAX_SETBACK_DEPTH = "max_setback_depth_f"
+
 # Debounce and grace period config keys
 CONF_SENSOR_DEBOUNCE = "sensor_debounce_seconds"
 CONF_MANUAL_GRACE_PERIOD = "manual_grace_seconds"
@@ -421,6 +428,31 @@ CONFIG_METADATA = {
         "description": (
             "Apply a location-specific correction to tomorrow's forecast based on observed forecast accuracy."
         ),
+    },
+    "min_preheat_minutes": {
+        "label": "Minimum Pre-heat Time (min)",
+        "description": "Shortest pre-heat window the system will ever schedule.",
+        "category": "advanced",
+    },
+    "max_preheat_minutes": {
+        "label": "Maximum Pre-heat Time (min)",
+        "description": "Longest pre-heat window the system will ever schedule.",
+        "category": "advanced",
+    },
+    "default_preheat_minutes": {
+        "label": "Default Pre-heat Time (min)",
+        "description": "Pre-heat duration used before enough observations are collected.",
+        "category": "advanced",
+    },
+    "preheat_safety_margin": {
+        "label": "Pre-heat Safety Margin",
+        "description": ("Multiplier applied to model-computed pre-heat time as a buffer (e.g. 1.2 = 20% extra)."),
+        "category": "advanced",
+    },
+    "max_setback_depth_f": {
+        "label": "Maximum Setback Depth (°F)",
+        "description": "Largest overnight setback the adaptive engine may compute.",
+        "category": "advanced",
     },
     "aggressive_savings": {
         "label": "Prefer Savings Over Comfort",
