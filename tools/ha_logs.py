@@ -19,6 +19,9 @@ REST API history mode (--history):
     python3 tools/ha_logs.py --history --entity sensor.climate_advisor_status
     python3 tools/ha_logs.py --history --entity sensor.climate_advisor_status --hours 48
     python3 tools/ha_logs.py --history --entity sensor.climate_advisor_status,sensor.climate_advisor_day_type
+    python3 tools/ha_logs.py --history --start "2026-03-28T18:00:00"
+    python3 tools/ha_logs.py --history --start "2026-03-28T18:00:00" --end "2026-03-29T09:00:00"
+    python3 tools/ha_logs.py --history --entity sensor.climate_advisor_status --start "2026-03-28T18:00:00"
 """
 
 import argparse
@@ -89,15 +92,42 @@ def _ha_api_request(url: str, token: str) -> object:
         sys.exit(1)
 
 
+def _parse_local_timestamp(ts: str) -> datetime:
+    """Parse an ISO 8601-like local timestamp and return a UTC-aware datetime.
+
+    Accepts formats: "2026-03-28T18:00:00", "2026-03-28 18:00:00", "2026-03-28T18:00".
+    The value is treated as local system time and converted to UTC.
+    """
+    ts = ts.strip().replace(" ", "T")
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            naive = datetime.strptime(ts, fmt)
+            # Convert local naive datetime to UTC
+            local_tz = datetime.now(UTC).astimezone().tzinfo
+            return naive.replace(tzinfo=local_tz).astimezone(UTC)
+        except ValueError:
+            continue
+    print(f"ERROR: Cannot parse timestamp '{ts}'. Use format: YYYY-MM-DDTHH:MM:SS", file=sys.stderr)
+    sys.exit(1)
+
+
+def _format_api_timestamp(dt: datetime) -> str:
+    """Format a UTC datetime as an ISO 8601 string for HA REST API URLs."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
 def fetch_history(
     config: dict[str, str],
     entity_filter: str = "",
     hours_back: int = 24,
     filter_text: str = "",
+    start_dt: datetime | None = None,
+    end_dt: datetime | None = None,
 ) -> str:
     """Fetch logbook entries from the HA REST API.
 
     Queries /api/logbook/{timestamp} for the given time window.
+    When start_dt is provided, uses it directly (ignoring hours_back).
     Optionally filters by entity ID and/or text match.
     Returns formatted text suitable for printing.
     """
@@ -111,12 +141,19 @@ def fetch_history(
         sys.exit(1)
 
     base_url = _build_ha_base_url(config)
-    start_time = datetime.now(UTC) - timedelta(hours=hours_back)
-    timestamp = start_time.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
+    start_time = start_dt if start_dt is not None else datetime.now(UTC) - timedelta(hours=hours_back)
+
+    timestamp = _format_api_timestamp(start_time)
     url = f"{base_url}/api/logbook/{timestamp}"
+
+    params = []
     if entity_filter:
-        url += f"?entity_id={urllib.request.quote(entity_filter)}"
+        params.append(f"entity_id={urllib.request.quote(entity_filter)}")
+    if end_dt is not None:
+        params.append(f"end_time={urllib.request.quote(_format_api_timestamp(end_dt))}")
+    if params:
+        url += "?" + "&".join(params)
 
     data = _ha_api_request(url, token)
 
@@ -145,7 +182,12 @@ def fetch_history(
         lines.append(line)
 
     if not lines:
-        return f"(no logbook entries found for the last {hours_back} hours)"
+        window_desc = (
+            f"{_format_api_timestamp(start_time)} to {_format_api_timestamp(end_dt)}"
+            if end_dt
+            else f"the last {hours_back} hours"
+        )
+        return f"(no logbook entries found for {window_desc})"
 
     return "\n".join(lines)
 
@@ -154,10 +196,13 @@ def fetch_sensor_history(
     config: dict[str, str],
     entity_id: str,
     hours_back: int = 24,
+    start_dt: datetime | None = None,
+    end_dt: datetime | None = None,
 ) -> str:
     """Fetch state history for a specific sensor entity from the HA REST API.
 
     Queries /api/history/period/{timestamp}?filter_entity_id={entity_id}.
+    When start_dt is provided, uses it directly (ignoring hours_back).
     Returns formatted state changes as: {timestamp} | {state} | {attributes_summary}
     """
     token = config.get("HA_API_TOKEN", "")
@@ -170,18 +215,31 @@ def fetch_sensor_history(
         sys.exit(1)
 
     base_url = _build_ha_base_url(config)
-    start_time = datetime.now(UTC) - timedelta(hours=hours_back)
-    timestamp = start_time.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
+    start_time = start_dt if start_dt is not None else datetime.now(UTC) - timedelta(hours=hours_back)
+
+    timestamp = _format_api_timestamp(start_time)
     url = f"{base_url}/api/history/period/{timestamp}?filter_entity_id={urllib.request.quote(entity_id)}"
+    if end_dt is not None:
+        url += f"&end_time={urllib.request.quote(_format_api_timestamp(end_dt))}"
 
     data = _ha_api_request(url, token)
 
     if not isinstance(data, list) or not data:
-        return f"(no history found for {entity_id} in the last {hours_back} hours)"
+        window_desc = (
+            f"{_format_api_timestamp(start_time)} to {_format_api_timestamp(end_dt)}"
+            if end_dt
+            else f"the last {hours_back} hours"
+        )
+        return f"(no history found for {entity_id} in {window_desc})"
 
     # The API returns a list of lists (one list per entity)
-    lines = [f"=== History for {entity_id} (last {hours_back}h) ==="]
+    if start_dt is not None:
+        end_label = _format_api_timestamp(end_dt) if end_dt else "now"
+        window_label = f"{_format_api_timestamp(start_dt)} to {end_label}"
+    else:
+        window_label = f"last {hours_back}h"
+    lines = [f"=== History for {entity_id} ({window_label}) ==="]
     for entity_states in data:
         if not isinstance(entity_states, list):
             continue
@@ -211,7 +269,12 @@ def fetch_sensor_history(
             lines.append(line)
 
     if len(lines) == 1:
-        return f"(no state changes found for {entity_id} in the last {hours_back} hours)"
+        window_desc = (
+            f"{_format_api_timestamp(start_time)} to {_format_api_timestamp(end_dt)}"
+            if end_dt
+            else f"the last {hours_back} hours"
+        )
+        return f"(no state changes found for {entity_id} in {window_desc})"
 
     return "\n".join(lines)
 
@@ -306,9 +369,28 @@ def main() -> None:
         default=24,
         help="Hours of history to fetch in --history mode (default: 24)",
     )
+    parser.add_argument(
+        "--start",
+        type=str,
+        default="",
+        help=(
+            "Start of time window as local ISO 8601 timestamp, e.g. '2026-03-28T18:00:00'. "
+            "When provided, --hours is ignored."
+        ),
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        default="",
+        help="End of time window as local ISO 8601 timestamp (optional; defaults to now when --start is given).",
+    )
     args = parser.parse_args()
 
     config = load_config()
+
+    # Parse --start / --end into UTC datetimes if provided
+    start_dt: datetime | None = _parse_local_timestamp(args.start) if args.start else None
+    end_dt: datetime | None = _parse_local_timestamp(args.end) if args.end else None
 
     if args.history:
         # REST API history mode
@@ -317,7 +399,15 @@ def main() -> None:
         output_parts = []
         if entity_ids:
             for entity_id in entity_ids:
-                output_parts.append(fetch_sensor_history(config, entity_id, hours_back=args.hours))
+                output_parts.append(
+                    fetch_sensor_history(
+                        config,
+                        entity_id,
+                        hours_back=args.hours,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                    )
+                )
         else:
             # No specific entity — use logbook
             output_parts.append(
@@ -326,6 +416,8 @@ def main() -> None:
                     entity_filter=args.entity,
                     hours_back=args.hours,
                     filter_text=args.filter,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
                 )
             )
 

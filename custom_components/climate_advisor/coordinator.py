@@ -1314,13 +1314,23 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # turns HVAC back on, so old_state could still be the pre-pause
         # mode (e.g. "cool"). The paused_by_door flag is authoritative.
         if self.automation_engine.is_paused_by_door and new_state.state not in ("off", "unavailable", "unknown"):
-            _LOGGER.info(
-                "Manual HVAC override detected during door/window pause: %s -> %s",
-                old_state.state,
-                new_state.state,
-            )
-            await self.automation_engine.handle_manual_override_during_pause()
-            self._cancel_all_debounce_timers()
+            if not self.automation_engine._hvac_command_pending and not self._is_recent_hvac_command(
+                threshold_seconds=3.0
+            ):
+                _LOGGER.info(
+                    "Manual HVAC override detected during door/window pause: %s -> %s",
+                    old_state.state,
+                    new_state.state,
+                )
+                await self.automation_engine.handle_manual_override_during_pause()
+                self._cancel_all_debounce_timers()
+            else:
+                _LOGGER.debug(
+                    "Skipping pause-override detection: HVAC mode change was automation-initiated "
+                    "(pending=%s, recent_command=%s)",
+                    self.automation_engine._hvac_command_pending,
+                    self._is_recent_hvac_command(threshold_seconds=3.0),
+                )
         elif (
             old_state.state != new_state.state
             and new_state.state not in ("unavailable", "unknown")

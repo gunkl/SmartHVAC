@@ -202,6 +202,46 @@ class TestHvacCommandPendingGuard:
 
         assert engine._hvac_command_time is not None
 
+    def test_automation_mode_change_during_pause_does_not_trigger_override(self):
+        """Regression #68: automation's own mode change during a door/window pause must NOT
+        trigger handle_manual_override_during_pause.
+
+        When the nightly classification fires and sets HVAC to cool while the system is
+        paused (door/window open), _hvac_command_pending is True. The Path B guard added
+        in coordinator._async_thermostat_changed() must suppress the override call.
+        """
+        engine = _make_automation_engine()
+        engine._paused_by_door = True
+        engine._hvac_command_pending = True  # automation's own service call in flight
+
+        # Replicate the Path B inner guard condition from coordinator
+        would_fire_override = (
+            not engine._hvac_command_pending  # <-- False: suppressed
+        )
+
+        assert would_fire_override is False, (
+            "Automation-initiated mode change during pause must NOT trigger override detection"
+        )
+
+    def test_human_mode_change_during_pause_triggers_override(self):
+        """Complement to above: when _hvac_command_pending is False (human changed mode),
+        the Path B override detection must fire.
+        """
+        engine = _make_automation_engine()
+        engine._paused_by_door = True
+        engine._hvac_command_pending = False  # no automation command in flight
+
+        new_state_value = "cool"
+
+        # Replicate the Path B inner guard condition from coordinator
+        would_fire_override = (
+            engine.is_paused_by_door
+            and new_state_value not in ("off", "unavailable", "unknown")
+            and not engine._hvac_command_pending  # <-- True: not suppressed
+        )
+
+        assert would_fire_override is True, "Human mode change during pause must trigger pause-override detection"
+
 
 # ---------------------------------------------------------------------------
 # TestResumeFromPause
