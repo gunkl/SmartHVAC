@@ -50,7 +50,18 @@ class TestStatePersistenceSaveLoad:
         sp = StatePersistence(tmp_path)
         sp.save({"date": "2026-03-18"})
         assert (tmp_path / STATE_FILE).exists()
-        assert not (tmp_path / f"{STATE_FILE}.tmp").exists()
+        assert list(tmp_path.glob("climate_advisor_state_*.tmp")) == []
+
+    def test_concurrent_saves_no_enoent(self, tmp_path: Path):
+        """Overlapping saves must not raise ENOENT (regression for race condition)."""
+        import concurrent.futures
+
+        sp = StatePersistence(tmp_path)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(sp.save, {"date": f"2026-03-{i:02d}"}) for i in range(1, 9)]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()  # raises if save() raised
+        assert (tmp_path / STATE_FILE).exists()
 
     def test_load_missing_file_returns_empty(self, tmp_path: Path):
         sp = StatePersistence(tmp_path)
