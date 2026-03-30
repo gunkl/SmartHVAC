@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
@@ -118,6 +118,10 @@ FAN_MODE_WHOLE_HOUSE = "whole_house_fan"
 FAN_MODE_HVAC = "hvac_fan"
 FAN_MODE_BOTH = "both"
 DEFAULT_FAN_MODE = FAN_MODE_DISABLED
+
+# Natural ventilation mode (door/window open + outdoor air within comfort range)
+CONF_NATURAL_VENT_DELTA = "natural_vent_delta"
+DEFAULT_NATURAL_VENT_DELTA = 3.0
 
 # State persistence
 STATE_FILE = "climate_advisor_state.json"

@@ -595,6 +595,8 @@ def _fresh_air_section(
     comfort_cool: float,
     debounce_seconds: int = DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     temp_unit: str = FAHRENHEIT,
+    natural_vent_active: bool = False,
+    current_outdoor_temp: float | None = None,
 ) -> list[str]:
     """User-centric section about opening windows/doors for fresh air.
 
@@ -604,6 +606,13 @@ def _fresh_air_section(
     """
     debounce_minutes = max(1, debounce_seconds // 60)
     debounce_desc = f"{debounce_minutes} minute" if debounce_minutes == 1 else f"{debounce_minutes} minutes"
+
+    if natural_vent_active and current_outdoor_temp is not None:
+        return [
+            f"Windows are open and outdoor air is {format_temp(current_outdoor_temp, temp_unit)} \u2014"
+            f" I'll use the fan to hold your {format_temp(comfort_cool, temp_unit)} target"
+            f" without running the AC. Once you close up, I'll resume normal cooling."
+        ]
 
     if c.hvac_mode == "cool":
         return [

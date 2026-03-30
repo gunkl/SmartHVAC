@@ -809,6 +809,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             # Record temperature history for dashboard chart
             now_str = dt_util.now().isoformat()
             self._outdoor_temp_history.append((now_str, forecast.current_outdoor_temp))
+            # Keep automation engine's outdoor temp current for natural vent decisions
+            self.automation_engine.update_outdoor_temp(forecast.current_outdoor_temp)
             if forecast.current_indoor_temp is not None:
                 self._indoor_temp_history.append((now_str, forecast.current_indoor_temp))
 
@@ -836,6 +838,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     windows_open,
                     current_hour=dt_util.now().hour,
                 )
+
+            # Re-evaluate natural vent conditions while any sensor is open
+            if self._any_sensor_open():
+                await self.automation_engine.check_natural_vent_conditions()
 
             # Save state after classification update
             await self._async_save_state()
@@ -1680,6 +1686,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # Check if windows are open during a planned window period (not a pause)
         if self.automation_engine._is_within_planned_window_period() and self._any_sensor_open():
             return "windows open (as planned)"
+        if self.automation_engine.natural_vent_active:
+            return "natural ventilation"
         if self.automation_engine.is_paused_by_door:
             return "paused — door/window open"
         if self.automation_engine._grace_active:

@@ -347,6 +347,7 @@ class ClimateAdvisorContactStatusSensor(ClimateAdvisorBaseSensor):
             "sensor_count": len(details),
             "open_count": open_count,
             "paused_by_door": self.coordinator.automation_engine.is_paused_by_door,
+            "natural_vent_active": self.coordinator.automation_engine.natural_vent_active,
             "sensors": details,
         }
 

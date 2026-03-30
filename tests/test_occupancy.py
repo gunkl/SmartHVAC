@@ -182,6 +182,7 @@ def _make_coordinator(
     # Ensure automation engine mock is properly set up for status checks
     coordinator.automation_engine = MagicMock()
     coordinator.automation_engine.is_paused_by_door = False
+    coordinator.automation_engine.natural_vent_active = False
     coordinator.automation_engine._grace_active = False
     coordinator.automation_engine._last_resume_source = None
 

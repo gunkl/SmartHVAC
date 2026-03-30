@@ -24,11 +24,13 @@ from .const import (
     CONF_FAN_MODE,
     CONF_MANUAL_GRACE_NOTIFY,
     CONF_MANUAL_GRACE_PERIOD,
+    CONF_NATURAL_VENT_DELTA,
     CONF_SENSOR_DEBOUNCE,
     CONF_WELCOME_HOME_DEBOUNCE,
     DAY_TYPE_HOT,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
+    DEFAULT_NATURAL_VENT_DELTA,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS,
     ECONOMIZER_EVENING_END_HOUR,
@@ -202,6 +204,10 @@ class AutomationEngine:
         self._hvac_command_pending: bool = False  # transient: distinguishes integration vs manual HVAC changes
         self._hvac_command_time: datetime | None = None  # last system-initiated HVAC command timestamp
 
+        # Natural ventilation mode (Issue #73)
+        self._natural_vent_active: bool = False
+        self._last_outdoor_temp: float | None = None
+
         # Resume-from-pause tracking (Issue #47)
         self._resumed_from_pause: bool = False
         self._sensor_check_callback: Any | None = None  # Set by coordinator: returns True if any sensor open
@@ -229,6 +235,15 @@ class AutomationEngine:
     def is_paused_by_door(self) -> bool:
         """Whether HVAC is currently paused due to an open door/window."""
         return self._paused_by_door
+
+    @property
+    def natural_vent_active(self) -> bool:
+        """Whether natural ventilation mode is currently active."""
+        return self._natural_vent_active
+
+    def update_outdoor_temp(self, temp: float | None) -> None:
+        """Update the cached outdoor temperature used for natural vent decisions."""
+        self._last_outdoor_temp = temp
 
     def _is_within_planned_window_period(self) -> bool:
         """Check if windows are recommended AND we're within the window period.
@@ -567,6 +582,23 @@ class AutomationEngine:
             )
             return
 
+        # Check for natural ventilation opportunity before falling through to pause
+        outdoor = self._last_outdoor_temp
+        comfort_cool = float(self.config.get("comfort_cool", 75))
+        nat_vent_delta = float(self.config.get(CONF_NATURAL_VENT_DELTA, DEFAULT_NATURAL_VENT_DELTA))
+        nat_vent_threshold = comfort_cool + nat_vent_delta
+        if outdoor is not None and outdoor <= nat_vent_threshold:
+            nat_vent_reason = f"natural ventilation: outdoor {outdoor:.1f}F <= {nat_vent_threshold:.1f}F"
+            await self._set_hvac_mode("off", reason=nat_vent_reason + ", HVAC off, fan on")
+            await self._activate_fan(reason=nat_vent_reason)
+            self._natural_vent_active = True
+            _LOGGER.info(
+                "Natural ventilation mode: outdoor %.1f\u00b0F \u2264 target %.1f\u00b0F \u2014 fan on, HVAC off",
+                outdoor,
+                nat_vent_threshold,
+            )
+            return
+
         # Get current mode before pausing
         state = self.hass.states.get(self.climate_entity)
         if state:
@@ -592,6 +624,25 @@ class AutomationEngine:
 
     async def handle_all_doors_windows_closed(self) -> None:
         """Resume HVAC after all monitored doors/windows are closed."""
+        # Handle natural ventilation mode cleanup (sensors closed while in nat vent)
+        if self._natural_vent_active:
+            self._natural_vent_active = False
+            await self._deactivate_fan(reason="door/window closed — ending natural ventilation mode")
+            # Resume normal classification if we have one
+            if self._current_classification:
+                c = self._current_classification
+                if c.hvac_mode in ("heat", "cool"):
+                    await self._set_hvac_mode(
+                        c.hvac_mode,
+                        reason="door/window closed — restoring mode after natural ventilation",
+                    )
+                    await self._set_temperature_for_mode(
+                        c,
+                        reason="door/window closed — restoring comfort after natural ventilation",
+                    )
+                    self._start_grace_period("automation")
+            return
+
         if not self._paused_by_door:
             return
 
@@ -608,6 +659,47 @@ class AutomationEngine:
                 )
             self._start_grace_period("automation")
         self._pre_pause_mode = None
+
+    async def check_natural_vent_conditions(self) -> None:
+        """Re-evaluate natural ventilation vs pause when temperatures change.
+
+        Called by coordinator on each _async_update_data when sensors are open.
+        Mirrors the monitoring logic in tools/simulate.py ClimateSimulator.
+        """
+        if not (self._paused_by_door or self._natural_vent_active):
+            return
+
+        outdoor = self._last_outdoor_temp
+        comfort_cool = float(self.config.get("comfort_cool", 75))
+        nat_vent_delta = float(self.config.get(CONF_NATURAL_VENT_DELTA, DEFAULT_NATURAL_VENT_DELTA))
+        threshold = comfort_cool + nat_vent_delta
+
+        if self._natural_vent_active and outdoor is not None and outdoor > threshold:
+            # Outdoor got too warm — exit nat vent, enter pause
+            self._natural_vent_active = False
+            self._paused_by_door = True
+            await self._deactivate_fan(
+                reason=f"natural vent exit: outdoor {outdoor:.1f}\u00b0F > threshold {threshold:.1f}\u00b0F"
+            )
+            _LOGGER.info(
+                "Natural vent exit: outdoor %.1f\u00b0F > threshold %.1f\u00b0F \u2014 entering pause",
+                outdoor,
+                threshold,
+            )
+            return
+
+        if self._paused_by_door and outdoor is not None and outdoor <= threshold:
+            # Outdoor cooled down — activate natural vent
+            await self._activate_fan(
+                reason=f"natural vent activated: outdoor {outdoor:.1f}\u00b0F \u2264 threshold {threshold:.1f}\u00b0F"
+            )
+            self._natural_vent_active = True
+            self._paused_by_door = False
+            _LOGGER.info(
+                "Natural vent activated: outdoor %.1f\u00b0F \u2264 threshold %.1f\u00b0F while paused",
+                outdoor,
+                threshold,
+            )
 
     async def handle_manual_override_during_pause(self) -> None:
         """Handle when user manually turns HVAC on during a sensor pause.

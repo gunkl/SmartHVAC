@@ -1,0 +1,76 @@
+{
+  "name": "2026-03-28-overnight-door-open",
+  "description": "Door open all day (87F high); 555 min comfort violations; outdoor dropped to 53F overnight",
+  "source": "activity-report",
+  "issue": 69,
+  "notes": [
+    "This scenario tests the natural ventilation behavior proposed in issue #69.",
+    "Expected: nat vent at 06:00 (outdoor 75F <= threshold 75F), pause at 14:00 (outdoor 87F > 75F),",
+    "then nat vent re-activated at 23:30 when outdoor dropped back to 53F.",
+    "This scenario will FAIL until Sub-issue B (natural ventilation mode) is implemented.",
+    "Promote to golden/ once all assertions pass after #73 is merged."
+  ],
+  "config": {
+    "comfort_heat": 70,
+    "comfort_cool": 72,
+    "natural_vent_delta": 3.0
+  },
+  "events": [
+    {
+      "time": "2026-03-28T06:00:00",
+      "type": "sensor_open",
+      "entity": "binary_sensor.door_window",
+      "note": "door/window opened, remained open all day"
+    },
+    {
+      "time": "2026-03-28T06:00:00",
+      "type": "temp_update",
+      "indoor_f": 74.0,
+      "outdoor_f": 75.0,
+      "note": "morning temps — outdoor 75F is exactly at threshold (72+3), nat vent should activate"
+    },
+    {
+      "time": "2026-03-28T14:00:00",
+      "type": "temp_update",
+      "indoor_f": 82.0,
+      "outdoor_f": 87.0,
+      "note": "afternoon peak — outdoor 87F well above threshold 75F, must exit nat vent and pause"
+    },
+    {
+      "time": "2026-03-28T20:00:00",
+      "type": "temp_update",
+      "indoor_f": 76.0,
+      "outdoor_f": 74.0,
+      "note": "evening cooldown — outdoor 74F still below threshold 75F, should re-activate nat vent"
+    },
+    {
+      "time": "2026-03-28T23:30:00",
+      "type": "temp_update",
+      "indoor_f": 70.0,
+      "outdoor_f": 53.0,
+      "note": "midnight — outdoor 53F, well below threshold; nat vent should still be active"
+    }
+  ],
+  "assertions": [
+    {
+      "at": "2026-03-28T06:00:00",
+      "expect": "natural_ventilation",
+      "reason": "sensor opened; outdoor 75F <= comfort 72F + delta 3F = 75F threshold — nat vent mode"
+    },
+    {
+      "at": "2026-03-28T14:00:00",
+      "expect": "paused",
+      "reason": "outdoor 87F > threshold 75F with sensors open — must exit nat vent, enter pause"
+    },
+    {
+      "at": "2026-03-28T20:00:00",
+      "expect": "natural_ventilation",
+      "reason": "outdoor 74F dropped back to <= threshold 75F while paused — re-activate nat vent"
+    },
+    {
+      "at": "2026-03-28T23:30:00",
+      "expect": "natural_ventilation",
+      "reason": "outdoor 53F still below threshold 75F — nat vent should remain active"
+    }
+  ]
+}

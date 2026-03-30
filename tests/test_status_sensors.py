@@ -60,12 +60,14 @@ def _make_classification(**overrides):
 def _make_automation_engine(
     *,
     is_paused_by_door: bool = False,
+    natural_vent_active: bool = False,
     grace_active: bool = False,
     last_resume_source: str | None = None,
 ) -> MagicMock:
     """Create a mock AutomationEngine with given state flags."""
     ae = MagicMock()
     ae.is_paused_by_door = is_paused_by_door
+    ae.natural_vent_active = natural_vent_active
     ae._grace_active = grace_active
     ae._last_resume_source = last_resume_source
     return ae
@@ -78,6 +80,8 @@ def _compute_automation_status(
     """Replicate _compute_automation_status from coordinator.py."""
     if not automation_enabled:
         return "disabled"
+    if automation_engine.natural_vent_active:
+        return "natural ventilation"
     if automation_engine.is_paused_by_door:
         return "paused — door/window open"
     if automation_engine._grace_active:
