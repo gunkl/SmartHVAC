@@ -347,6 +347,56 @@ class ClaudeAPIClient:
             "manual_requests_today": self._rate_counters.manual_requests_today,
         }
 
+    def get_persistent_stats(self) -> dict[str, Any]:
+        """Return stats that should survive HA reboot.
+
+        Called by the coordinator's state persistence layer to include AI stats
+        in the operational state file saved on every update cycle.
+
+        Returns:
+            Serializable dict suitable for JSON storage.
+
+        """
+        return {
+            "total_requests": self._total_requests,
+            "error_count": self._error_count,
+            "monthly_cost": self._budget.monthly_cost,
+            "budget_month": self._budget.budget_month,
+            "auto_requests_today": self._rate_counters.auto_requests_today,
+            "manual_requests_today": self._rate_counters.manual_requests_today,
+            "counter_date": self._rate_counters.counter_date.isoformat(),
+        }
+
+    def restore_persistent_stats(self, data: dict[str, Any]) -> None:
+        """Restore stats saved from a previous session.
+
+        Called during coordinator startup after the state file is loaded.
+        Missing keys default to zero so old state files are safe.
+        Calls _reset_daily_counters_if_needed() to handle cross-day reboots.
+
+        Args:
+            data: Dict previously returned by get_persistent_stats().
+
+        """
+        self._total_requests = int(data.get("total_requests", 0))
+        self._error_count = int(data.get("error_count", 0))
+        self._budget.monthly_cost = float(data.get("monthly_cost", 0.0))
+        self._budget.budget_month = int(data.get("budget_month", date.today().month))
+        self._rate_counters.auto_requests_today = int(data.get("auto_requests_today", 0))
+        self._rate_counters.manual_requests_today = int(data.get("manual_requests_today", 0))
+        try:
+            self._rate_counters.counter_date = date.fromisoformat(data["counter_date"])
+        except (KeyError, ValueError):
+            self._rate_counters.counter_date = date.today()
+        # Apply daily reset if rebooted after midnight
+        self._reset_daily_counters_if_needed()
+        _LOGGER.debug(
+            "AI stats restored — total_requests=%d, monthly_cost=%.4f, budget_month=%d",
+            self._total_requests,
+            self._budget.monthly_cost,
+            self._budget.budget_month,
+        )
+
     def get_request_history(self) -> list[dict[str, Any]]:
         """Return metadata-only request history.
 

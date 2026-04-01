@@ -430,3 +430,88 @@ class TestDisabledWhenNoKey:
 
         status = client.get_status()
         assert status["status"] == "inactive"
+
+
+class TestPersistentStats:
+    """Tests for get_persistent_stats / restore_persistent_stats (Issue #81)."""
+
+    def test_roundtrip_preserves_all_fields(self):
+        """Stats saved then restored should match exactly."""
+        client = ClaudeAPIClient(_make_config())
+        client._total_requests = 42
+        client._error_count = 3
+        client._budget.monthly_cost = 1.23
+        client._budget.budget_month = 3
+        client._rate_counters.auto_requests_today = 4
+        client._rate_counters.manual_requests_today = 7
+        client._rate_counters.counter_date = date(2026, 3, 31)
+
+        stats = client.get_persistent_stats()
+
+        client2 = ClaudeAPIClient(_make_config())
+        client2.restore_persistent_stats(stats)
+
+        assert client2._total_requests == 42
+        assert client2._error_count == 3
+        assert client2._budget.monthly_cost == 1.23
+        assert client2._budget.budget_month == 3
+        assert client2._rate_counters.auto_requests_today == 4
+        assert client2._rate_counters.manual_requests_today == 7
+        assert client2._rate_counters.counter_date == date(2026, 3, 31)
+
+    def test_empty_dict_restores_to_defaults(self):
+        """Restoring from empty dict should not crash and should use defaults."""
+        client = ClaudeAPIClient(_make_config())
+        client.restore_persistent_stats({})
+        assert client._total_requests == 0
+        assert client._budget.monthly_cost == 0.0
+
+    def test_cross_day_reboot_resets_daily_counters(self):
+        """Daily counters are cleared when restored from a previous calendar day."""
+        client = ClaudeAPIClient(_make_config())
+        today = date.today()
+        if today.day > 1:
+            yesterday = today.replace(day=today.day - 1)
+        else:
+            # First of month: use a fixed past date
+            yesterday = date(today.year, today.month, 1).replace(day=1)
+            yesterday = date(2026, 3, 30)
+        data = {
+            "auto_requests_today": 10,
+            "manual_requests_today": 5,
+            "counter_date": yesterday.isoformat(),
+            "monthly_cost": 0.5,
+            "budget_month": today.month,
+            "total_requests": 20,
+            "error_count": 1,
+        }
+        client.restore_persistent_stats(data)
+        assert client._rate_counters.auto_requests_today == 0
+        assert client._rate_counters.manual_requests_today == 0
+        assert client._rate_counters.counter_date == today
+        # Cumulative counters are preserved across day boundary
+        assert client._total_requests == 20
+        assert client._budget.monthly_cost == 0.5
+
+    def test_same_day_reboot_preserves_daily_counters(self):
+        """Daily counters are kept when restored from the same calendar day."""
+        client = ClaudeAPIClient(_make_config())
+        today = date.today()
+        data = {
+            "auto_requests_today": 3,
+            "manual_requests_today": 2,
+            "counter_date": today.isoformat(),
+            "monthly_cost": 0.0,
+            "budget_month": today.month,
+            "total_requests": 5,
+            "error_count": 0,
+        }
+        client.restore_persistent_stats(data)
+        assert client._rate_counters.auto_requests_today == 3
+        assert client._rate_counters.manual_requests_today == 2
+
+    def test_invalid_counter_date_falls_back_to_today(self):
+        """Corrupted counter_date should not crash — falls back to today."""
+        client = ClaudeAPIClient(_make_config())
+        client.restore_persistent_stats({"counter_date": "not-a-date"})
+        assert client._rate_counters.counter_date == date.today()

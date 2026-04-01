@@ -323,6 +323,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             except (TypeError, KeyError) as err:
                 _LOGGER.warning("Failed to recover yesterday's record: %s", err)
 
+        # Restore AI stats regardless of date boundary — monthly budget and cumulative
+        # counters must persist across reboots. Daily counters self-correct via
+        # _reset_daily_counters_if_needed() inside restore_persistent_stats().
+        if self.claude_client:
+            ai_stats = state.get("ai_stats")
+            if ai_stats and isinstance(ai_stats, dict):
+                self.claude_client.restore_persistent_stats(ai_stats)
+
         if state_date != today_str:
             _LOGGER.debug(
                 "Persisted state is from %s (today is %s) — starting fresh",
@@ -470,6 +478,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "automation_enabled": self._automation_enabled,
             "occupancy_mode": self._occupancy_mode,
             "occupancy_away_since": (self._occupancy_away_since.isoformat() if self._occupancy_away_since else None),
+            "ai_stats": self.claude_client.get_persistent_stats() if self.claude_client else {},
         }
 
     async def _async_save_state(self) -> None:
