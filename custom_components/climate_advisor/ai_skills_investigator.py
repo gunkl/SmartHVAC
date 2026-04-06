@@ -6,6 +6,8 @@ import datetime
 import logging
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.util import dt as dt_util
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
@@ -16,7 +18,6 @@ from .const import (
     ATTR_DAY_TYPE,
     ATTR_FAN_STATUS,
     ATTR_HVAC_ACTION,
-    ATTR_HVAC_RUNTIME_TODAY,
     ATTR_LAST_ACTION_REASON,
     ATTR_LAST_ACTION_TIME,
     ATTR_NEXT_AUTOMATION_ACTION,
@@ -38,6 +39,13 @@ You are a scientific investigator for Climate Advisor, a Home Assistant HVAC aut
  all available data sources.
 
 EPISTEMOLOGICAL DISCIPLINE
+NUMERIC VERIFICATION RULE: Before stating that any temperature, percentage, or count
+value is "within," "inside," "in range," or similar, verify the arithmetic explicitly.
+A temperature T is within comfort band [L, H] only if L <= T <= H. Never infer
+"within range" from proximity or narrative context — check the inequality directly
+against the supplied numeric values. If you cannot verify the claim with the supplied
+data, say "cannot verify" rather than guessing.
+
 Always be explicit about the category of every claim you make:
 - CONFIRMED FACT: the value is directly present in the supplied data
 - INFERENCE: a conclusion deduced from a pattern across multiple data points
@@ -132,7 +140,14 @@ async def async_build_investigator_context(
         day_type = data.get(ATTR_DAY_TYPE, "unknown")
         trend = data.get(ATTR_TREND, "unknown")
         hvac_action = data.get(ATTR_HVAC_ACTION, "unknown")
-        hvac_runtime_today = data.get(ATTR_HVAC_RUNTIME_TODAY, "unknown")
+        # Compute fresh runtime — coordinator.data may be up to 30 min stale
+        _base_runtime = coordinator._today_record.hvac_runtime_minutes if coordinator._today_record is not None else 0.0
+        _session_elapsed = (
+            (dt_util.now() - coordinator._hvac_on_since).total_seconds() / 60.0
+            if coordinator._hvac_on_since is not None
+            else 0.0
+        )
+        hvac_runtime_today = round(_base_runtime + _session_elapsed, 1)
         automation_status = data.get(ATTR_AUTOMATION_STATUS, "unknown")
         last_action_time = data.get(ATTR_LAST_ACTION_TIME, "unknown")
         last_action_reason = data.get(ATTR_LAST_ACTION_REASON, "unknown")
@@ -275,12 +290,13 @@ async def async_build_investigator_context(
                     for rec in records:
                         if isinstance(rec, dict):
                             date_val = rec.get("date", "?")
-                            opened = rec.get("windows_physically_opened", "?")
-                            compliance_val = rec.get("window_compliance", "?")
+                            recommended = rec.get("windows_recommended", False)
+                            opened = rec.get("windows_physically_opened", rec.get("windows_opened", False))
+                            compliance_val = ("opened" if opened else "not-opened") if recommended else "n/a"
                             runtime = rec.get("hvac_runtime_minutes", "?")
                             overrides = rec.get("manual_overrides", "?")
                             lines.append(
-                                f"  {date_val}: opened={opened} compliance={compliance_val}"
+                                f"  {date_val}: opened={opened} window_rec={compliance_val}"
                                 f" runtime={runtime}min overrides={overrides}"
                             )
                 else:
@@ -382,10 +398,14 @@ async def async_build_investigator_context(
         cfg: dict[str, Any] = dict(coordinator.config or {})
         cfg.pop("ai_api_key", None)
 
+        _comfort_heat = cfg.get("comfort_heat", "unknown")
+        _comfort_cool = cfg.get("comfort_cool", "unknown")
         lines += [
             "=== CONFIGURATION ===",
-            f"  comfort_heat:    {cfg.get('comfort_heat', 'unknown')}",
-            f"  comfort_cool:    {cfg.get('comfort_cool', 'unknown')}",
+            f"  comfort_heat (lower bound): {_comfort_heat} — indoor must be >= this to be in comfort band",
+            f"  comfort_cool (upper bound): {_comfort_cool} — indoor must be <= this to be in comfort band",
+            f"  comfort_band: [{_comfort_heat}, {_comfort_cool}]°F"
+            " — temperature T is in-band only if comfort_heat <= T <= comfort_cool",
             f"  setback_heat:    {cfg.get('setback_heat', 'unknown')}",
             f"  setback_cool:    {cfg.get('setback_cool', 'unknown')}",
             f"  wake_time:       {cfg.get('wake_time', 'unknown')}",

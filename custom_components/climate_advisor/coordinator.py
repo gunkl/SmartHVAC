@@ -1421,6 +1421,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 self._today_record.observed_low_f = round(min(observed_temps), 1)
             # Flush any accumulated HVAC runtime
             self._flush_hvac_runtime()
+            # Watchdog: if HVAC ran significantly but no thermal observations were recorded, warn
+            if self._today_record.hvac_runtime_minutes > 30.0 and self._today_record.thermal_session_count == 0:
+                _LOGGER.warning(
+                    "Thermal learning watchdog: %.1f min HVAC runtime today but zero thermal"
+                    " observations recorded — check HA logs for 'Thermal obs skipped' entries",
+                    self._today_record.hvac_runtime_minutes,
+                )
+                self._emit_event(
+                    "thermal_learning_no_observations",
+                    {"hvac_runtime_minutes": round(self._today_record.hvac_runtime_minutes, 1)},
+                )
             self.learning.record_day(self._today_record)
             await self.hass.async_add_executor_job(self.learning.save_state)
             _LOGGER.info("Day record saved for learning")
@@ -1634,6 +1645,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             # HVAC just turned off — flush runtime
             self._flush_hvac_runtime()
             self._record_thermal_observation(new_state)
+            await self.hass.async_add_executor_job(self.learning.save_state)
             self._hvac_on_since = None
             await self._async_save_state()
 
@@ -1722,13 +1734,27 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Skipping thermal observation: learning_enabled=False")
             return
         if self._hvac_on_since is None:
+            _LOGGER.warning(
+                "Thermal obs skipped: no session start time recorded (HVAC may have been running when HA started)"
+            )
             return
         session_minutes = (dt_util.now() - self._hvac_on_since).total_seconds() / 60.0
         if session_minutes < MIN_THERMAL_SESSION_MINUTES:
+            _LOGGER.debug(
+                "Thermal obs skipped: session too short (%.1f min < %.1f min minimum)",
+                session_minutes,
+                MIN_THERMAL_SESSION_MINUTES,
+            )
             return
         if self._hvac_session_start_indoor_temp is None:
+            _LOGGER.warning("Thermal obs skipped: no indoor temperature recorded at session start")
             return
         if self._hvac_session_mode not in ("heat", "cool"):
+            _LOGGER.warning(
+                "Thermal obs skipped: session mode %r is not 'heat' or 'cool'"
+                " — check that climate entity reports hvac_action as 'heating' or 'cooling'",
+                self._hvac_session_mode,
+            )
             return
 
         end_indoor = self._get_indoor_temp()

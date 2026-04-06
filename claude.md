@@ -237,9 +237,26 @@ or sets comfort temps, verify it works correctly when occupancy is away/vacation
 safety net in `_set_temperature_for_mode()` redirects to setback handlers, but direct
 calls to `_set_temperature()` bypass it. See §6a in `docs/08-COMPUTATION-REFERENCE.md`.
 
+### Warm-Day Classification Behavior
+
+**Decision**: On a warm day (forecast high ≥ 75°F), the classifier sets `hvac_mode = "off"` in the `DayClassification`. The automation engine applies a comfort-floor guard before executing the shutoff.
+
+**Guard logic** (`automation.py` `apply_classification()`):
+- If `current_indoor_temp < comfort_heat`: heat to `comfort_heat` first; emit `warm_day_comfort_gap` event; do NOT set HVAC off yet
+- If `current_indoor_temp >= comfort_heat` (or temp unavailable): set HVAC off as normal
+- `apply_classification()` is called every 30 min — once indoor reaches the comfort floor, the guard stops firing and HVAC goes off naturally
+
+**Why**: Without this guard, warm-day shutoffs can leave the home 2–3°F below the comfort floor all morning, accumulating comfort violations and driving `comfort_score` toward 0.
+
+**Compliance display in investigator**: `window_rec=` in daily records shows `opened/not-opened/n/a` based on whether windows were recommended and whether they were physically opened. A `?` value is always wrong — it means a field named `window_compliance` was read, which does not exist in `DailyRecord`.
+
+**Comfort band definition**: `comfort_heat` is the **lower** bound; `comfort_cool` is the **upper** bound. A temperature T is in-band iff `comfort_heat ≤ T ≤ comfort_cool`. The AI context now labels these fields explicitly and includes a NUMERIC VERIFICATION RULE to prevent incorrect "within range" claims.
+
 ### Project Memory
 
 Claude Code's built-in memory system stores project context, tooling locations, and hard-won facts so they don't have to be re-discovered every session. Claude reads memory automatically at session start.
+
+**Thermal learning persistence**: Thermal observations are saved to disk immediately after each HVAC session ends (not just at end-of-day). This means HA restarts during the day do not lose accumulated observations. If observations are skipped (bad session mode, missing temp, etc.), a WARNING is logged with the reason — these should surface in the investigator's event log.
 
 ---
 

@@ -137,6 +137,8 @@ class TestApplyClassificationLogging:
 
     def test_off_mode_logs_reason(self, caplog):
         engine = _make_automation_engine()
+        # Return None so _get_indoor_temp_f() returns None → guard falls through to off
+        engine.hass.states.get.return_value = None
         c = _make_classification(day_type="mild", hvac_mode="off")
         with caplog.at_level(logging.INFO, logger=AUTOMATION_LOGGER):
             asyncio.run(engine.apply_classification(c))

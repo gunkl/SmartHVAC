@@ -635,10 +635,43 @@ class AutomationEngine:
             await self._set_hvac_mode(classification.hvac_mode, reason=cls_reason)
             await self._set_temperature_for_mode(classification, reason=cls_reason)
         elif classification.hvac_mode == "off":
-            await self._set_hvac_mode(
-                "off",
-                reason=f"daily classification — {classification.day_type} day, HVAC not needed",
-            )
+            indoor_temp = self._get_indoor_temp_f()
+            comfort_heat = self.config.get("comfort_heat")
+            if indoor_temp is not None and comfort_heat is not None and indoor_temp < comfort_heat:
+                # Indoor below comfort floor despite warm forecast — heat to comfort first.
+                # apply_classification() is called every 30 min; once indoor reaches comfort_heat
+                # the guard stops firing and HVAC goes off naturally.
+                _LOGGER.warning(
+                    "Warm-day off deferred: indoor %.1f°F below comfort floor %.1f°F — heating to comfort first",
+                    indoor_temp,
+                    comfort_heat,
+                )
+                if self._emit_event_callback:
+                    self._emit_event_callback(
+                        "warm_day_comfort_gap",
+                        {
+                            "day_type": classification.day_type,
+                            "indoor_temp": indoor_temp,
+                            "comfort_heat": comfort_heat,
+                        },
+                    )
+                await self._set_hvac_mode(
+                    "heat",
+                    reason=(
+                        f"indoor {format_temp(indoor_temp, unit)} below comfort floor"
+                        f" {format_temp(comfort_heat, unit)}"
+                        f" — heating before {classification.day_type} day shutoff"
+                    ),
+                )
+                await self._set_temperature(
+                    comfort_heat,
+                    reason=f"comfort floor recovery before {classification.day_type} day HVAC off",
+                )
+            else:
+                await self._set_hvac_mode(
+                    "off",
+                    reason=f"daily classification — {classification.day_type} day, HVAC not needed",
+                )
 
         # Handle pre-conditioning
         if classification.pre_condition and classification.pre_condition_target:

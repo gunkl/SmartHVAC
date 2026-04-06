@@ -6,10 +6,12 @@ _record_thermal_observation() method.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -283,3 +285,349 @@ class TestThermalObservationRecordingViaCoordinator:
         _run_session(65.0, 67.0, 20.0)
 
         assert coord._today_record.peak_hvac_rate_f_per_hour == pytest.approx(6.0, abs=0.1)
+
+
+# ---------------------------------------------------------------------------
+# TestImmediateLearningPersistence — Change 1: save_state after HVAC off
+# ---------------------------------------------------------------------------
+
+
+def _make_coordinator_async(tmp_path):
+    """Coordinator with AsyncMock for hass.async_add_executor_job.
+
+    The stub DataUpdateCoordinator.__init__ ignores args and does not set
+    self.hass, so we inject a fresh hass mock with an AsyncMock executor job.
+    """
+    coord = _make_coordinator(tmp_path)
+    hass = MagicMock()
+    hass.config.config_dir = str(tmp_path)
+    hass.states.get = MagicMock(return_value=None)
+    hass.async_add_executor_job = AsyncMock(return_value=None)
+    coord.hass = hass
+    coord._async_save_state = AsyncMock()
+    coord.learning = _make_engine(tmp_path)
+    return coord
+
+
+def _make_thermostat_state(hvac_mode: str, action: str = "idle"):
+    """Return a minimal mock thermostat state."""
+    state = MagicMock()
+    state.state = hvac_mode
+    state.attributes = {
+        "hvac_action": action,
+        "temperature": 70.0,
+        "fan_mode": "auto",
+    }
+    return state
+
+
+async def _run_hvac_off_block(coord, new_state):
+    """Execute only the HVAC-just-turned-off block from _async_thermostat_changed.
+
+    This exercises the exact code path:
+        self._flush_hvac_runtime()
+        self._record_thermal_observation(new_state)
+        await self.hass.async_add_executor_job(self.learning.save_state)
+        self._hvac_on_since = None
+        await self._async_save_state()
+
+    Without running the full _async_thermostat_changed (which has many unrelated
+    dependencies that are difficult to stub in unit tests).
+    """
+    coord._flush_hvac_runtime()
+    coord._record_thermal_observation(new_state)
+    await coord.hass.async_add_executor_job(coord.learning.save_state)
+    coord._hvac_on_since = None
+    await coord._async_save_state()
+
+
+class TestImmediateLearningPersistence:
+    """Test that learning.save_state is called via async_add_executor_job when HVAC turns off."""
+
+    def test_save_state_called_when_hvac_turns_off(self, tmp_path):
+        """When the HVAC-off block runs, async_add_executor_job(learning.save_state) is awaited."""
+        coord = _make_coordinator_async(tmp_path)
+
+        now = datetime(2026, 3, 28, 14, 0, 0)
+        start = now - timedelta(minutes=20)
+        coord._hvac_on_since = start
+        coord._hvac_session_start_indoor_temp = 65.0
+        coord._hvac_session_start_outdoor_temp = 40.0
+        coord._hvac_session_mode = "heat"
+        coord._get_indoor_temp = MagicMock(return_value=67.0)
+        coord._flush_hvac_runtime = MagicMock()
+
+        new_state = _make_thermostat_state("heat", "idle")
+
+        mock_dt = _now_mock(now)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt),
+            _patch_learning_dt(now.date()),
+        ):
+            asyncio.run(_run_hvac_off_block(coord, new_state))
+
+        # async_add_executor_job should have been called with learning.save_state
+        calls = coord.hass.async_add_executor_job.call_args_list
+        save_state_calls = [c for c in calls if c == call(coord.learning.save_state)]
+        assert len(save_state_calls) >= 1, (
+            f"Expected async_add_executor_job(learning.save_state) to be called; got: {calls}"
+        )
+
+    def test_save_state_called_even_when_obs_skipped(self, tmp_path):
+        """save_state is called even if the thermal observation itself was skipped."""
+        coord = _make_coordinator_async(tmp_path)
+
+        now = datetime(2026, 3, 28, 14, 0, 0)
+        # Session too short — observation will be skipped, but save_state must still be called
+        coord._hvac_on_since = now - timedelta(minutes=3)
+        coord._hvac_session_start_indoor_temp = 65.0
+        coord._hvac_session_start_outdoor_temp = 40.0
+        coord._hvac_session_mode = "heat"
+        coord._get_indoor_temp = MagicMock(return_value=67.0)
+        coord._flush_hvac_runtime = MagicMock()
+
+        new_state = _make_thermostat_state("heat", "idle")
+
+        mock_dt = _now_mock(now)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt),
+            _patch_learning_dt(now.date()),
+        ):
+            asyncio.run(_run_hvac_off_block(coord, new_state))
+
+        calls = coord.hass.async_add_executor_job.call_args_list
+        save_state_calls = [c for c in calls if c == call(coord.learning.save_state)]
+        assert len(save_state_calls) >= 1, f"save_state should be called even when obs was skipped; got: {calls}"
+
+    def test_hvac_on_since_cleared_after_save(self, tmp_path):
+        """_hvac_on_since is set to None after save_state, preventing double-counting."""
+        coord = _make_coordinator_async(tmp_path)
+
+        now = datetime(2026, 3, 28, 14, 0, 0)
+        coord._hvac_on_since = now - timedelta(minutes=20)
+        coord._hvac_session_start_indoor_temp = 65.0
+        coord._hvac_session_start_outdoor_temp = 40.0
+        coord._hvac_session_mode = "heat"
+        coord._get_indoor_temp = MagicMock(return_value=67.0)
+        coord._flush_hvac_runtime = MagicMock()
+
+        new_state = _make_thermostat_state("heat", "idle")
+
+        mock_dt = _now_mock(now)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt),
+            _patch_learning_dt(now.date()),
+        ):
+            asyncio.run(_run_hvac_off_block(coord, new_state))
+
+        assert coord._hvac_on_since is None
+
+
+# ---------------------------------------------------------------------------
+# TestThermalObsSkipWarnings — Change 2: warning logs for silent skips
+# ---------------------------------------------------------------------------
+
+
+class TestThermalObsSkipWarnings:
+    """Test that silent skip conditions now emit _LOGGER.warning()."""
+
+    def _make_coord_with_learning(self, tmp_path):
+        coord = _make_coordinator(tmp_path)
+        coord.learning = _make_engine(tmp_path)
+        return coord
+
+    def test_warning_when_no_session_start_time(self, tmp_path, caplog):
+        """_hvac_on_since is None → warning logged."""
+        coord = self._make_coord_with_learning(tmp_path)
+        coord._hvac_on_since = None
+        coord._hvac_session_start_indoor_temp = 65.0
+        coord._hvac_session_mode = "heat"
+        coord._get_indoor_temp = MagicMock(return_value=67.0)
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"):
+            coord._record_thermal_observation(MagicMock())
+
+        assert any("no session start time" in r.message for r in caplog.records), (
+            f"Expected 'no session start time' warning; got: {[r.message for r in caplog.records]}"
+        )
+
+    def test_warning_when_no_session_start_indoor_temp(self, tmp_path, caplog):
+        """_hvac_session_start_indoor_temp is None → warning logged."""
+        coord = self._make_coord_with_learning(tmp_path)
+        now = datetime(2026, 3, 28, 12, 0, 0)
+        coord._hvac_on_since = now - timedelta(minutes=20)
+        coord._hvac_session_start_indoor_temp = None
+        coord._hvac_session_mode = "heat"
+        coord._get_indoor_temp = MagicMock(return_value=67.0)
+
+        mock_dt = _now_mock(now)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt),
+            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+        ):
+            coord._record_thermal_observation(MagicMock())
+
+        assert any("no indoor temperature" in r.message for r in caplog.records), (
+            f"Expected 'no indoor temperature' warning; got: {[r.message for r in caplog.records]}"
+        )
+
+    def test_warning_when_session_mode_not_heat_or_cool(self, tmp_path, caplog):
+        """_hvac_session_mode is neither 'heat' nor 'cool' → warning logged."""
+        coord = self._make_coord_with_learning(tmp_path)
+        now = datetime(2026, 3, 28, 12, 0, 0)
+        coord._hvac_on_since = now - timedelta(minutes=20)
+        coord._hvac_session_start_indoor_temp = 65.0
+        coord._hvac_session_mode = "fan_only"
+        coord._get_indoor_temp = MagicMock(return_value=67.0)
+
+        mock_dt = _now_mock(now)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt),
+            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+        ):
+            coord._record_thermal_observation(MagicMock())
+
+        assert any("not 'heat' or 'cool'" in r.message for r in caplog.records), (
+            f"Expected mode warning; got: {[r.message for r in caplog.records]}"
+        )
+
+    def test_no_warning_when_session_too_short(self, tmp_path, caplog):
+        """Session below minimum → DEBUG only, no WARNING."""
+        coord = self._make_coord_with_learning(tmp_path)
+        now = datetime(2026, 3, 28, 12, 0, 0)
+        coord._hvac_on_since = now - timedelta(minutes=5)
+        coord._hvac_session_start_indoor_temp = 65.0
+        coord._hvac_session_mode = "heat"
+        coord._get_indoor_temp = MagicMock(return_value=67.0)
+
+        mock_dt = _now_mock(now)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt),
+            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+        ):
+            coord._record_thermal_observation(MagicMock())
+
+        warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warning_records) == 0, (
+            f"Expected no WARNING for short session; got: {[r.message for r in warning_records]}"
+        )
+
+    def test_no_warning_when_rate_out_of_range(self, tmp_path, caplog):
+        """Rate outside bounds → DEBUG only, no WARNING."""
+        coord = self._make_coord_with_learning(tmp_path)
+        now = datetime(2026, 3, 28, 12, 0, 0)
+        # 15 min, start=60, end=65 → rate = 5/(15/60) = 20°F/hr > MAX
+        coord._hvac_on_since = now - timedelta(minutes=15)
+        coord._hvac_session_start_indoor_temp = 60.0
+        coord._hvac_session_start_outdoor_temp = 40.0
+        coord._hvac_session_mode = "heat"
+        coord._get_indoor_temp = MagicMock(return_value=65.0)
+
+        mock_dt = _now_mock(now)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt),
+            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+        ):
+            coord._record_thermal_observation(MagicMock())
+
+        warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warning_records) == 0, (
+            f"Expected no WARNING for out-of-range rate; got: {[r.message for r in warning_records]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestEndOfDayWatchdog — Change 3: watchdog fires when no thermal obs recorded
+# ---------------------------------------------------------------------------
+
+
+def _make_end_of_day_coord(tmp_path):
+    """Coordinator wired for _async_end_of_day tests."""
+    import types
+
+    from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+    from custom_components.climate_advisor.learning import DailyRecord
+
+    coord = MagicMock()
+    coord.hass = MagicMock()
+    coord.hass.async_add_executor_job = AsyncMock(return_value=None)
+    coord.config = {"learning_enabled": True}
+    coord.learning = MagicMock()
+    coord._indoor_temp_history = []
+    coord._outdoor_temp_history = []
+    coord._hourly_forecast_temps = MagicMock()
+    coord._briefing_sent_today = True
+    coord._briefing_day_type = "cold"
+    coord._hvac_on_since = None
+    coord._last_violation_check = None
+    coord._async_save_state = AsyncMock()
+    coord._flush_hvac_runtime = MagicMock()
+    coord._emit_event = MagicMock()
+    coord._today_record = DailyRecord(date="2026-03-28", day_type="cold", trend_direction="stable")
+
+    coord._async_end_of_day = types.MethodType(ClimateAdvisorCoordinator._async_end_of_day, coord)
+    return coord
+
+
+class TestEndOfDayWatchdog:
+    """Watchdog in _async_end_of_day warns when HVAC ran but zero thermal obs recorded."""
+
+    def test_watchdog_fires_when_runtime_high_and_no_obs(self, tmp_path, caplog):
+        """With hvac_runtime_minutes > 30 and thermal_session_count == 0, emit warning + event."""
+        coord = _make_end_of_day_coord(tmp_path)
+        coord._today_record.hvac_runtime_minutes = 45.0
+        coord._today_record.thermal_session_count = 0
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"):
+            asyncio.run(coord._async_end_of_day(MagicMock()))
+
+        warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("Thermal learning watchdog" in m for m in warning_msgs), (
+            f"Expected watchdog warning; got: {warning_msgs}"
+        )
+        coord._emit_event.assert_called_once_with(
+            "thermal_learning_no_observations",
+            {"hvac_runtime_minutes": 45.0},
+        )
+
+    def test_watchdog_silent_when_runtime_low(self, tmp_path, caplog):
+        """With hvac_runtime_minutes <= 30, no watchdog warning."""
+        coord = _make_end_of_day_coord(tmp_path)
+        coord._today_record.hvac_runtime_minutes = 20.0
+        coord._today_record.thermal_session_count = 0
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"):
+            asyncio.run(coord._async_end_of_day(MagicMock()))
+
+        warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not any("Thermal learning watchdog" in m for m in warning_msgs), (
+            f"Unexpected watchdog warning: {warning_msgs}"
+        )
+        coord._emit_event.assert_not_called()
+
+    def test_watchdog_silent_when_obs_recorded(self, tmp_path, caplog):
+        """With thermal_session_count > 0, no watchdog warning even if runtime is high."""
+        coord = _make_end_of_day_coord(tmp_path)
+        coord._today_record.hvac_runtime_minutes = 60.0
+        coord._today_record.thermal_session_count = 2
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"):
+            asyncio.run(coord._async_end_of_day(MagicMock()))
+
+        warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not any("Thermal learning watchdog" in m for m in warning_msgs), (
+            f"Unexpected watchdog warning: {warning_msgs}"
+        )
+        coord._emit_event.assert_not_called()
+
+    def test_watchdog_silent_when_no_today_record(self, tmp_path, caplog):
+        """With no _today_record, watchdog is not evaluated."""
+        coord = _make_end_of_day_coord(tmp_path)
+        coord._today_record = None
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"):
+            asyncio.run(coord._async_end_of_day(MagicMock()))
+
+        warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not any("Thermal learning watchdog" in m for m in warning_msgs)
+        coord._emit_event.assert_not_called()

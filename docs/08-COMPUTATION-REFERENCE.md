@@ -173,6 +173,24 @@ The `_set_temperature_for_mode()` safety net catches all indirect callers (door/
 
 **Test coverage:** `tests/test_occupancy_automation.py` — 18 tests covering all cells above.
 
+### 6b. Warm-Day Comfort-Floor Guard
+
+When `apply_classification()` runs and the day type is `warm` or `hot` with HVAC mode `off`, the automation engine applies a comfort-floor guard before executing the shutoff. The guard fires on every 30-minute coordinator update until the indoor temperature has risen to the comfort floor.
+
+| Condition | Action | Event emitted |
+|---|---|---|
+| `day_type in (warm, hot)` AND `indoor_temp < comfort_heat` | Set HVAC to `heat`, target = `comfort_heat` | `warm_day_comfort_gap` |
+| `day_type in (warm, hot)` AND `indoor_temp >= comfort_heat` | Set HVAC to `off` as normal | — |
+| `day_type in (warm, hot)` AND indoor temp unavailable | Set HVAC to `off` as normal (fail safe) | — |
+
+**Why this guard exists:** Without it, the daily warm-day shutoff can leave the home 2–3°F below the comfort floor all morning. This accumulates comfort violations and depresses `comfort_score` even though the system was technically following the warm-day classification correctly.
+
+**Interaction with occupancy guards:** The comfort-floor heat command goes through `_set_temperature_for_mode()`, so occupancy-away and vacation redirection (§6a) still applies — the guard will not heat to `comfort_heat` if the occupancy mode is `away` or `vacation`.
+
+**30-minute convergence:** `apply_classification()` is called on every coordinator update (every 30 min). Once indoor temperature reaches `comfort_heat`, the guard condition is no longer met and the next update sets HVAC off normally. No separate timer is needed.
+
+**Test coverage:** `tests/test_warm_day_comfort_gap.py`
+
 ---
 
 ## 7. Window Recommendations
@@ -516,14 +534,16 @@ This is the definitive reference for expected system behavior across all classif
 | | E1: Sensor Open | E2: All Closed | E3: Grace+Open | E4: Override | E5: Fan Change | E6: Class Change | E7: Resume |
 |---|---|---|---|---|---|---|---|
 | C1 (hot/cool) | Pause HVAC→off, notify | Resume to cool, auto grace | Re-pause, notify | Clear pause, manual grace | Fan override grace | Re-apply classification | Resume cool, manual grace |
-| **C2 (warm/off/win=T/in)** | **No pause** (planned window) | No-op (not paused) | **No re-pause** (planned) | N/A (not paused) | No grace (HVAC off) | Re-apply; if HVAC→cool/heat, normal rules apply | N/A (not paused) |
-| C3 (warm/off/win=T/out) | No pause (HVAC already off) | No-op | N/A | N/A | No grace | Re-apply | N/A |
-| C4 (warm/off/win=F) | No pause (HVAC already off) | No-op | N/A | N/A | No grace | Re-apply | N/A |
+| **C2 (warm/off/win=T/in)** | **No pause** (planned window) | No-op (not paused) | **No re-pause** (planned) | N/A (not paused) | No grace (HVAC off) | Re-apply; comfort-floor guard fires if indoor < comfort_heat (see §6b) | N/A (not paused) |
+| C3 (warm/off/win=T/out) | No pause (HVAC already off) | No-op | N/A | N/A | No grace | Re-apply; comfort-floor guard fires if indoor < comfort_heat (see §6b) | N/A |
+| C4 (warm/off/win=F) | No pause (HVAC already off) | No-op | N/A | N/A | No grace | Re-apply; comfort-floor guard fires if indoor < comfort_heat (see §6b) | N/A |
 | **C5 (mild/off/win=T/in)** | **No pause** (planned window) | No-op | **No re-pause** (planned) | N/A | No grace | Re-apply | N/A |
 | C6 (cool/heat) | Pause HVAC→off, notify | Resume to heat, auto grace | Re-pause, notify | Clear pause, manual grace | Fan override grace | Re-apply | Resume heat, manual grace |
 | C7 (cold/heat) | Pause HVAC→off, notify | Resume to heat, auto grace | Re-pause, notify | Clear pause, manual grace | Fan override grace | Re-apply | Resume heat, manual grace |
 
 **Bolded cells** have corresponding test coverage in `tests/test_windows_recommended_integration.py`.
+
+**Warm-day comfort-floor guard (§6b):** In C2, C3, and C4 contexts, `apply_classification()` runs every 30 minutes. If `indoor_temp < comfort_heat`, HVAC is set to heat at `comfort_heat` and the `warm_day_comfort_gap` event is emitted instead of setting HVAC off. Once indoor temp reaches the floor, the next update applies the normal warm-day shutoff. Test coverage: `tests/test_warm_day_comfort_gap.py`.
 
 This logic table MUST be kept current for any changes to automation behavior.
 
@@ -538,7 +558,9 @@ This logic table MUST be kept current for any changes to automation behavior.
 | C2×E3 | test_windows_recommended_integration.py | test_grace_expiry_no_repause_during_window_period |
 | C2→C1×E6 | test_windows_recommended_integration.py | test_classification_change_warm_to_hot_enables_pause |
 | C3×E1 | test_windows_recommended_integration.py | test_pause_fires_outside_window_period_with_active_hvac |
+| C2×E6 (comfort gap) | test_warm_day_comfort_gap.py | warm-day indoor < comfort_heat → heat first, then off |
+| C4×E6 (comfort gap) | test_warm_day_comfort_gap.py | warm-day (no window rec) indoor < comfort_heat → heat first |
 
 ---
 
-_Last Updated: 2026-03-27_
+_Last Updated: 2026-04-06_

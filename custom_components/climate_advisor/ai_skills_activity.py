@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.util import dt as dt_util
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
@@ -15,7 +17,6 @@ from .const import (
     ATTR_DAY_TYPE,
     ATTR_FAN_STATUS,
     ATTR_HVAC_ACTION,
-    ATTR_HVAC_RUNTIME_TODAY,
     ATTR_LAST_ACTION_REASON,
     ATTR_LAST_ACTION_TIME,
     ATTR_LEARNING_SUGGESTIONS,
@@ -63,7 +64,14 @@ async def async_build_activity_context(
     day_type = data.get(ATTR_DAY_TYPE, "unknown")
     trend = data.get(ATTR_TREND, "unknown")
     hvac_action = data.get(ATTR_HVAC_ACTION, "unknown")
-    hvac_runtime_today = data.get(ATTR_HVAC_RUNTIME_TODAY, 0)
+    # Compute fresh runtime — coordinator.data may be up to 30 min stale
+    _base_runtime = coordinator._today_record.hvac_runtime_minutes if coordinator._today_record is not None else 0.0
+    _session_elapsed = (
+        (dt_util.now() - coordinator._hvac_on_since).total_seconds() / 60.0
+        if coordinator._hvac_on_since is not None
+        else 0.0
+    )
+    hvac_runtime_today = round(_base_runtime + _session_elapsed, 1)
 
     climate_entity_id: str = options.get("climate_entity", "")
     hvac_mode = "unknown"

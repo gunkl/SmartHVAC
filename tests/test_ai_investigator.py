@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # ── HA module stubs must be in place before importing climate_advisor modules ──
 if "homeassistant" not in sys.modules:
@@ -944,3 +944,162 @@ class TestInvestigationReportPersistence:
         history.clear()
 
         assert len(store.get_investigation_report_history()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Group 8: Fresh hvac_runtime_today calculation
+# ---------------------------------------------------------------------------
+
+
+class TestFreshHvacRuntime:
+    """Tests for the fresh hvac_runtime_today calculation in context builders."""
+
+    def test_investigator_context_uses_live_session_elapsed(self):
+        """Context includes accumulated runtime when an HVAC session is active.
+
+        Coordinator has _today_record.hvac_runtime_minutes=5.0 and
+        _hvac_on_since set to 20 minutes ago.  The context should report ~25 min,
+        not the stale coordinator.data value of 0.
+        """
+        coord = _make_coordinator(data_overrides={"hvac_runtime_today": 0})
+        hass = _make_hass()
+
+        # Set up the fresh-runtime fields
+        now = datetime.datetime.now(datetime.UTC)
+        on_since = now - datetime.timedelta(minutes=20)
+        coord._today_record = MagicMock()
+        coord._today_record.hvac_runtime_minutes = 5.0
+        coord._hvac_on_since = on_since
+
+        import custom_components.climate_advisor.ai_skills_investigator as _inv_mod
+
+        with patch.object(_inv_mod.dt_util, "now", return_value=now):
+            context = asyncio.run(async_build_investigator_context(hass, coord))
+
+        # Expected: 5.0 + 20.0 = 25.0 min
+        assert "25.0" in context
+
+    def test_investigator_context_no_active_session(self):
+        """When _hvac_on_since is None, only base runtime is used."""
+        coord = _make_coordinator(data_overrides={"hvac_runtime_today": 0})
+        hass = _make_hass()
+
+        now = datetime.datetime.now(datetime.UTC)
+        coord._today_record = MagicMock()
+        coord._today_record.hvac_runtime_minutes = 42.0
+        coord._hvac_on_since = None
+
+        import custom_components.climate_advisor.ai_skills_investigator as _inv_mod
+
+        with patch.object(_inv_mod.dt_util, "now", return_value=now):
+            context = asyncio.run(async_build_investigator_context(hass, coord))
+
+        assert "42.0" in context
+
+    def test_investigator_context_no_today_record(self):
+        """When _today_record is None, runtime defaults to 0.0."""
+        coord = _make_coordinator(data_overrides={"hvac_runtime_today": 99})
+        hass = _make_hass()
+
+        now = datetime.datetime.now(datetime.UTC)
+        coord._today_record = None
+        coord._hvac_on_since = None
+
+        import custom_components.climate_advisor.ai_skills_investigator as _inv_mod
+
+        with patch.object(_inv_mod.dt_util, "now", return_value=now):
+            context = asyncio.run(async_build_investigator_context(hass, coord))
+
+        # Stale coordinator.data value (99) must NOT appear; fresh value (0.0) must appear
+        assert "hvac_runtime_today:  0.0 min" in context
+
+
+# ---------------------------------------------------------------------------
+# Group 9: Compliance display in daily records
+# ---------------------------------------------------------------------------
+
+
+class TestComplianceDisplay:
+    """Tests for the fixed window_rec= field in daily records context."""
+
+    def _run_context_with_records(self, records: list) -> str:
+        """Build investigator context with the given daily records and return it."""
+        learning = _make_learning_mock(records=records)
+        coord = _make_coordinator(learning=learning)
+        hass = _make_hass()
+        return asyncio.run(async_build_investigator_context(hass, coord))
+
+    def test_recommended_and_opened_shows_opened(self):
+        """window_rec=opened when windows_recommended=True and windows_physically_opened=True."""
+        records = [
+            {
+                "date": "2026-04-01",
+                "windows_recommended": True,
+                "windows_physically_opened": True,
+                "hvac_runtime_minutes": 30,
+                "manual_overrides": 0,
+            }
+        ]
+        context = self._run_context_with_records(records)
+
+        assert "window_rec=opened" in context
+
+    def test_recommended_but_not_opened_shows_not_opened(self):
+        """window_rec=not-opened when recommended=True but physically opened=False."""
+        records = [
+            {
+                "date": "2026-04-02",
+                "windows_recommended": True,
+                "windows_physically_opened": False,
+                "hvac_runtime_minutes": 60,
+                "manual_overrides": 1,
+            }
+        ]
+        context = self._run_context_with_records(records)
+
+        assert "window_rec=not-opened" in context
+
+    def test_not_recommended_shows_na(self):
+        """window_rec=n/a when windows_recommended=False regardless of opened state."""
+        records = [
+            {
+                "date": "2026-04-03",
+                "windows_recommended": False,
+                "windows_physically_opened": True,
+                "hvac_runtime_minutes": 20,
+                "manual_overrides": 0,
+            }
+        ]
+        context = self._run_context_with_records(records)
+
+        assert "window_rec=n/a" in context
+
+    def test_question_mark_compliance_never_appears(self):
+        """The old 'compliance=?' placeholder is gone from the output."""
+        records = [
+            {
+                "date": "2026-04-04",
+                "windows_recommended": True,
+                "windows_physically_opened": True,
+                "hvac_runtime_minutes": 45,
+                "manual_overrides": 2,
+            }
+        ]
+        context = self._run_context_with_records(records)
+
+        assert "compliance=?" not in context
+
+    def test_falls_back_to_windows_opened_field(self):
+        """When windows_physically_opened is absent, windows_opened is used as fallback."""
+        records = [
+            {
+                "date": "2026-04-05",
+                "windows_recommended": True,
+                "windows_opened": True,  # no windows_physically_opened key
+                "hvac_runtime_minutes": 15,
+                "manual_overrides": 0,
+            }
+        ]
+        context = self._run_context_with_records(records)
+
+        assert "window_rec=opened" in context
