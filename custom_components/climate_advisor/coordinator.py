@@ -82,7 +82,9 @@ from .const import (
     ECONOMIZER_MORNING_END_HOUR,
     ECONOMIZER_TEMP_DELTA,
     EVENT_LOG_CAP,
+    FAN_MODE_BOTH,
     FAN_MODE_DISABLED,
+    FAN_MODE_HVAC,
     INVESTIGATION_REPORT_HISTORY_CAP,
     INVESTIGATION_REPORTS_FILE,
     MAX_THERMAL_RATE_F_PER_HOUR,
@@ -1649,6 +1651,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             self._hvac_on_since = None
             await self._async_save_state()
 
+        # If thermostat is now fully off, clear any stale HVAC-based fan active flag.
+        # Only applies to HVAC/Both fan modes — whole-house fans run independently.
+        ae = self.automation_engine
+        if new_state.state == "off" and ae._fan_active and not ae._fan_override_active:
+            _fan_mode = ae.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
+            if _fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+                _LOGGER.warning("Thermostat set to off while HVAC fan was marked active — clearing stale fan state")
+                ae._fan_active = False
+
         # Detect manual override: temperature changed but not by us
         new_temp = new_state.attributes.get("temperature")
         old_temp = old_state.attributes.get("temperature")
@@ -1882,6 +1893,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if ae._fan_override_active:
             return "running (manual override)" if ae._fan_active else "off (manual override)"
         if ae._fan_active:
+            # Guard: HVAC-based fan can't be running when the thermostat is off.
+            # Whole-house fans are independent and may legitimately run with HVAC off.
+            if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+                climate_entity_id = self.config.get("climate_entity", "")
+                cs = self.hass.states.get(climate_entity_id) if climate_entity_id else None
+                if cs is not None and cs.state == "off":
+                    return "inactive"
             return "active"
         return "inactive"
 

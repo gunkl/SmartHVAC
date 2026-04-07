@@ -478,13 +478,6 @@
     </div>
   </div>
 
-  <!-- AI Settings Summary Card -->
-  <div class="card">
-    <h2>AI Settings</h2>
-    <div id="ai-settings-content">
-      <div class="loading">Loading...</div>
-    </div>
-  </div>
 </div>
 
 <script>
@@ -1262,7 +1255,6 @@
   async function loadAIData() {
     loadAIStatus();
     loadAIHistory();
-    loadAISettings();
     loadSuggestions();
     loadInvestigationHistory();
   }
@@ -1445,11 +1437,12 @@
       const dateStr = new Date().toISOString().slice(0, 10);
       a.href = url;
       a.download = 'climate-advisor-logs-' + dateStr + '.json';
+      a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
     } catch (e) {
+      console.error('Failed to download full logs:', e);
       alert('Failed to download logs: ' + e.message);
     } finally {
       if (btn) { btn.textContent = orig; btn.disabled = false; }
@@ -1482,11 +1475,12 @@
       const dateStr = new Date().toISOString().slice(0, 10);
       a.href = url;
       a.download = 'climate-advisor-logs-' + dateStr + '.json';
+      a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
     } catch (e) {
+      console.error('Failed to download debug logs:', e);
       alert('Failed to download logs: ' + e.message);
     } finally {
       if (btn) { btn.textContent = orig; btn.disabled = false; }
@@ -1546,41 +1540,6 @@
     }
   }
 
-  async function loadAISettings() {
-    try {
-      const data = await apiFetch('config');
-      const el = document.getElementById('ai-settings-content');
-      const settings = (data.settings || []).filter(s => s.category === 'ai_settings');
-
-      if (settings.length === 0) {
-        el.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem">AI features are not configured.</p>';
-        return;
-      }
-
-      let html = '';
-      settings.forEach(s => {
-        let displayValue = s.value;
-        // Mask API key — never show raw value
-        if (s.key === 'ai_api_key' && s.value && s.value.length > 4) {
-          displayValue = 'configured';
-        } else if (s.value == null) {
-          displayValue = '<span style="color:var(--text-secondary)">not set</span>';
-        }
-        html += `
-          <div class="setting-row">
-            <div class="setting-info">
-              <div class="setting-label">${s.label}</div>
-              <div class="setting-description">${s.description}</div>
-            </div>
-            <div class="setting-value">${displayValue}</div>
-          </div>`;
-      });
-      el.innerHTML = html;
-    } catch (e) {
-      document.getElementById('ai-settings-content').innerHTML =
-        '<p style="color:var(--danger)">Failed to load AI settings: ' + e.message + '</p>';
-    }
-  }
 
   let _lastInvestigationResult = null;
   let _cachedInvestigationReports = [];

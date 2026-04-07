@@ -760,22 +760,34 @@ class TestFanSerialization:
 # ---------------------------------------------------------------------------
 
 
-def _compute_fan_status(fan_override_active: bool, fan_active: bool, fan_mode: str) -> str:
-    """Mirror of ClimateAdvisorCoordinator._compute_fan_status for unit testing."""
+def _compute_fan_status(
+    fan_override_active: bool,
+    fan_active: bool,
+    fan_mode: str,
+    thermostat_state: str = "heat",
+) -> str:
+    """Mirror of ClimateAdvisorCoordinator._compute_fan_status for unit testing.
+
+    thermostat_state simulates the live climate entity state (e.g., 'off', 'heat').
+    The HVAC-off guard (Issue #91) fires only for FAN_MODE_HVAC/FAN_MODE_BOTH.
+    """
     if fan_mode == FAN_MODE_DISABLED:
         return "disabled"
     if fan_override_active:
-        return "override \u2014 on" if fan_active else "override \u2014 off"
+        return "running (manual override)" if fan_active else "off (manual override)"
     if fan_active:
+        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH) and thermostat_state == "off":
+            return "inactive"
         return "active"
     return "inactive"
 
 
 class TestFanStatusComputation:
-    """Unit tests for _compute_fan_status() logic (Issue #55).
+    """Unit tests for _compute_fan_status() logic (Issue #55, Issue #91).
 
     Tests the five distinct status strings returned based on
     fan_mode config, override flag, and fan active state.
+    Issue #91 adds a thermostat-state guard for HVAC-based fan modes.
     """
 
     def test_status_disabled(self):
@@ -793,20 +805,47 @@ class TestFanStatusComputation:
         result = _compute_fan_status(False, False, FAN_MODE_HVAC)
         assert result == "inactive"
 
-    def test_status_active(self):
-        """No override, fan running -> 'active'."""
+    def test_status_active_whole_house(self):
+        """No override, whole-house fan running -> 'active' regardless of thermostat state."""
         result = _compute_fan_status(False, True, FAN_MODE_WHOLE_HOUSE)
         assert result == "active"
 
+    def test_status_active_whole_house_thermostat_off(self):
+        """Whole-house fan stays 'active' even when thermostat is off — independent fan."""
+        result = _compute_fan_status(False, True, FAN_MODE_WHOLE_HOUSE, thermostat_state="off")
+        assert result == "active"
+
     def test_status_override_on(self):
-        """Override active and fan is running -> 'override \u2014 on'."""
+        """Override active and fan is running -> 'running (manual override)'."""
         result = _compute_fan_status(True, True, FAN_MODE_HVAC)
-        assert result == "override \u2014 on"
+        assert result == "running (manual override)"
 
     def test_status_override_off(self):
-        """Override active but fan is NOT running -> 'override \u2014 off'."""
+        """Override active but fan is NOT running -> 'off (manual override)'."""
         result = _compute_fan_status(True, False, FAN_MODE_WHOLE_HOUSE)
-        assert result == "override \u2014 off"
+        assert result == "off (manual override)"
+
+    # --- Issue #91: HVAC-off guard ---
+
+    def test_hvac_fan_active_thermostat_off_returns_inactive(self):
+        """FAN_MODE_HVAC: if _fan_active=True but thermostat is off, return 'inactive'."""
+        result = _compute_fan_status(False, True, FAN_MODE_HVAC, thermostat_state="off")
+        assert result == "inactive"
+
+    def test_both_fan_active_thermostat_off_returns_inactive(self):
+        """FAN_MODE_BOTH: same guard applies — returns 'inactive' when thermostat is off."""
+        result = _compute_fan_status(False, True, FAN_MODE_BOTH, thermostat_state="off")
+        assert result == "inactive"
+
+    def test_hvac_fan_active_thermostat_heat_returns_active(self):
+        """FAN_MODE_HVAC: guard does NOT fire when thermostat is not off."""
+        result = _compute_fan_status(False, True, FAN_MODE_HVAC, thermostat_state="heat")
+        assert result == "active"
+
+    def test_both_fan_active_thermostat_cool_returns_active(self):
+        """FAN_MODE_BOTH: guard does NOT fire when thermostat is in cooling mode."""
+        result = _compute_fan_status(False, True, FAN_MODE_BOTH, thermostat_state="cool")
+        assert result == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -1021,3 +1060,94 @@ class TestMinFanRuntime:
         with patch(_PATCH_CALL_LATER):
             asyncio.run(engine.start_min_fan_runtime_cycles())
         old_cancel.assert_called_once()  # old timer cancelled
+
+
+# ---------------------------------------------------------------------------
+# Issue #91: Fan state cleanup when thermostat goes to off externally
+# ---------------------------------------------------------------------------
+
+
+def _apply_thermostat_off_fan_cleanup(ae, new_thermostat_state: str) -> None:
+    """Mirror the fan-cleanup block added in coordinator._async_climate_entity_changed.
+
+    Replicates:
+        ae = self.automation_engine
+        if new_state.state == "off" and ae._fan_active and not ae._fan_override_active:
+            fan_mode = ae.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
+            if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+                ae._fan_active = False
+    """
+    if new_thermostat_state == "off" and ae._fan_active and not ae._fan_override_active:
+        fan_mode = ae.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
+        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+            ae._fan_active = False
+
+
+class TestFanStateCleanupOnThermostatOff:
+    """Tests for fan _fan_active cleanup when thermostat is set to off externally.
+
+    Issue #91: If the thermostat is manually set to 'off' while _fan_active=True,
+    the coordinator must clear _fan_active to prevent stale 'active' status display.
+    Only applies to HVAC-based fan modes (FAN_MODE_HVAC, FAN_MODE_BOTH).
+    Whole-house fans are independent and must NOT be affected.
+    """
+
+    def test_hvac_fan_active_cleared_when_thermostat_off(self):
+        """FAN_MODE_HVAC: _fan_active cleared when thermostat goes to off."""
+        engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_HVAC})
+        engine._fan_active = True
+        engine._fan_override_active = False
+
+        _apply_thermostat_off_fan_cleanup(engine, "off")
+
+        assert engine._fan_active is False
+
+    def test_both_fan_active_cleared_when_thermostat_off(self):
+        """FAN_MODE_BOTH: _fan_active cleared when thermostat goes to off."""
+        engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_BOTH})
+        engine._fan_active = True
+        engine._fan_override_active = False
+
+        _apply_thermostat_off_fan_cleanup(engine, "off")
+
+        assert engine._fan_active is False
+
+    def test_whole_house_fan_not_cleared_when_thermostat_off(self):
+        """FAN_MODE_WHOLE_HOUSE: _fan_active NOT cleared — whole-house fan is independent."""
+        engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_WHOLE_HOUSE})
+        engine._fan_active = True
+        engine._fan_override_active = False
+
+        _apply_thermostat_off_fan_cleanup(engine, "off")
+
+        assert engine._fan_active is True  # unchanged
+
+    def test_fan_override_active_skips_cleanup(self):
+        """If fan override is active, _fan_active is NOT cleared."""
+        engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_HVAC})
+        engine._fan_active = True
+        engine._fan_override_active = True
+
+        _apply_thermostat_off_fan_cleanup(engine, "off")
+
+        assert engine._fan_active is True  # override protected
+
+    def test_thermostat_heat_does_not_clear_fan_active(self):
+        """No cleanup fires when thermostat transitions to 'heat' (not 'off')."""
+        engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_HVAC})
+        engine._fan_active = True
+        engine._fan_override_active = False
+
+        _apply_thermostat_off_fan_cleanup(engine, "heat")
+
+        assert engine._fan_active is True  # unchanged
+
+    def test_fan_already_inactive_stays_inactive(self):
+        """Cleanup is a no-op when fan is already inactive."""
+        engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_HVAC})
+        engine._fan_active = False
+        engine._fan_override_active = False
+
+        _apply_thermostat_off_fan_cleanup(engine, "off")
+
+        assert engine._fan_active is False

@@ -42,6 +42,14 @@ Chronological summary of significant recent events and state changes.
 Why each automation action was taken, with the logic explained.
 ## ANOMALIES
 Anything unusual: long runtimes, frequent cycling, comfort violations, unexpected states.
+IMPORTANT: The STATE CROSS-VALIDATION section in the context contains pre-computed flags. \
+If it contains [WARNING] or [FLAG] entries, call each one out explicitly here — do NOT \
+construct explanatory narratives around contradictions. Treat them as data quality issues \
+or potential hardware bugs requiring investigation.
+NUMERIC VERIFICATION RULE: A temperature T is within comfort band [L, H] only if \
+L <= T <= H. Verify the arithmetic directly against supplied numeric values before making \
+any comfort characterization statement. The cross-validation section already contains \
+this check — reference it rather than re-deriving.
 ## DIAGNOSTICS
 System health observations: sensor connectivity, automation engine status, learning state.\
 """
@@ -126,9 +134,33 @@ async def async_build_activity_context(
     weather_bias = options.get("weather_bias_enabled", False)
     fan_mode = options.get("fan_mode", "disabled")
 
+    # --- State cross-validation ---
+    state_flags: list[str] = []
+    active_actions = {"heating", "cooling", "fan"}
+    if hvac_mode == "off" and str(hvac_action).lower() in active_actions:
+        state_flags.append(
+            f"[WARNING] hvac_mode=off but hvac_action={hvac_action!r} — "
+            "possible stale coordinator data or thermostat reporting bug"
+        )
+    try:
+        ch = float(comfort_heat)
+        cc = float(comfort_cool)
+        ct = float(current_temp)
+        if ct < ch:
+            state_flags.append(f"[FLAG] Indoor {ct}\u00b0F < comfort_heat {ch}\u00b0F — below comfort band")
+        elif ct > cc:
+            state_flags.append(f"[FLAG] Indoor {ct}\u00b0F > comfort_cool {cc}\u00b0F — above comfort band")
+        else:
+            state_flags.append(f"[OK] Indoor {ct}\u00b0F is within comfort band [{ch}\u2013{cc}\u00b0F]")
+    except (ValueError, TypeError):
+        pass
+
     # --- Format context block ---
     lines = [
         "=== Climate Advisor Activity Report Context ===",
+        "",
+        "## STATE CROSS-VALIDATION",
+        *(state_flags if state_flags else ["  No contradictions detected."]),
         "",
         "## CLASSIFICATION",
         f"  Day type:          {day_type}",
