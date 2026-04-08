@@ -26,7 +26,30 @@ Climate Advisor exposes several sensor entities in Home Assistant. These persist
 - HA History: Click any entity → History tab (shows state changes over time)
 - CLI: `python3 tools/ha_logs.py --history --entity sensor.climate_advisor_status --hours 24`
 
-### 2. Container Logs (Real-Time)
+### 2. Temperature Forecast Chart (Visual History)
+
+The dashboard's **Temperature Forecast** chart provides a 1-year visual timeline of HVAC/fan activity alongside temperature data. Use it to diagnose behavior at a glance before diving into logs.
+
+**Range presets**: 6h | 12h | 24h | 3d | 7d | 30d | 1y — select the window that covers the incident
+
+**What each overlay shows:**
+| Overlay | What to look for |
+|---------|-----------------|
+| Red bar (HVAC heating) | Heating fired — check if temp rose as expected |
+| Blue bar (HVAC cooling) | Cooling fired — check if temp dropped as expected |
+| Green bar (Fan/fan) | Fan-only circulation active |
+| Orange solid line (Actual Indoor) | Real indoor temperature response |
+| Blue solid line (Actual Outdoor) | Actual outdoor temps driving classification |
+| Dashed lines | Predicted curves — divergence from actual reveals model error |
+| Comfort band shading | Green region = target comfort zone |
+| Event markers | Vertical lines: grey=classification change, green=window recommendation, red=override |
+
+**Drag-to-zoom** on any region for fine-grained analysis. Reset Zoom returns to the preset range.
+
+**Persistent**: data is stored in `climate_advisor_chart_log.json` (1-year rolling) — available even if HA was restarted since the incident.
+
+### 3. Container Logs (Real-Time)
+
 
 ```bash
 # Recent climate_advisor logs
@@ -41,7 +64,7 @@ python3 tools/ha_logs.py --lines 200 --save
 
 **Limitation:** Container logs (`ha core logs`) have limited buffer — typically only a few hours of history. For older data, use the HA REST API method (--history).
 
-### 3. HA REST API History (Historical)
+### 4. HA REST API History (Historical)
 
 ```bash
 # Last 24 hours of logbook entries for climate_advisor

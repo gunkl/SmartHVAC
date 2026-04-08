@@ -180,7 +180,12 @@ class ClimateAdvisorChartDataView(HomeAssistantView):
         if not coordinator:
             return self.json({"error": "Climate Advisor not loaded"}, status_code=503)
 
-        return self.json(coordinator.get_chart_data())
+        range_str = request.rel_url.query.get("range", "24h")
+        valid_ranges = {"6h", "12h", "24h", "3d", "7d", "30d", "1y"}
+        if range_str not in valid_ranges:
+            range_str = "24h"
+
+        return self.json(coordinator.get_chart_data(range_str=range_str))
 
 
 class ClimateAdvisorAutomationStateView(HomeAssistantView):

@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.14"
+VERSION = "0.3.15"
 
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
@@ -132,6 +132,12 @@ DEFAULT_NATURAL_VENT_DELTA = 3.0
 
 # State persistence
 STATE_FILE = "climate_advisor_state.json"
+
+# Chart state log
+CHART_LOG_FILE = "climate_advisor_chart_log.json"
+CHART_LOG_MAX_DAYS = 365  # 1-year rolling cap (~17,500 entries ≈ 2MB)
+CHART_DOWNSAMPLE_HOURLY_DAYS = 3  # raw points for ≤3 days; hourly averages beyond
+CHART_DOWNSAMPLE_DAILY_DAYS = 30  # daily summaries for >30 days
 
 # Learning system
 LEARNING_DB_FILE = "climate_advisor_learning.json"

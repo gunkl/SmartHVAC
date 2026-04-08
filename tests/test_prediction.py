@@ -769,6 +769,10 @@ def _make_chart_coordinator(temp_unit: str = "fahrenheit", thermal_model_return:
     learning.get_thermal_model.return_value = thermal_model_return if thermal_model_return is not None else {}
     coord.learning = learning
 
+    chart_log = MagicMock()
+    chart_log.get_entries.return_value = []
+    coord._chart_log = chart_log
+
     return coord
 
 

@@ -7,6 +7,7 @@ data to the learning engine.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 from datetime import UTC, datetime, time, timedelta
@@ -28,6 +29,7 @@ from homeassistant.util import dt as dt_util
 
 from .automation import AutomationEngine, compute_bedtime_setback
 from .briefing import generate_briefing
+from .chart_log import ChartStateLog
 from .classifier import DayClassification, ForecastSnapshot, classify_day
 from .const import (
     AI_REPORT_HISTORY_CAP,
@@ -54,6 +56,7 @@ from .const import (
     ATTR_OCCUPANCY_MODE,
     ATTR_TREND,
     ATTR_TREND_MAGNITUDE,
+    CHART_LOG_MAX_DAYS,
     CONF_AI_API_KEY,
     CONF_AI_ENABLED,
     CONF_AI_INVESTIGATOR_ENABLED,
@@ -128,6 +131,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         # Sub-components
         self._state_persistence = StatePersistence(Path(hass.config.config_dir))
+        self._chart_log = ChartStateLog(Path(hass.config.config_dir), max_days=CHART_LOG_MAX_DAYS)
+        self._chart_log.load()
         self.learning = LearningEngine(Path(hass.config.config_dir))
         self.automation_engine = AutomationEngine(
             hass=hass,
@@ -883,6 +888,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             prev_type = self._current_classification.day_type if self._current_classification else None
             self._current_classification = classify_day(forecast, previous_day_type=prev_type)
 
+            # Chart log: emit classification_change event when day type changes
+            if prev_type is not None and prev_type != self._current_classification.day_type:
+                with contextlib.suppress(Exception):
+                    self._chart_log.append(
+                        hvac=self._current_classification.hvac_mode or "",
+                        fan=bool(self.automation_engine._fan_active) if self.automation_engine else False,
+                        indoor=forecast.current_indoor_temp,
+                        outdoor=forecast.current_outdoor_temp,
+                        event="classification_change",
+                    )
+
             # Startup safety: only set manual override if the current HVAC
             # mode differs from the classification (Issue #42)
             if self._first_run:
@@ -994,7 +1010,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         hvac_runtime_today = round(_base_runtime + _session_elapsed, 1)
 
         next_auto = self._compute_next_automation_action(c)
-        return {
+        fan_running = self.automation_engine._fan_active
+        result = {
             ATTR_DAY_TYPE: c.day_type if c else "unknown",
             ATTR_TREND: c.trend_direction if c else "unknown",
             ATTR_TREND_MAGNITUDE: c.trend_magnitude if c else 0,
@@ -1012,12 +1029,26 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ATTR_FAN_STATUS: self._compute_fan_status(),
             ATTR_FAN_RUNTIME: self.automation_engine._get_fan_runtime_minutes(),
             ATTR_FAN_OVERRIDE_SINCE: self.automation_engine._fan_override_time,
-            ATTR_FAN_RUNNING: self.automation_engine._fan_active,
+            ATTR_FAN_RUNNING: fan_running,
             ATTR_HVAC_ACTION: hvac_action,
             ATTR_HVAC_RUNTIME_TODAY: hvac_runtime_today,
             ATTR_CONTACT_STATUS: self._compute_contact_status(),
             ATTR_AI_STATUS: self.claude_client.get_status()["status"] if self.claude_client else "disabled",
         }
+
+        # Append chart log entry (every coordinator tick — 30-min cadence)
+        with contextlib.suppress(Exception):
+            indoor_temp = forecast.current_indoor_temp if forecast else None
+            outdoor_temp = forecast.current_outdoor_temp if forecast else None
+            self._chart_log.append(
+                hvac=str(hvac_action) if hvac_action else "",
+                fan=bool(fan_running),
+                indoor=indoor_temp,
+                outdoor=outdoor_temp,
+            )
+            self._chart_log.save()
+
+        return result
 
     def _get_outdoor_temp(self, weather_attrs: dict) -> float:
         """Read outdoor temperature based on configured source type."""
@@ -1352,6 +1383,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             hvac_mode_recommended=classification.hvac_mode,
         )
 
+        # Chart log: emit window_rec event when windows are recommended for today
+        if classification.windows_recommended:
+            with contextlib.suppress(Exception):
+                self._chart_log.append(
+                    hvac=classification.hvac_mode or "",
+                    fan=bool(self.automation_engine._fan_active) if self.automation_engine else False,
+                    indoor=self._get_indoor_temp(),
+                    outdoor=None,
+                    event="window_rec",
+                )
+
         # Capture raw forecast high/low for weather bias learning
         if (
             self.config.get("learning_enabled", True)
@@ -1608,6 +1650,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     "source": "normal",
                 },
             )
+            with contextlib.suppress(Exception):
+                _indoor = self._get_indoor_temp()
+                _cs_attrs = self.hass.states.get(self.config.get("climate_entity", ""))
+                _outdoor_val = _cs_attrs.attributes.get("current_temperature") if _cs_attrs else None
+                self._chart_log.append(
+                    hvac=new_state.state,
+                    fan=bool(self.automation_engine._fan_active),
+                    indoor=_indoor,
+                    outdoor=float(_outdoor_val) if _outdoor_val is not None else None,
+                    event="override",
+                )
             self.automation_engine.handle_manual_override()
 
         # HVAC runtime tracking via hvac_action (preferred) or mode
@@ -1893,13 +1946,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if ae._fan_override_active:
             return "running (manual override)" if ae._fan_active else "off (manual override)"
         if ae._fan_active:
-            # Guard: HVAC-based fan can't be running when the thermostat is off.
-            # Whole-house fans are independent and may legitimately run with HVAC off.
-            if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
-                climate_entity_id = self.config.get("climate_entity", "")
-                cs = self.hass.states.get(climate_entity_id) if climate_entity_id else None
-                if cs is not None and cs.state == "off":
-                    return "inactive"
             return "active"
         return "inactive"
 
@@ -2049,11 +2095,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "expected_low": c.tomorrow_low,
         }
 
-    def get_chart_data(self) -> dict[str, Any]:
+    def get_chart_data(self, range_str: str = "24h") -> dict[str, Any]:
         """Build chart data for the dashboard panel.
 
         Returns a dict with four series: predicted outdoor, predicted indoor,
-        actual outdoor, and actual indoor temperatures over a 24-hour period.
+        actual outdoor, and actual indoor temperatures over a 24-hour period,
+        plus a rolling state log filtered/downsampled to the requested range.
+
+        range_str: one of "6h", "12h", "24h", "3d", "7d", "30d", "1y"
         """
         now = dt_util.now()
         current_hour = now.hour + now.minute / 60.0
@@ -2095,6 +2144,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 ),
                 "unit": unit,
             },
+            "state_log": self._chart_log.get_entries(range_str),
+            "comfort_heat": self.config.get("comfort_heat", 68),
+            "comfort_cool": self.config.get("comfort_cool", 76),
         }
 
     def get_debug_state(self) -> dict[str, Any]:

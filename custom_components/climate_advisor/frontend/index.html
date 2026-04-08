@@ -127,34 +127,61 @@
   .chart-container {
     position: relative;
     width: 100%;
-    height: 300px;
+    height: 420px;
   }
-  .chart-container canvas {
-    width: 100% !important;
-    height: 100% !important;
-  }
-  .legend {
+  .chart-range-bar {
     display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
     flex-wrap: wrap;
-    gap: 16px;
-    margin-top: 8px;
-    font-size: 0.8rem;
+    align-items: center;
   }
-  .legend-item {
+  .chart-range-bar .range-btn {
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .chart-range-bar .range-btn.active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+  }
+  .chart-range-bar .range-btn:hover:not(.active) {
+    background: var(--primary-light);
+  }
+  .chart-overlay-bar {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    align-items: center;
+  }
+  .chart-overlay-bar label {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
+    cursor: pointer;
   }
-  .legend-line {
-    width: 24px;
-    height: 3px;
-    border-radius: 2px;
+  .chart-zoom-reset {
+    margin-left: auto;
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: none;
   }
-  .legend-line.dashed {
-    background: repeating-linear-gradient(
-      90deg, currentColor 0, currentColor 4px, transparent 4px, transparent 8px
-    );
-    height: 2px;
+  .chart-zoom-reset.visible {
+    display: inline-block;
   }
   .btn {
     padding: 10px 20px;
@@ -272,6 +299,9 @@
     #daily-record { grid-template-columns: 1fr !important; }
   }
 </style>
+<script src="hammer.min.js"></script>
+<script src="chart.umd.min.js"></script>
+<script src="chartjs-plugin-zoom.min.js"></script>
 </head>
 <body>
 
@@ -302,27 +332,26 @@
   </div>
 
   <div class="card">
-    <h2>Temperature Forecast</h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <h2 style="margin:0">Temperature Forecast</h2>
+      <button class="chart-zoom-reset" id="chart-zoom-reset" onclick="resetChartZoom()">Reset Zoom</button>
+    </div>
+    <div class="chart-range-bar">
+      <button class="range-btn active" data-range="24h" onclick="setChartRange('24h', this)">24h</button>
+      <button class="range-btn" data-range="6h" onclick="setChartRange('6h', this)">6h</button>
+      <button class="range-btn" data-range="12h" onclick="setChartRange('12h', this)">12h</button>
+      <button class="range-btn" data-range="3d" onclick="setChartRange('3d', this)">3d</button>
+      <button class="range-btn" data-range="7d" onclick="setChartRange('7d', this)">7d</button>
+      <button class="range-btn" data-range="30d" onclick="setChartRange('30d', this)">30d</button>
+      <button class="range-btn" data-range="1y" onclick="setChartRange('1y', this)">1y</button>
+    </div>
     <div class="chart-container">
       <canvas id="temp-chart"></canvas>
     </div>
-    <div class="legend">
-      <div class="legend-item">
-        <div class="legend-line dashed" style="color:#2196f3"></div>
-        <span>Predicted Outdoor</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-line dashed" style="color:#ff9800"></div>
-        <span>Predicted Indoor</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-line" style="background:#2196f3"></div>
-        <span>Actual Outdoor</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-line" style="background:#ff9800"></div>
-        <span>Actual Indoor</span>
-      </div>
+    <div class="chart-overlay-bar">
+      <label><input type="checkbox" id="overlay-comfort" checked onchange="toggleOverlay('comfort_band')"> Comfort band</label>
+      <label><input type="checkbox" id="overlay-humidity" onchange="toggleOverlay('humidity')"> Humidity</label>
+      <label><input type="checkbox" id="overlay-feelslike" onchange="toggleOverlay('feelslike')"> Feels-like</label>
     </div>
   </div>
 
@@ -667,122 +696,376 @@
     }
   }
 
-  // --- Chart ---
+  // --- Chart (Chart.js v4) ---
+
+  let _tempChart = null;          // Chart.js instance
+  let _chartRange = '24h';        // current range preset
+  let _lastChartData = null;      // cache for overlay toggles
+  let _chartZoomed = false;       // track zoom state
+
+  // Colour palette (matches the dark theme screenshot)
+  const CHART_COLORS = {
+    pred_outdoor:  'rgba(33, 150, 243, 0.85)',   // blue dashed
+    pred_indoor:   'rgba(255, 152, 0, 0.85)',    // orange dashed
+    act_outdoor:   'rgba(33, 150, 243, 1)',      // blue solid
+    act_indoor:    'rgba(255, 152, 0, 1)',       // orange solid
+    hvac_heating:  'rgba(239, 83, 80, 0.75)',    // red
+    hvac_cooling:  'rgba(66, 165, 250, 0.60)',   // light blue
+    hvac_fan:      'rgba(102, 187, 106, 0.55)',  // green
+    fan_on:        'rgba(102, 187, 106, 0.40)',  // green (lighter)
+    comfort_band:  'rgba(76, 175, 80, 0.08)',    // very light green fill
+    comfort_border:'rgba(76, 175, 80, 0.30)',
+    humidity:      'rgba(156, 39, 176, 0.70)',   // purple
+    feelslike:     'rgba(0, 188, 212, 0.70)',    // cyan
+  };
+
+  // Map hvac action string → colour
+  function _hvacColor(hvacStr) {
+    const s = (hvacStr || '').toLowerCase();
+    if (s === 'heating') return CHART_COLORS.hvac_heating;
+    if (s === 'cooling') return CHART_COLORS.hvac_cooling;
+    if (s === 'fan')     return CHART_COLORS.hvac_fan;
+    return 'transparent';
+  }
+
+  // Parse ISO timestamp → JS Date
+  function _parseTs(ts) { return new Date(ts); }
+
+  // Convert state_log entries into Chart.js datasets
+  function _buildDatasetsFromLog(log) {
+    const hvacBgColors = log.map(e => _hvacColor(e.hvac));
+    const fanBgColors  = log.map(e => e.fan ? CHART_COLORS.fan_on : 'transparent');
+
+    const hvacDs = {
+      label: 'HVAC State',
+      type: 'bar',
+      data: log.map(e => ({ x: _parseTs(e.ts), y: 2 })),
+      backgroundColor: hvacBgColors,
+      borderWidth: 0,
+      barPercentage: 1.0,
+      categoryPercentage: 1.0,
+      yAxisID: 'yState',
+      order: 10,
+    };
+
+    const fanDs = {
+      label: 'Fan',
+      type: 'bar',
+      data: log.map(e => ({ x: _parseTs(e.ts), y: 1 })),
+      backgroundColor: fanBgColors,
+      borderWidth: 0,
+      barPercentage: 1.0,
+      categoryPercentage: 1.0,
+      yAxisID: 'yState',
+      order: 11,
+    };
+
+    return { hvacDs, fanDs };
+  }
+
   function drawChart(chartData) {
+    if (!chartData) return;
+    _lastChartData = chartData;
+
     const canvas = document.getElementById('temp-chart');
-    const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.parentElement.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-    const W = rect.width;
-    const H = rect.height;
+    if (!canvas) return;
 
-    const pad = { top: 20, right: 20, bottom: 30, left: 45 };
-    const plotW = W - pad.left - pad.right;
-    const plotH = H - pad.top - pad.bottom;
+    // Destroy previous instance
+    if (_tempChart) { _tempChart.destroy(); _tempChart = null; }
 
-    // Find temp range across all series
-    let allTemps = [];
-    (chartData.predicted_outdoor || []).forEach(p => allTemps.push(p.temp));
-    (chartData.predicted_indoor || []).forEach(p => allTemps.push(p.temp));
-    (chartData.actual_outdoor || []).forEach(p => allTemps.push(p.temp));
-    (chartData.actual_indoor || []).forEach(p => allTemps.push(p.temp));
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
+    const textColor = isDark ? '#9e9e9e' : '#757575';
 
-    if (allTemps.length === 0) {
-      ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('color');
-      ctx.font = '14px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('No data available yet', W / 2, H / 2);
-      return;
-    }
+    const log = chartData.state_log || [];
+    const comfortHeat = chartData.comfort_heat ?? null;
+    const comfortCool = chartData.comfort_cool ?? null;
 
-    let minT = Math.floor(Math.min(...allTemps) - 3);
-    let maxT = Math.ceil(Math.max(...allTemps) + 3);
+    // Predicted series anchored to today midnight
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+    function hourToDate(h) { return new Date(todayMidnight.getTime() + h * 3600000); }
 
-    function xPos(hour) { return pad.left + (hour / 24) * plotW; }
-    function yPos(temp) { return pad.top + plotH - ((temp - minT) / (maxT - minT)) * plotH; }
+    const predOutdoorPts = (chartData.predicted_outdoor || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
+    const predIndoorPts  = (chartData.predicted_indoor  || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
 
-    // Clear
-    ctx.clearRect(0, 0, W, H);
+    // Actual series from temp history (ISO timestamps)
+    const actOutdoorPts = (chartData.actual_outdoor || []).map(p => ({ x: _parseTs(p.time), y: p.temp }));
+    const actIndoorPts  = (chartData.actual_indoor  || []).map(p => ({ x: _parseTs(p.time), y: p.temp }));
 
-    // Grid and axes
-    const textColor = getComputedStyle(document.body).getPropertyValue('color') || '#212121';
-    ctx.strokeStyle = 'rgba(128,128,128,0.2)';
-    ctx.lineWidth = 1;
-    ctx.font = '11px sans-serif';
-    ctx.fillStyle = textColor;
+    const { hvacDs, fanDs } = _buildDatasetsFromLog(log);
 
-    // Y-axis gridlines and labels
-    const tempStep = Math.max(1, Math.round((maxT - minT) / 6));
-    for (let t = minT; t <= maxT; t += tempStep) {
-      const y = yPos(t);
-      ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(W - pad.right, y);
-      ctx.stroke();
-      ctx.textAlign = 'right';
-      ctx.fillText(t + '\u00b0', pad.left - 6, y + 4);
-    }
+    // Comfort band dataset
+    const comfortBandVisible = document.getElementById('overlay-comfort')?.checked ?? true;
+    const comfortBandDs = (comfortHeat != null && comfortCool != null) ? {
+      label: 'Comfort Band',
+      type: 'line',
+      data: predIndoorPts.length > 0
+        ? predIndoorPts.map(p => ({ x: p.x, y: comfortCool }))
+        : predOutdoorPts.map(p => ({ x: p.x, y: comfortCool })),
+      borderColor: CHART_COLORS.comfort_border,
+      borderWidth: 1,
+      borderDash: [3, 3],
+      backgroundColor: CHART_COLORS.comfort_band,
+      fill: {
+        target: { value: comfortHeat },
+      },
+      pointRadius: 0,
+      tension: 0,
+      yAxisID: 'y',
+      hidden: !comfortBandVisible,
+      order: 5,
+    } : null;
 
-    // X-axis hour labels
-    ctx.textAlign = 'center';
-    for (let h = 0; h <= 24; h += 3) {
-      const x = xPos(h);
-      const label = h === 0 || h === 24 ? '12a' : h === 12 ? '12p'
-        : h < 12 ? h + 'a' : (h - 12) + 'p';
-      ctx.fillText(label, x, H - pad.bottom + 18);
-      ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, H - pad.bottom);
-      ctx.stroke();
-    }
+    // Humidity / feels-like overlays
+    const humidityVisible  = document.getElementById('overlay-humidity')?.checked ?? false;
+    const feelsLikeVisible = document.getElementById('overlay-feelslike')?.checked ?? false;
 
-    // Draw a series as polyline
-    function drawSeries(points, color, dashed) {
-      if (!points || points.length === 0) return;
-      ctx.beginPath();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.setLineDash(dashed ? [6, 4] : []);
-      points.forEach((p, i) => {
-        const x = xPos(p.hour !== undefined ? p.hour : parseHour(p.time));
-        const y = yPos(p.temp);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+    const humidityPts  = log.filter(e => e.humidity  != null).map(e => ({ x: _parseTs(e.ts), y: e.humidity }));
+    const feelsLikePts = log.filter(e => e.feelslike != null).map(e => ({ x: _parseTs(e.ts), y: e.feelslike }));
+
+    const datasets = [
+      {
+        label: 'Predicted Outdoor',
+        type: 'line',
+        data: predOutdoorPts,
+        borderColor: CHART_COLORS.pred_outdoor,
+        borderWidth: 2,
+        borderDash: [6, 4],
+        pointRadius: 0,
+        tension: 0.3,
+        yAxisID: 'y',
+        order: 2,
+      },
+      {
+        label: 'Predicted Indoor',
+        type: 'line',
+        data: predIndoorPts,
+        borderColor: CHART_COLORS.pred_indoor,
+        borderWidth: 2,
+        borderDash: [6, 4],
+        pointRadius: 0,
+        tension: 0.3,
+        yAxisID: 'y',
+        order: 1,
+      },
+      {
+        label: 'Actual Outdoor',
+        type: 'line',
+        data: actOutdoorPts,
+        borderColor: CHART_COLORS.act_outdoor,
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.2,
+        yAxisID: 'y',
+        order: 4,
+      },
+      {
+        label: 'Actual Indoor',
+        type: 'line',
+        data: actIndoorPts,
+        borderColor: CHART_COLORS.act_indoor,
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.2,
+        yAxisID: 'y',
+        order: 3,
+      },
+      hvacDs,
+      fanDs,
+    ];
+
+    if (comfortBandDs) datasets.push(comfortBandDs);
+
+    if (humidityPts.length > 0) {
+      datasets.push({
+        label: 'Humidity %',
+        type: 'line',
+        data: humidityPts,
+        borderColor: CHART_COLORS.humidity,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.2,
+        yAxisID: 'yRight',
+        hidden: !humidityVisible,
+        order: 6,
       });
-      ctx.stroke();
-      ctx.setLineDash([]);
     }
 
-    function parseHour(isoStr) {
-      const d = new Date(isoStr);
-      return d.getHours() + d.getMinutes() / 60;
+    if (feelsLikePts.length > 0) {
+      datasets.push({
+        label: 'Feels-like',
+        type: 'line',
+        data: feelsLikePts,
+        borderColor: CHART_COLORS.feelslike,
+        borderWidth: 1.5,
+        borderDash: [3, 3],
+        pointRadius: 0,
+        tension: 0.2,
+        yAxisID: 'y',
+        hidden: !feelsLikeVisible,
+        order: 7,
+      });
     }
 
-    // Draw series
-    drawSeries(chartData.predicted_outdoor, '#2196f3', true);
-    drawSeries(chartData.predicted_indoor, '#ff9800', true);
-    drawSeries(chartData.actual_outdoor, '#2196f3', false);
-    drawSeries(chartData.actual_indoor, '#ff9800', false);
+    const nowDate = new Date();
 
-    // "Now" marker
-    if (chartData.current_hour != null) {
-      const nx = xPos(chartData.current_hour);
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(128,128,128,0.6)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 4]);
-      ctx.moveTo(nx, pad.top);
-      ctx.lineTo(nx, H - pad.bottom);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = textColor;
-      ctx.font = '10px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('Now', nx, pad.top - 6);
-    }
+    _tempChart = new Chart(canvas, {
+      type: 'line',
+      data: { datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: {
+          mode: 'index',
+          intersect: false,
+        },
+        plugins: {
+          legend: {
+            display: true,
+            position: 'bottom',
+            labels: {
+              color: textColor,
+              font: { size: 11 },
+              usePointStyle: true,
+              filter: item => !['HVAC State', 'Fan'].includes(item.text),
+            },
+          },
+          tooltip: {
+            callbacks: {
+              title(items) {
+                if (!items.length) return '';
+                const d = new Date(items[0].parsed.x);
+                return d.toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+              },
+              afterBody(items) {
+                if (!items.length) return [];
+                const x = items[0].parsed.x;
+                let closest = null, minDiff = Infinity;
+                log.forEach(e => {
+                  const diff = Math.abs(_parseTs(e.ts).getTime() - x);
+                  if (diff < minDiff) { minDiff = diff; closest = e; }
+                });
+                if (!closest) return [];
+                const lines = [];
+                const hvacLabel = { heating: '🔴 Heating', cooling: '🔵 Cooling', fan: '🟢 Fan circ.', idle: '⚪ Idle', off: '⚫ Off' };
+                if (closest.hvac) lines.push('HVAC: ' + (hvacLabel[closest.hvac.toLowerCase()] || closest.hvac));
+                lines.push('Fan: ' + (closest.fan ? 'On' : 'Off'));
+                if (closest.event) lines.push('Event: ' + closest.event.replace(/_/g,' '));
+                return lines;
+              },
+            },
+          },
+          zoom: {
+            zoom: {
+              drag: { enabled: true, backgroundColor: 'rgba(33,150,243,0.12)' },
+              mode: 'x',
+              onZoomComplete() {
+                _chartZoomed = true;
+                const btn = document.getElementById('chart-zoom-reset');
+                if (btn) btn.classList.add('visible');
+              },
+            },
+            pan: { enabled: false },
+          },
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: {
+              tooltipFormat: 'MMM d, h:mm a',
+              displayFormats: {
+                hour: 'h a',
+                day: 'MMM d',
+                week: 'MMM d',
+                month: 'MMM',
+              },
+            },
+            grid: { color: gridColor },
+            ticks: { color: textColor, maxTicksLimit: 10 },
+          },
+          y: {
+            position: 'left',
+            grid: { color: gridColor },
+            ticks: {
+              color: textColor,
+              callback: v => v + '°',
+            },
+          },
+          yState: {
+            position: 'right',
+            display: false,
+            min: 0,
+            max: 3,
+            grid: { display: false },
+          },
+          yRight: {
+            position: 'right',
+            display: 'auto',
+            grid: { display: false },
+            ticks: { color: textColor, callback: v => v + '%' },
+          },
+        },
+      },
+      plugins: [
+        {
+          id: 'caAnnotations',
+          afterDraw(chart) {
+            const ctx = chart.ctx;
+            const xScale = chart.scales.x;
+            const yScale = chart.scales.y;
+            if (!xScale || !yScale) return;
+
+            // Draw "Now" vertical line
+            const nowX = xScale.getPixelForValue(nowDate);
+            if (nowX >= xScale.left && nowX <= xScale.right) {
+              ctx.save();
+              ctx.strokeStyle = 'rgba(128,128,128,0.5)';
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([4, 4]);
+              ctx.beginPath();
+              ctx.moveTo(nowX, yScale.top);
+              ctx.lineTo(nowX, yScale.bottom);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.fillStyle = textColor;
+              ctx.font = '10px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText('Now', nowX, yScale.top - 4);
+              ctx.restore();
+            }
+
+            // Draw event markers
+            log.forEach(e => {
+              if (!e.event) return;
+              const evtX = xScale.getPixelForValue(_parseTs(e.ts));
+              if (evtX < xScale.left || evtX > xScale.right) return;
+              const color = e.event === 'override' ? '#f44336' :
+                            e.event === 'window_rec' ? '#4caf50' : '#9e9e9e';
+              const label = e.event === 'classification_change' ? 'Classify' :
+                            e.event === 'window_rec' ? 'Win Rec' : 'Override';
+              ctx.save();
+              ctx.strokeStyle = color;
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([4, 3]);
+              ctx.beginPath();
+              ctx.moveTo(evtX, yScale.top);
+              ctx.lineTo(evtX, yScale.bottom);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.fillStyle = color;
+              ctx.font = '9px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText(label, evtX, yScale.top + 10);
+              ctx.restore();
+            });
+          },
+        },
+      ],
+    });
   }
 
   function updateThermalPanel(tm) {
@@ -838,13 +1121,50 @@
 
   async function loadChart() {
     try {
-      const data = await apiFetch('chart_data');
+      const data = await apiFetch(`chart_data?range=${_chartRange}`);
       drawChart(data);
       updateThermalPanel(data.thermal_model || null);
     } catch (e) {
       console.error('Chart load failed:', e);
     }
   }
+
+  function setChartRange(range, btn) {
+    _chartRange = range;
+    _chartZoomed = false;
+    document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    const resetBtn = document.getElementById('chart-zoom-reset');
+    if (resetBtn) resetBtn.classList.remove('visible');
+    loadChart();
+  }
+
+  function resetChartZoom() {
+    if (_tempChart) _tempChart.resetZoom();
+    _chartZoomed = false;
+    const btn = document.getElementById('chart-zoom-reset');
+    if (btn) btn.classList.remove('visible');
+  }
+
+  function toggleOverlay(name) {
+    if (!_tempChart) return;
+    const labelMap = {
+      comfort_band: 'Comfort Band',
+      humidity: 'Humidity %',
+      feelslike: 'Feels-like',
+    };
+    const label = labelMap[name];
+    if (!label) return;
+    const ds = _tempChart.data.datasets.find(d => d.label === label);
+    if (ds) {
+      ds.hidden = !ds.hidden;
+      _tempChart.update('none');
+    }
+  }
+
+  window.setChartRange = setChartRange;
+  window.resetChartZoom = resetChartZoom;
+  window.toggleOverlay = toggleOverlay;
 
   // --- Debug tab ---
   window.doAction = async function(action) {
@@ -1711,6 +2031,7 @@
   window.runAIReport = runAIReport;
   window.copyAIReport = copyAIReport;
   window.downloadFullLogs = downloadFullLogs;
+  window.downloadDebugLogs = downloadDebugLogs;
   window.showHistoryReport = showHistoryReport;
   window.runInvestigation = runInvestigation;
   window.loadInvestigationHistory = loadInvestigationHistory;

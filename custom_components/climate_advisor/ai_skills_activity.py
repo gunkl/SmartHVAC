@@ -40,6 +40,9 @@ Return your analysis with these exact section headers (use ## for headers):
 Chronological summary of significant recent events and state changes.
 ## DECISIONS
 Why each automation action was taken, with the logic explained.
+When fan_status is active while hvac_mode is off, explicitly trace the fan state to \
+the logged automation action that caused it (e.g., "Fan activated — natural \
+ventilation: outdoor X°F ≤ threshold"). Do not describe the state in isolation.
 ## ANOMALIES
 Anything unusual: long runtimes, frequent cycling, comfort violations, unexpected states.
 IMPORTANT: The STATE CROSS-VALIDATION section in the context contains pre-computed flags. \
@@ -138,10 +141,17 @@ async def async_build_activity_context(
     state_flags: list[str] = []
     active_actions = {"heating", "cooling", "fan"}
     if hvac_mode == "off" and str(hvac_action).lower() in active_actions:
-        state_flags.append(
-            f"[WARNING] hvac_mode=off but hvac_action={hvac_action!r} — "
-            "possible stale coordinator data or thermostat reporting bug"
-        )
+        # Suppress if CA intentionally has the fan running (e.g., natural ventilation).
+        # hvac_mode=off + hvac_action=fan is expected when CA activated fan_mode=on.
+        # Only warn when the thermostat reports activity CA cannot account for.
+        ca_fan_running = fan_status in ("active", "running (manual override)")
+        if str(hvac_action).lower() == "fan" and ca_fan_running:
+            pass  # Expected: CA activated HVAC fan-only mode for natural ventilation
+        else:
+            state_flags.append(
+                f"[WARNING] hvac_mode=off but hvac_action={hvac_action!r} — "
+                "possible stale coordinator data or thermostat reporting bug"
+            )
     try:
         ch = float(comfort_heat)
         cc = float(comfort_cool)

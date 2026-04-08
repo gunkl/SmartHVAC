@@ -29,6 +29,7 @@ from custom_components.climate_advisor.ai_skills_activity import (  # noqa: E402
     async_build_activity_context,
 )
 from custom_components.climate_advisor.const import (  # noqa: E402
+    ATTR_FAN_STATUS,
     ATTR_HVAC_ACTION,
 )
 
@@ -51,10 +52,11 @@ def _make_coordinator(
     hvac_action: str = "heating",
     comfort_heat: float = 68.0,
     comfort_cool: float = 76.0,
+    fan_status: str = "inactive",
 ) -> MagicMock:
     """Build a minimal coordinator mock."""
     coord = MagicMock()
-    coord.data = {ATTR_HVAC_ACTION: hvac_action}
+    coord.data = {ATTR_HVAC_ACTION: hvac_action, ATTR_FAN_STATUS: fan_status}
     coord.config = {
         "climate_entity": "climate.thermostat",
         "comfort_heat": comfort_heat,
@@ -82,6 +84,7 @@ def _build_context(
     current_temp: float | str = 72.0,
     comfort_heat: float = 68.0,
     comfort_cool: float = 76.0,
+    fan_status: str = "inactive",
 ) -> str:
     """Run async_build_activity_context and return the string."""
     hass = _make_hass(hvac_mode=hvac_mode, current_temp=current_temp)
@@ -89,6 +92,7 @@ def _build_context(
         hvac_action=hvac_action,
         comfort_heat=comfort_heat,
         comfort_cool=comfort_cool,
+        fan_status=fan_status,
     )
     return asyncio.run(async_build_activity_context(hass, coord))
 
@@ -133,15 +137,36 @@ class TestActivityCrossValidationSection:
         assert "[OK]" in ctx
 
     def test_warning_when_hvac_mode_off_action_fan(self):
-        """[WARNING] emitted when hvac_mode=off but hvac_action=fan (Issue #91 case)."""
+        """[WARNING] emitted when hvac_mode=off but hvac_action=fan and fan is inactive (stale state)."""
         ctx = _build_context(
             hvac_mode="off",
             hvac_action="fan",
             current_temp=72.0,
+            fan_status="inactive",
         )
         assert "[WARNING]" in ctx
         assert "hvac_mode=off" in ctx
         assert "hvac_action='fan'" in ctx
+
+    def test_no_warning_when_hvac_mode_off_action_fan_natural_ventilation(self):
+        """No [WARNING] when hvac_mode=off + hvac_action=fan + fan_status=active (natural ventilation)."""
+        ctx = _build_context(
+            hvac_mode="off",
+            hvac_action="fan",
+            current_temp=72.0,
+            fan_status="active",
+        )
+        assert "[WARNING]" not in ctx
+
+    def test_no_warning_when_hvac_mode_off_action_fan_manual_override(self):
+        """No [WARNING] when hvac_mode=off + hvac_action=fan + fan_status=running (manual override)."""
+        ctx = _build_context(
+            hvac_mode="off",
+            hvac_action="fan",
+            current_temp=72.0,
+            fan_status="running (manual override)",
+        )
+        assert "[WARNING]" not in ctx
 
     def test_warning_when_hvac_mode_off_action_heating(self):
         """[WARNING] emitted when hvac_mode=off but hvac_action=heating."""

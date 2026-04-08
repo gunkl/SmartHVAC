@@ -18,7 +18,9 @@ custom_components/climate_advisor/
 ├── switch.py            # Automation enable/disable switch (observe-only mode)
 ├── claude_api.py        # Centralized Claude API client: auth, retry, circuit breaker, rate limiting, budget tracking. Provides async_request() for all AI features.
 ├── ai_skills.py         # AI skills framework: lightweight registry for pluggable AI analysis capabilities. Skills register a context builder, response parser, and optional fallback.
-└── ai_skills_activity.py  # Activity Report skill (first AI skill): gathers system state, sends to Claude for analysis, returns structured report with timeline, decisions, anomalies, diagnostics.
+├── ai_skills_activity.py  # Activity Report skill (first AI skill): gathers system state, sends to Claude for analysis, returns structured report with timeline, decisions, anomalies, diagnostics.
+├── chart_log.py         # Chart state log: persistent 1-year ring buffer of HVAC/fan/temp data points and event markers, used by the Temperature Forecast chart.
+└── frontend/            # Dashboard panel (iframe): index.html + locally bundled Chart.js v4 + zoom plugin + HammerJS
 ```
 
 ## Data Flow
@@ -193,6 +195,12 @@ Note: `config_flow.VERSION` (config entry schema) and `state.STATE_VERSION` (sta
 - High compliance threshold: 80%
 - Data retention: 90-day rolling window
 - Storage: JSON file in HA config dir
+
+### Chart Log Parameters
+- Entry cadence: every coordinator tick (~30 min)
+- Retention cap: 365 days rolling (~17,500 entries ≈ 2MB)
+- Downsampling: raw points ≤3 days; hourly averages 4–30 days; daily summaries >30 days
+- Storage: `climate_advisor_chart_log.json` in HA config dir
 
 ## Observe-Only Mode (Disable Automation)
 

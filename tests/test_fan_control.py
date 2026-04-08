@@ -760,34 +760,28 @@ class TestFanSerialization:
 # ---------------------------------------------------------------------------
 
 
-def _compute_fan_status(
-    fan_override_active: bool,
-    fan_active: bool,
-    fan_mode: str,
-    thermostat_state: str = "heat",
-) -> str:
-    """Mirror of ClimateAdvisorCoordinator._compute_fan_status for unit testing.
-
-    thermostat_state simulates the live climate entity state (e.g., 'off', 'heat').
-    The HVAC-off guard (Issue #91) fires only for FAN_MODE_HVAC/FAN_MODE_BOTH.
-    """
+def _compute_fan_status(fan_override_active: bool, fan_active: bool, fan_mode: str) -> str:
+    """Mirror of ClimateAdvisorCoordinator._compute_fan_status for unit testing."""
     if fan_mode == FAN_MODE_DISABLED:
         return "disabled"
     if fan_override_active:
         return "running (manual override)" if fan_active else "off (manual override)"
     if fan_active:
-        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH) and thermostat_state == "off":
-            return "inactive"
         return "active"
     return "inactive"
 
 
 class TestFanStatusComputation:
-    """Unit tests for _compute_fan_status() logic (Issue #55, Issue #91).
+    """Unit tests for _compute_fan_status() logic (Issue #55).
 
     Tests the five distinct status strings returned based on
     fan_mode config, override flag, and fan active state.
-    Issue #91 adds a thermostat-state guard for HVAC-based fan modes.
+
+    Note (Issue #91): _compute_fan_status intentionally does NOT guard against
+    hvac_mode=off because the fan can legitimately run when HVAC is off
+    (natural ventilation mode sets hvac_mode=off then activates the fan).
+    The fix for stale hvac_action display is in _async_climate_entity_changed
+    (clearing _fan_active when thermostat goes to off externally).
     """
 
     def test_status_disabled(self):
@@ -805,14 +799,16 @@ class TestFanStatusComputation:
         result = _compute_fan_status(False, False, FAN_MODE_HVAC)
         assert result == "inactive"
 
-    def test_status_active_whole_house(self):
-        """No override, whole-house fan running -> 'active' regardless of thermostat state."""
+    def test_status_active(self):
+        """No override, fan running -> 'active'."""
         result = _compute_fan_status(False, True, FAN_MODE_WHOLE_HOUSE)
         assert result == "active"
 
-    def test_status_active_whole_house_thermostat_off(self):
-        """Whole-house fan stays 'active' even when thermostat is off — independent fan."""
-        result = _compute_fan_status(False, True, FAN_MODE_WHOLE_HOUSE, thermostat_state="off")
+    def test_status_active_hvac_fan_while_hvac_off(self):
+        """_fan_active=True with hvac_mode=off is valid during natural ventilation."""
+        # FAN_MODE_HVAC fan can run while thermostat is off (nat vent sets hvac_mode=off
+        # then activates fan). _compute_fan_status must return "active" in this case.
+        result = _compute_fan_status(False, True, FAN_MODE_HVAC)
         assert result == "active"
 
     def test_status_override_on(self):
@@ -824,28 +820,6 @@ class TestFanStatusComputation:
         """Override active but fan is NOT running -> 'off (manual override)'."""
         result = _compute_fan_status(True, False, FAN_MODE_WHOLE_HOUSE)
         assert result == "off (manual override)"
-
-    # --- Issue #91: HVAC-off guard ---
-
-    def test_hvac_fan_active_thermostat_off_returns_inactive(self):
-        """FAN_MODE_HVAC: if _fan_active=True but thermostat is off, return 'inactive'."""
-        result = _compute_fan_status(False, True, FAN_MODE_HVAC, thermostat_state="off")
-        assert result == "inactive"
-
-    def test_both_fan_active_thermostat_off_returns_inactive(self):
-        """FAN_MODE_BOTH: same guard applies — returns 'inactive' when thermostat is off."""
-        result = _compute_fan_status(False, True, FAN_MODE_BOTH, thermostat_state="off")
-        assert result == "inactive"
-
-    def test_hvac_fan_active_thermostat_heat_returns_active(self):
-        """FAN_MODE_HVAC: guard does NOT fire when thermostat is not off."""
-        result = _compute_fan_status(False, True, FAN_MODE_HVAC, thermostat_state="heat")
-        assert result == "active"
-
-    def test_both_fan_active_thermostat_cool_returns_active(self):
-        """FAN_MODE_BOTH: guard does NOT fire when thermostat is in cooling mode."""
-        result = _compute_fan_status(False, True, FAN_MODE_BOTH, thermostat_state="cool")
-        assert result == "active"
 
 
 # ---------------------------------------------------------------------------
