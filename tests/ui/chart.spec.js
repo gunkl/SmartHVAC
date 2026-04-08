@@ -150,4 +150,86 @@ test.describe('Temperature Forecast Chart', () => {
     expect(box.y).toBeGreaterThan(chartBox.y + chartBox.height - 5);
   });
 
+  test('hover panel updates on every mouse pixel, not just at data-point boundaries', async ({ page }) => {
+    // This test uses real DOM mousemove dispatch (not __triggerHoverAt) to exercise the
+    // actual Chart.js event pipeline. The bug: external tooltip callback only fires when
+    // crossing a data-point boundary, so the panel freezes mid-segment.
+    // The fix: panel rendering runs in afterEvent on every pixel.
+    //
+    // Fixture: hvacStates=['off','heating','off','cooling','off','fan'] cycling by index
+    // i=5: hvac='fan',     ts = now - 42*1800000
+    // i=3: hvac='cooling', ts = now - 44*1800000
+    const { fanPageX, coolingPageX, pageY } = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      const canvas = document.getElementById('temp-chart');
+      if (!chart || !chart.scales.x) return {};
+      const rect = canvas.getBoundingClientRect();
+      const now = Date.now();
+      const fanCanvasX    = chart.scales.x.getPixelForValue(now - 42 * 1800000);
+      const coolingCanvasX = chart.scales.x.getPixelForValue(now - 44 * 1800000);
+      return {
+        fanPageX:    rect.left + fanCanvasX,
+        coolingPageX: rect.left + coolingCanvasX,
+        pageY:       rect.top + rect.height / 2,
+      };
+    });
+    expect(fanPageX).toBeTruthy();
+    expect(coolingPageX).toBeTruthy();
+
+    // Dispatch real DOM mousemove to fan area
+    await page.evaluate(({x, y}) => {
+      document.getElementById('temp-chart').dispatchEvent(
+        new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: x, clientY: y })
+      );
+    }, { x: fanPageX, y: pageY });
+    await page.waitForTimeout(150);
+    let html = await page.locator('#chart-hover-panel').innerHTML();
+    expect(html.toLowerCase()).toContain('fan');
+
+    // Dispatch real DOM mousemove to cooling area — panel must update without leaving chart
+    await page.evaluate(({x, y}) => {
+      document.getElementById('temp-chart').dispatchEvent(
+        new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: x, clientY: y })
+      );
+    }, { x: coolingPageX, y: pageY });
+    await page.waitForTimeout(150);
+    html = await page.locator('#chart-hover-panel').innerHTML();
+    expect(html.toLowerCase()).not.toContain('fan');
+    expect(html.toLowerCase()).toContain('cooling');
+  });
+
+  test('fan-on indicator clears on mouse move without leaving chart', async ({ page }) => {
+    // DOM mousemove version — exercises real event pipeline, not __triggerHoverAt shortcut.
+    // Fixture: fan: i%7===0, so i=0 (fan=true), i=1 (fan=false, hvac='heating')
+    const { fanPageX, fanOffPageX, pageY } = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      const canvas = document.getElementById('temp-chart');
+      if (!chart || !chart.scales.x) return {};
+      const rect = canvas.getBoundingClientRect();
+      const now = Date.now();
+      return {
+        fanPageX:    rect.left + chart.scales.x.getPixelForValue(now - 47 * 1800000),
+        fanOffPageX: rect.left + chart.scales.x.getPixelForValue(now - 46 * 1800000),
+        pageY:       rect.top + rect.height / 2,
+      };
+    });
+    expect(fanPageX).toBeTruthy();
+
+    const dispatch = (x, y) => page.evaluate(({x, y}) => {
+      document.getElementById('temp-chart').dispatchEvent(
+        new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: x, clientY: y })
+      );
+    }, { x, y });
+
+    await dispatch(fanPageX, pageY);
+    await page.waitForTimeout(150);
+    let html = await page.locator('#chart-hover-panel').innerHTML();
+    expect(html).toContain('Fan on');
+
+    await dispatch(fanOffPageX, pageY);
+    await page.waitForTimeout(150);
+    html = await page.locator('#chart-hover-panel').innerHTML();
+    expect(html).not.toContain('Fan on');
+  });
+
 });

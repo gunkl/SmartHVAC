@@ -1097,17 +1097,69 @@
     let _cursorPx = null;
     window.__test_cursorPx = null;
 
+    // Render the hover panel for a given canvas-relative x pixel.
+    // Called directly from afterEvent (every mousemove pixel) so the panel always reflects
+    // the current cursor position — not just when Chart.js crosses a data-point boundary.
+    function _renderHoverPanel(chart, cursorX) {
+      const panel = document.getElementById('chart-hover-panel');
+      if (!panel || !chart.scales.x) return;
+      const xVal = chart.scales.x.getValueForPixel(cursorX);
+      if (xVal == null) { panel.innerHTML = ''; return; }
+
+      const d = new Date(xVal);
+      const timeStr = d.toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+
+      const seriesDefs = [
+        { dsLabel: 'Predicted Indoor',  color: 'rgba(255,152,0,0.85)',  short: 'P-Indoor'  },
+        { dsLabel: 'Predicted Outdoor', color: 'rgba(33,150,243,0.85)', short: 'P-Outdoor' },
+        { dsLabel: 'Actual Indoor',     color: 'rgba(255,152,0,1)',     short: 'Indoor'     },
+        { dsLabel: 'Actual Outdoor',    color: 'rgba(33,150,243,1)',    short: 'Outdoor'    },
+      ];
+
+      const tempItems = seriesDefs.map(def => {
+        const ds = chart.data.datasets.find(d => d.label === def.dsLabel);
+        if (!ds || !ds.data || ds.data.length === 0) return '';
+        const y = _interpolateY(ds, xVal);
+        if (y == null) return '';
+        return `<div class="chp-item">` +
+          `<span class="chp-dot" style="background:${def.color}"></span>` +
+          `<span>${def.short}: <strong>${Math.round(y)}°</strong></span>` +
+          `</div>`;
+      }).join('');
+
+      // HVAC/fan from nearest log entry
+      let stateHtml = '';
+      let closest = null, minDiff = Infinity;
+      log.forEach(e => {
+        const diff = Math.abs(_parseTs(e.ts) - xVal);
+        if (diff < minDiff) { minDiff = diff; closest = e; }
+      });
+      if (closest) {
+        const hvacColors = { heating:'#ef5350', cooling:'#42a5f5', fan:'#66bb6a' };
+        const hvacText   = { heating:'Heating', cooling:'Cooling', fan:'Fan' };
+        const hv = (closest.hvac || '').toLowerCase();
+        if (hvacColors[hv]) {
+          stateHtml += `<div class="chp-item"><span class="chp-state" style="background:${hvacColors[hv]}">${hvacText[hv]}</span></div>`;
+        }
+        if (closest.fan) {
+          stateHtml += `<div class="chp-item"><span class="chp-state" style="background:#66bb6a">Fan on</span></div>`;
+        }
+        if (closest.event) {
+          stateHtml += `<div class="chp-item" style="color:var(--text-secondary);font-size:0.73rem">${closest.event.replace(/_/g,' ')}</div>`;
+        }
+      }
+
+      panel.innerHTML = tempItems || stateHtml
+        ? `<div class="chp-item" style="color:var(--text-secondary);margin-right:4px">${timeStr}</div>` + tempItems + stateHtml
+        : '';
+    }
+
     // Test hook: simulate a hover at canvas-relative x pixel (used by Playwright tests)
     window.__triggerHoverAt = function(canvasX) {
       _cursorPx = canvasX;
       window.__test_cursorPx = canvasX;
-      if (_tempChart) {
-        // Manually invoke the external tooltip callback at this pixel
-        const xVal = _tempChart.scales.x.getValueForPixel(canvasX);
-        // Synthesize a minimal tooltip context and call external directly
-        const fakeTooltip = { caretX: canvasX, dataPoints: [] };
-        const externalFn = _tempChart.options.plugins.tooltip.external;
-        if (externalFn) externalFn({ chart: _tempChart, tooltip: fakeTooltip });
+      if (_tempChart && _tempChart.scales.x) {
+        _renderHoverPanel(_tempChart, canvasX);
         _tempChart.draw();
       }
     };
@@ -1131,61 +1183,7 @@
           legend: { display: false },  // custom HTML legend used instead
           tooltip: {
             enabled: false,
-            external({ chart, tooltip }) {
-              const panel = document.getElementById('chart-hover-panel');
-              if (!panel) return;
-              // Use _cursorPx (raw mouse pixel from afterEvent) — not tooltip.caretX which snaps to data points
-              if (_cursorPx == null || !chart.scales.x) { panel.innerHTML = ''; return; }
-              const xVal = chart.scales.x.getValueForPixel(_cursorPx);
-              if (xVal == null) { panel.innerHTML = ''; return; }
-
-              const d = new Date(xVal);
-              const timeStr = d.toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
-
-              const seriesDefs = [
-                { dsLabel: 'Predicted Indoor',  color: 'rgba(255,152,0,0.85)',  short: 'P-Indoor'  },
-                { dsLabel: 'Predicted Outdoor', color: 'rgba(33,150,243,0.85)', short: 'P-Outdoor' },
-                { dsLabel: 'Actual Indoor',     color: 'rgba(255,152,0,1)',     short: 'Indoor'     },
-                { dsLabel: 'Actual Outdoor',    color: 'rgba(33,150,243,1)',    short: 'Outdoor'    },
-              ];
-
-              const tempItems = seriesDefs.map(def => {
-                const ds = chart.data.datasets.find(d => d.label === def.dsLabel);
-                if (!ds || !ds.data || ds.data.length === 0) return '';
-                const y = _interpolateY(ds, xVal);
-                if (y == null) return '';
-                return `<div class="chp-item">` +
-                  `<span class="chp-dot" style="background:${def.color}"></span>` +
-                  `<span>${def.short}: <strong>${Math.round(y)}°</strong></span>` +
-                  `</div>`;
-              }).join('');
-
-              // HVAC/fan from nearest log entry
-              let stateHtml = '';
-              let closest = null, minDiff = Infinity;
-              log.forEach(e => {
-                const diff = Math.abs(_parseTs(e.ts) - xVal);
-                if (diff < minDiff) { minDiff = diff; closest = e; }
-              });
-              if (closest) {
-                const hvacColors = { heating:'#ef5350', cooling:'#42a5f5', fan:'#66bb6a' };
-                const hvacText   = { heating:'Heating', cooling:'Cooling', fan:'Fan' };
-                const hv = (closest.hvac || '').toLowerCase();
-                if (hvacColors[hv]) {
-                  stateHtml += `<div class="chp-item"><span class="chp-state" style="background:${hvacColors[hv]}">${hvacText[hv]}</span></div>`;
-                }
-                if (closest.fan) {
-                  stateHtml += `<div class="chp-item"><span class="chp-state" style="background:#66bb6a">Fan on</span></div>`;
-                }
-                if (closest.event) {
-                  stateHtml += `<div class="chp-item" style="color:var(--text-secondary);font-size:0.73rem">${closest.event.replace(/_/g,' ')}</div>`;
-                }
-              }
-
-              panel.innerHTML = tempItems || stateHtml
-                ? `<div class="chp-item" style="color:var(--text-secondary);margin-right:4px">${timeStr}</div>` + tempItems + stateHtml
-                : '';
-            },
+            external() {},  // no-op: panel updates are handled in afterEvent on every pixel
           },
           zoom: {
             zoom: {
@@ -1245,10 +1243,13 @@
             if (e.type === 'mousemove') {
               _cursorPx = e.x;
               window.__test_cursorPx = e.x;
+              _renderHoverPanel(chart, e.x);
               chart.draw();
             } else if (e.type === 'mouseout') {
               _cursorPx = null;
               window.__test_cursorPx = null;
+              const panel = document.getElementById('chart-hover-panel');
+              if (panel) panel.innerHTML = '';
               chart.draw();
             }
           },
