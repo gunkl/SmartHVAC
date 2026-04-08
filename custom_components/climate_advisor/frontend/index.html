@@ -156,7 +156,7 @@
   }
   .activity-timeline {
     width: 100%;
-    margin-bottom: 4px;
+    margin-top: 4px;
   }
   .activity-timeline canvas {
     display: block;
@@ -403,11 +403,11 @@
       <button class="range-btn" data-range="1y" onclick="setChartRange('1y', this)">1y</button>
     </div>
     <div id="chart-hover-panel" class="chart-hover-panel"></div>
-    <div class="activity-timeline">
-      <canvas id="activity-chart"></canvas>
-    </div>
     <div class="chart-container">
       <canvas id="temp-chart"></canvas>
+    </div>
+    <div class="activity-timeline">
+      <canvas id="activity-chart"></canvas>
     </div>
     <div class="chart-legend">
       <div class="cl-item"><span class="cl-swatch" style="border-top:2px dashed rgba(255,152,0,0.85)"></span><span>Predicted Indoor</span></div>
@@ -812,7 +812,7 @@
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
     const W = canvas.parentElement.clientWidth;
-    const H = 52; // px: 2 rows × 20px + 12px labels
+    const H = 86; // px: 4 rows × 14px + 3 × 10px gaps
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     canvas.width = W * dpr;
@@ -835,13 +835,17 @@
     ctx.fillStyle = labelColor;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText('HVAC', labelW - 4, rowH / 2);
-    ctx.fillText('Fan', labelW - 4, rowH + 10 + rowH / 2);
+    ctx.fillText('HVAC',    labelW - 4, 7);
+    ctx.fillText('Fan',     labelW - 4, 31);
+    ctx.fillText('Win Rec', labelW - 4, 55);
+    ctx.fillText('Windows', labelW - 4, 79);
 
     // Background track
     ctx.fillStyle = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)';
-    ctx.fillRect(labelW, 0, plotW, rowH);
-    ctx.fillRect(labelW, rowH + 10, plotW, rowH);
+    ctx.fillRect(labelW, 0,  plotW, rowH);
+    ctx.fillRect(labelW, 24, plotW, rowH);
+    ctx.fillRect(labelW, 48, plotW, rowH);
+    ctx.fillRect(labelW, 72, plotW, rowH);
 
     // Draw segments — each log entry represents a ~30-min window
     const halfStep = 900000; // 15 min on each side of the timestamp
@@ -874,7 +878,19 @@
       // Fan row
       if (e.fan) {
         ctx.fillStyle = 'rgba(102,187,106,0.60)';
-        ctx.fillRect(x0, rowH + 10, w, rowH);
+        ctx.fillRect(x0, 24, w, rowH);
+      }
+
+      // Win Rec row (amber)
+      if (e.windows_recommended) {
+        ctx.fillStyle = 'rgba(255,179,0,0.75)';
+        ctx.fillRect(x0, 48, w, rowH);
+      }
+
+      // Windows Open row (green)
+      if (e.windows_open) {
+        ctx.fillStyle = 'rgba(76,175,80,0.70)';
+        ctx.fillRect(x0, 72, w, rowH);
       }
     });
 
@@ -1280,10 +1296,9 @@
               if (!e.event) return;
               const evtX = xScale.getPixelForValue(_parseTs(e.ts));
               if (evtX < xScale.left || evtX > xScale.right) return;
-              const color = e.event === 'override' ? '#f44336' :
-                            e.event === 'window_rec' ? '#4caf50' : '#9e9e9e';
-              const label = e.event === 'classification_change' ? 'Classify' :
-                            e.event === 'window_rec' ? 'Win Rec' : 'Override';
+              if (!['override', 'classification_change'].includes(e.event)) return;
+              const color = e.event === 'override' ? '#f44336' : '#9e9e9e';
+              const label = e.event === 'classification_change' ? 'Classify' : 'Override';
               ctx.save();
               ctx.strokeStyle = color;
               ctx.lineWidth = 1.5;

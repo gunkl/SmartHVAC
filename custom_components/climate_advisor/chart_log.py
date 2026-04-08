@@ -123,6 +123,8 @@ class ChartStateLog:
         fan: bool,
         indoor: float | None,
         outdoor: float | None,
+        windows_open: bool = False,
+        windows_recommended: bool = False,
         event: str | None = None,
         ts: str | None = None,
     ) -> None:
@@ -136,6 +138,8 @@ class ChartStateLog:
             "fan": fan,
             "indoor": indoor,
             "outdoor": outdoor,
+            "windows_open": windows_open,
+            "windows_recommended": windows_recommended,
         }
         if event is not None:
             entry["event"] = event
@@ -247,6 +251,8 @@ class ChartStateLog:
                 "fan": any(e.get("fan", False) for e in group),
                 "indoor": round(sum(indoor_vals) / len(indoor_vals), 1) if indoor_vals else None,
                 "outdoor": (round(sum(outdoor_vals) / len(outdoor_vals), 1) if outdoor_vals else None),
+                "windows_open": any(e.get("windows_open", False) for e in group),
+                "windows_recommended": any(e.get("windows_recommended", False) for e in group),
             }
             if events:
                 summary["event"] = events
@@ -282,6 +288,8 @@ class ChartStateLog:
                 "outdoor_avg": (round(sum(outdoor_vals) / len(outdoor_vals), 1) if outdoor_vals else None),
                 "outdoor_min": min(outdoor_vals) if outdoor_vals else None,
                 "outdoor_max": max(outdoor_vals) if outdoor_vals else None,
+                "windows_open": any(e.get("windows_open", False) for e in group),
+                "windows_recommended": any(e.get("windows_recommended", False) for e in group),
             }
             if events:
                 summary["events"] = events

@@ -139,4 +139,15 @@ test.describe('Temperature Forecast Chart', () => {
     expect(html.trim()).toBe('');
   });
 
+  test('activity timeline renders with 4 rows', async ({ page }) => {
+    const canvas = page.locator('#activity-chart');
+    await expect(canvas).toBeVisible();
+    const box = await canvas.boundingBox();
+    // H should be ~86px for 4 rows (rowH=14, gap=10 between rows)
+    expect(box.height).toBeGreaterThan(70);
+    // Timeline should appear BELOW the temp chart
+    const chartBox = await page.locator('#temp-chart').boundingBox();
+    expect(box.y).toBeGreaterThan(chartBox.y + chartBox.height - 5);
+  });
+
 });

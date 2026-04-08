@@ -1045,6 +1045,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 fan=bool(fan_running),
                 indoor=indoor_temp,
                 outdoor=outdoor_temp,
+                windows_open=self._any_sensor_open(),
+                windows_recommended=bool(self._current_classification.windows_recommended)
+                if self._current_classification
+                else False,
             )
             self._chart_log.save()
 
@@ -1382,17 +1386,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             ),
             hvac_mode_recommended=classification.hvac_mode,
         )
-
-        # Chart log: emit window_rec event when windows are recommended for today
-        if classification.windows_recommended:
-            with contextlib.suppress(Exception):
-                self._chart_log.append(
-                    hvac=classification.hvac_mode or "",
-                    fan=bool(self.automation_engine._fan_active) if self.automation_engine else False,
-                    indoor=self._get_indoor_temp(),
-                    outdoor=None,
-                    event="window_rec",
-                )
 
         # Capture raw forecast high/low for weather bias learning
         if (
