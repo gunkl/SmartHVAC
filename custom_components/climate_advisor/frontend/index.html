@@ -728,8 +728,8 @@
     return 'transparent';
   }
 
-  // Parse ISO timestamp → JS Date
-  function _parseTs(ts) { return new Date(ts); }
+  // Parse ISO timestamp → milliseconds (numeric, no date adapter needed)
+  function _parseTs(ts) { return new Date(ts).getTime(); }
 
   // Convert state_log entries into Chart.js datasets
   function _buildDatasetsFromLog(log) {
@@ -784,7 +784,7 @@
     // Predicted series anchored to today midnight
     const todayMidnight = new Date();
     todayMidnight.setHours(0, 0, 0, 0);
-    function hourToDate(h) { return new Date(todayMidnight.getTime() + h * 3600000); }
+    function hourToDate(h) { return todayMidnight.getTime() + h * 3600000; }
 
     const predOutdoorPts = (chartData.predicted_outdoor || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
     const predIndoorPts  = (chartData.predicted_indoor  || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
@@ -910,8 +910,13 @@
       });
     }
 
-    const nowDate = new Date();
+    const nowMs = Date.now();
 
+    // Defensive: destroy any orphaned chart on this canvas (e.g. from a prior failed init)
+    const _existing = Chart.getChart(canvas);
+    if (_existing) _existing.destroy();
+
+    try {
     _tempChart = new Chart(canvas, {
       type: 'line',
       data: { datasets },
@@ -946,7 +951,7 @@
                 const x = items[0].parsed.x;
                 let closest = null, minDiff = Infinity;
                 log.forEach(e => {
-                  const diff = Math.abs(_parseTs(e.ts).getTime() - x);
+                  const diff = Math.abs(_parseTs(e.ts) - x);
                   if (diff < minDiff) { minDiff = diff; closest = e; }
                 });
                 if (!closest) return [];
@@ -974,18 +979,21 @@
         },
         scales: {
           x: {
-            type: 'time',
-            time: {
-              tooltipFormat: 'MMM d, h:mm a',
-              displayFormats: {
-                hour: 'h a',
-                day: 'MMM d',
-                week: 'MMM d',
-                month: 'MMM',
+            type: 'linear',
+            grid: { color: gridColor },
+            ticks: {
+              color: textColor,
+              maxTicksLimit: 10,
+              callback(ms) {
+                const d = new Date(ms);
+                const now = new Date();
+                const diffDays = (now - d) / 86400000;
+                if (diffDays > 2) {
+                  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                }
+                return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
               },
             },
-            grid: { color: gridColor },
-            ticks: { color: textColor, maxTicksLimit: 10 },
           },
           y: {
             position: 'left',
@@ -1020,7 +1028,7 @@
             if (!xScale || !yScale) return;
 
             // Draw "Now" vertical line
-            const nowX = xScale.getPixelForValue(nowDate);
+            const nowX = xScale.getPixelForValue(nowMs);
             if (nowX >= xScale.left && nowX <= xScale.right) {
               ctx.save();
               ctx.strokeStyle = 'rgba(128,128,128,0.5)';
@@ -1066,6 +1074,10 @@
         },
       ],
     });
+    } catch (err) {
+      console.error('Chart init failed:', err);
+      _tempChart = null;
+    }
   }
 
   function updateThermalPanel(tm) {
