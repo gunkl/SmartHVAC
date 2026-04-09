@@ -203,6 +203,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._hvac_session_start_indoor_temp: float | None = None
         self._hvac_session_start_outdoor_temp: float | None = None
         self._hvac_session_mode: str | None = None  # "heat" or "cool"
+        self._last_state_contradiction_time: datetime | None = None  # dedup for state_contradiction_warning events
         self._last_violation_check: datetime | None = None
 
         # Occupancy state machine
@@ -1005,6 +1006,29 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         _climate_entity_id = self.config.get("climate_entity", "")
         _cs = self.hass.states.get(_climate_entity_id) if _climate_entity_id else None
         hvac_action = _cs.attributes.get("hvac_action", "") if _cs else ""
+        hvac_mode = _cs.state if _cs else ""
+
+        # Emit a structured warning event when the HVAC entity reports an active action
+        # (heating/cooling/fan) while hvac_mode is "off".  This surfaces the contradiction
+        # in the investigator event log so it is not invisible outside the AI narrative.
+        # Suppress when Climate Advisor itself activated fan-only mode (natural ventilation).
+        _active_hvac_actions = {"heating", "cooling", "fan"}
+        if hvac_mode == "off" and str(hvac_action).lower() in _active_hvac_actions:
+            _ca_fan_running = self.automation_engine._fan_active
+            _is_expected_fan = str(hvac_action).lower() == "fan" and _ca_fan_running
+            if not _is_expected_fan:
+                _now = dt_util.now()
+                _dedup_window = datetime.timedelta(minutes=30)
+                if (
+                    self._last_state_contradiction_time is None
+                    or (_now - self._last_state_contradiction_time) > _dedup_window
+                ):
+                    self._emit_event(
+                        "state_contradiction_warning",
+                        {"hvac_mode": hvac_mode, "hvac_action": hvac_action},
+                    )
+                    self._last_state_contradiction_time = _now
+
         _base_runtime = self._today_record.hvac_runtime_minutes if self._today_record else 0.0
         _session_elapsed = (dt_util.now() - self._hvac_on_since).total_seconds() / 60 if self._hvac_on_since else 0.0
         hvac_runtime_today = round(_base_runtime + _session_elapsed, 1)
@@ -1687,6 +1711,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 self._hvac_session_mode = "heat"
             elif action == "cooling":
                 self._hvac_session_mode = "cool"
+            elif new_state.state == "heat":
+                # Fallback: some thermostats report hvac_action="fan" or "idle" briefly at
+                # compressor startup before transitioning to "heating".  Use hvac_mode state
+                # as a reliable alternative so the thermal observation is not lost.
+                self._hvac_session_mode = "heat"
+            elif new_state.state == "cool":
+                self._hvac_session_mode = "cool"
             else:
                 self._hvac_session_mode = None
         elif was_running and not is_running:
@@ -1816,6 +1847,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         end_indoor = self._get_indoor_temp()
         if end_indoor is None:
+            _LOGGER.warning("Thermal obs skipped: indoor temp unavailable at session end")
             return
 
         temp_delta = abs(end_indoor - self._hvac_session_start_indoor_temp)
