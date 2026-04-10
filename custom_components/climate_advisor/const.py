@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.15"
+VERSION = "0.3.16"
 
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
@@ -316,6 +316,7 @@ CONFIG_METADATA = {
         ),
         "category": "sensors",
         "display_transform": "seconds_to_minutes",
+        "default": DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     },
     "manual_grace_seconds": {
         "label": "Manual Grace Period (minutes)",
@@ -325,6 +326,7 @@ CONFIG_METADATA = {
         ),
         "category": "sensors",
         "display_transform": "seconds_to_minutes",
+        "default": DEFAULT_MANUAL_GRACE_SECONDS,
     },
     "manual_grace_notify": {
         "label": "Push: Manual Grace Expired",
@@ -339,6 +341,7 @@ CONFIG_METADATA = {
         ),
         "category": "sensors",
         "display_transform": "seconds_to_minutes",
+        "default": DEFAULT_AUTOMATION_GRACE_SECONDS,
     },
     "automation_grace_notify": {
         "label": "Push: Automation Grace Expired",
@@ -355,6 +358,7 @@ CONFIG_METADATA = {
         ),
         "category": "sensors",
         "display_transform": "seconds_to_minutes",
+        "default": DEFAULT_OVERRIDE_CONFIRM_SECONDS,
     },
     "fan_mode": {
         "label": "Fan Control Mode",
@@ -429,6 +433,8 @@ CONFIG_METADATA = {
             " within this window, the notification is suppressed. Set to 0 to always notify."
         ),
         "category": "occupancy",
+        "display_transform": "seconds_to_minutes",
+        "default": DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS,
     },
     "wake_time": {
         "label": "Wake Time",

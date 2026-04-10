@@ -153,6 +153,13 @@ The briefing is the main way users interact with Climate Advisor. When making ch
 
 - **`coordinator.automation_engine`** — Use `MagicMock()` (NOT `AsyncMock()`) for the engine object. `AsyncMock` causes sync methods like `get_serializable_state()` to return coroutines instead of values. Only set individual async handler methods to `AsyncMock()` in tests that `await` them.
 
+- **`automation_engine` boolean flags must be explicitly set to `False`** in any stub that creates a MagicMock engine:
+  ```python
+  ae._natural_vent_active = False
+  ae._fan_override_active = False
+  ```
+  Unset `MagicMock` attributes are truthy by default. If `_natural_vent_active` is left unset, the `_is_expected_fan` suppression guard silently passes for all scenarios — causing tests that expect `state_contradiction_warning` to fail only in the full suite, not in isolation. Reference: `test_hvac_session_detection.py` (`_make_update_data_coord`).
+
 - **`@callback` decorator** — Is a `MagicMock` in the test mock layer and swallows decorated functions. If a test needs to invoke a `@callback`-decorated inner function (e.g., timer callbacks), patch it: `patch("...coordinator.callback", side_effect=lambda fn: fn)`
 
 #### Testing Sensor Attributes and API Views
@@ -251,6 +258,19 @@ calls to `_set_temperature()` bypass it. See §6a in `docs/08-COMPUTATION-REFERE
 **Compliance display in investigator**: `window_rec=` in daily records shows `opened/not-opened/n/a` based on whether windows were recommended and whether they were physically opened. A `?` value is always wrong — it means a field named `window_compliance` was read, which does not exist in `DailyRecord`.
 
 **Comfort band definition**: `comfort_heat` is the **lower** bound; `comfort_cool` is the **upper** bound. A temperature T is in-band iff `comfort_heat ≤ T ≤ comfort_cool`. The AI context now labels these fields explicitly and includes a NUMERIC VERIFICATION RULE to prevent incorrect "within range" claims.
+
+### Fan Status Values
+
+`_compute_fan_status()` returns one of four string values. All four must be accounted for in cross-validation suppression logic in `ai_skills_activity.py`:
+
+| Value | Meaning |
+|---|---|
+| `"active"` | CA commanded the fan on (natural ventilation or HVAC fan-only mode) |
+| `"running (manual override)"` | Fan is running; CA's `_fan_override_active` flag is set |
+| `"running (untracked)"` | Thermostat reports fan running (`fan_mode=on` or `hvac_action=fan`) but CA's `_fan_active=False` — typical after HA restart or when user ran fan from thermostat app |
+| `"inactive"` | Fan is off and CA has no record of activating it |
+
+`"running (untracked)"` was added in Issue #91. Any code that checks `ca_fan_running` for suppression purposes must include all three non-inactive values.
 
 ### Project Memory
 

@@ -231,6 +231,11 @@ class AutomationEngine:
         # Event log callback — set by coordinator after construction
         self._emit_event_callback: Any | None = None
 
+        # Issue #96: classification event dedup — track last emitted (day_type, hvac_mode) pair
+        self._last_classification_applied: tuple[str, str] | None = None
+        # Issue #96: override event dedup — track last emission time
+        self._last_override_detected_time: datetime | None = None
+
         # Resume-from-pause tracking (Issue #47)
         self._resumed_from_pause: bool = False
         self._sensor_check_callback: Any | None = None  # Set by coordinator: returns True if any sensor open
@@ -470,7 +475,13 @@ class AutomationEngine:
 
         self._fan_min_cycle_cancel = async_call_later(self.hass, wait_sec, _turn_on)
 
-    def handle_manual_override(self) -> None:
+    def handle_manual_override(
+        self,
+        *,
+        old_mode: str | None = None,
+        new_mode: str | None = None,
+        classification_mode: str | None = None,
+    ) -> None:
         """Handle a manual thermostat change (outside of door/window pause).
 
         Starts the confirmation period (Issue #76). If the thermostat state
@@ -478,15 +489,35 @@ class AutomationEngine:
         override is formally accepted and the grace period begins. Transient
         events (thermostat restart, fan cycles) that resolve within the window
         are silently ignored.
-        """
-        self.start_override_confirmation(source="normal")
 
-    def start_override_confirmation(self, source: str) -> None:
+        Args:
+            old_mode: Previous hvac_mode (from coordinator for enriched event payload).
+            new_mode: New hvac_mode detected.
+            classification_mode: What classification expects (for event payload).
+        """
+        self.start_override_confirmation(
+            source="normal",
+            old_mode=old_mode,
+            new_mode=new_mode,
+            classification_mode=classification_mode,
+        )
+
+    def start_override_confirmation(
+        self,
+        source: str,
+        *,
+        old_mode: str | None = None,
+        new_mode: str | None = None,
+        classification_mode: str | None = None,
+    ) -> None:
         """Begin the override confirmation window (Issue #76).
 
         Args:
             source: "normal" for regular operation overrides,
                     "pause" for overrides detected during a door/window pause.
+            old_mode: Previous hvac_mode (for enriched event payload).
+            new_mode: New hvac_mode detected.
+            classification_mode: What classification expects (for event payload).
         """
         state = self.hass.states.get(self.climate_entity)
         detected_mode = state.state if state else "unknown"
@@ -512,14 +543,26 @@ class AutomationEngine:
             confirm_seconds // 60,
         )
 
-        if self._emit_event_callback:
-            self._emit_event_callback(
-                "override_detected",
-                {
-                    "detected_mode": detected_mode,
-                    "source": source,
-                    "confirm_delay_seconds": confirm_seconds,
-                },
+        _dedup_window = timedelta(minutes=5)
+        _now = dt_util.now()
+        if self._last_override_detected_time is None or (_now - self._last_override_detected_time) >= _dedup_window:
+            self._last_override_detected_time = _now
+            if self._emit_event_callback:
+                self._emit_event_callback(
+                    "override_detected",
+                    {
+                        "detected_mode": detected_mode,
+                        "source": source,
+                        "confirm_delay_seconds": confirm_seconds,
+                        "old_mode": old_mode,
+                        "new_mode": new_mode,
+                        "classification_mode": classification_mode,
+                    },
+                )
+        else:
+            _LOGGER.debug(
+                "override_detected suppressed — within 5-minute dedup window (last=%s)",
+                self._last_override_detected_time.isoformat(),
             )
 
         @callback
@@ -609,6 +652,13 @@ class AutomationEngine:
             await self.handle_occupancy_away()
             return
 
+        _cs = self.hass.states.get(self.climate_entity)
+        _LOGGER.debug(
+            "apply_classification: wants=%r, thermostat=%r",
+            classification.hvac_mode,
+            _cs.state if _cs else "unavailable",
+        )
+
         unit = self.config.get("temp_unit", "fahrenheit")
         _LOGGER.warning(
             "Applying classification: %s (trend: %s %s)",
@@ -616,14 +666,23 @@ class AutomationEngine:
             classification.trend_direction,
             format_temp_delta(classification.trend_magnitude, unit),
         )
-        if self._emit_event_callback:
-            self._emit_event_callback(
-                "classification_applied",
-                {
-                    "day_type": classification.day_type,
-                    "hvac_mode": classification.hvac_mode,
-                    "trend": classification.trend_direction,
-                },
+        _cls_key = (classification.day_type, classification.hvac_mode)
+        if _cls_key != self._last_classification_applied:
+            self._last_classification_applied = _cls_key
+            if self._emit_event_callback:
+                self._emit_event_callback(
+                    "classification_applied",
+                    {
+                        "day_type": classification.day_type,
+                        "hvac_mode": classification.hvac_mode,
+                        "trend": classification.trend_direction,
+                    },
+                )
+        else:
+            _LOGGER.debug(
+                "classification_applied suppressed — same as last (%s/%s)",
+                classification.day_type,
+                classification.hvac_mode,
             )
 
         # Set the base HVAC mode
@@ -668,14 +727,61 @@ class AutomationEngine:
                     reason=f"comfort floor recovery before {classification.day_type} day HVAC off",
                 )
             else:
-                await self._set_hvac_mode(
-                    "off",
-                    reason=f"daily classification — {classification.day_type} day, HVAC not needed",
-                )
+                # Issue #96 Root Cause C: Replace hard off with mode-aware setback to avoid Ecobee side-effects.
+                # No mode change = no fan_mode/temperature side-effects on Ecobee.
+                # heat:      setback_heat — heating won't fire (house is above floor)
+                # cool:      setback_cool — cooling won't fire unless truly extreme (safety ceiling preserved)
+                # heat_cool/auto: both setbacks via target_temp_low/high — both sides suppressed with safety bounds
+                # unknown:   fall back to hard off (last resort)
+                _cs_state = self.hass.states.get(self.climate_entity)
+                _current_mode = _cs_state.state if _cs_state else "unknown"
+                _setback_heat = self.config.get("setback_heat")
+                _setback_cool = self.config.get("setback_cool")
+                if _current_mode == "heat":
+                    await self._set_temperature(
+                        _setback_heat,
+                        reason=f"warm-day setback: {classification.day_type} day, heating suppressed at setback_heat",
+                    )
+                elif _current_mode == "cool":
+                    await self._set_temperature(
+                        _setback_cool,
+                        reason=f"warm-day setback: {classification.day_type} day, cooling suppressed at setback_cool",
+                    )
+                elif _current_mode in ("heat_cool", "auto"):
+                    await self._set_temperature_dual(
+                        _setback_heat,
+                        _setback_cool,
+                        reason=f"warm-day setback: {classification.day_type} day, dual setpoints prevent HVAC running",
+                    )
+                else:
+                    _LOGGER.warning(
+                        "warm-day setback: thermostat in unknown mode %r — falling back to hard off",
+                        _current_mode,
+                    )
+                    await self._set_hvac_mode(
+                        "off",
+                        reason=(
+                            f"daily classification — {classification.day_type} day,"
+                            f" HVAC not needed (unknown mode={_current_mode})"
+                        ),
+                    )
+                if self._emit_event_callback:
+                    self._emit_event_callback(
+                        "warm_day_setback_applied",
+                        {"day_type": classification.day_type, "thermostat_mode": _current_mode},
+                    )
 
         # Handle pre-conditioning
         if classification.pre_condition and classification.pre_condition_target:
             await self._schedule_pre_condition(classification)
+
+        # Issue #96 Root Cause E: apply_classification() runs on every coordinator refresh
+        # (30-min scheduled AND 5-min revisits). Cancel any revisit _record_action() scheduled —
+        # the 30-min cycle provides sufficient re-evaluation frequency.
+        if self._revisit_cancel:
+            self._revisit_cancel()
+            self._revisit_cancel = None
+        _LOGGER.debug("apply_classification: revisit canceled — 30-min cycle handles re-evaluation")
 
     async def _set_hvac_mode(self, mode: str, *, reason: str) -> None:
         """Set the thermostat HVAC mode."""
@@ -684,6 +790,9 @@ class AutomationEngine:
             return
         self._hvac_command_pending = True
         self._hvac_command_time = dt_util.now()
+        _cs_reaffirm = self.hass.states.get(self.climate_entity)
+        if _cs_reaffirm and _cs_reaffirm.state == mode:
+            _LOGGER.debug("_set_hvac_mode: thermostat already %r — re-affirming", mode)
         try:
             await self.hass.services.async_call(
                 "climate",
@@ -727,6 +836,44 @@ class AutomationEngine:
             reason,
         )
         self._record_action(f"Set temp to {format_temp(temperature, unit)}", reason)
+
+    async def _set_temperature_dual(self, low: float, high: float, *, reason: str) -> None:
+        """Set target_temp_low and target_temp_high for heat_cool/auto thermostat modes.
+
+        Uses the same flag/logging/record_action pattern as _set_temperature().
+        low/high are internal Fahrenheit values; converted to user unit before service call.
+        """
+        unit = self.config.get("temp_unit", "fahrenheit")
+        service_low = from_fahrenheit(low, unit)
+        service_high = from_fahrenheit(high, unit)
+        if self.dry_run:
+            _LOGGER.info(
+                "[DRY RUN] Would set dual temperature low=%s high=%s — %s",
+                format_temp(low, unit),
+                format_temp(high, unit),
+                reason,
+            )
+            return
+        self._temp_command_pending = True
+        try:
+            await self.hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {
+                    "entity_id": self.climate_entity,
+                    "target_temp_low": service_low,
+                    "target_temp_high": service_high,
+                },
+            )
+        finally:
+            self._temp_command_pending = False
+        _LOGGER.warning(
+            "Set dual temperature [%s / %s] — %s",
+            format_temp(low, unit),
+            format_temp(high, unit),
+            reason,
+        )
+        self._record_action(f"Set dual temp [{format_temp(low, unit)}/{format_temp(high, unit)}]", reason)
 
     async def _set_temperature_for_mode(self, c: DayClassification, *, reason: str) -> None:
         """Set temperature based on the classification and current period.
@@ -1011,7 +1158,13 @@ class AutomationEngine:
                 threshold,
             )
 
-    async def handle_manual_override_during_pause(self) -> None:
+    async def handle_manual_override_during_pause(
+        self,
+        *,
+        old_mode: str | None = None,
+        new_mode: str | None = None,
+        classification_mode: str | None = None,
+    ) -> None:
         """Handle when user manually turns HVAC on during a sensor pause.
 
         Called by the coordinator when it detects a thermostat mode change
@@ -1023,7 +1176,12 @@ class AutomationEngine:
         self._paused_by_door = False
         self._pre_pause_mode = None
         # Start confirmation period — wait before formally accepting the override
-        self.start_override_confirmation(source="pause")
+        self.start_override_confirmation(
+            source="pause",
+            old_mode=old_mode,
+            new_mode=new_mode,
+            classification_mode=classification_mode,
+        )
 
     async def resume_from_pause(self) -> str | None:
         """Resume HVAC from contact sensor pause (user-initiated via dashboard).

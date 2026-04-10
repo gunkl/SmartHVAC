@@ -263,6 +263,7 @@ def _make_update_data_coord(*, hvac_mode: str, hvac_action: str, ca_fan_active: 
     coord._check_comfort_violations = MagicMock()
 
     coord._startup_retries_remaining = 0
+    coord._startup_hvac_initialized = False
 
     coord._async_update_data = types.MethodType(ClimateAdvisorCoordinator._async_update_data, coord)
     return coord

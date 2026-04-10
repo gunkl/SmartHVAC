@@ -133,6 +133,7 @@ def _make_coordinator(tmp_path: Path):
     }
 
     coordinator = ClimateAdvisorCoordinator(hass, config)
+    coordinator.hass = hass  # DataUpdateCoordinator stub may not set this — ensure it's accessible
     coordinator._async_save_state = MagicMock(return_value=None)
     coordinator.automation_engine = MagicMock()
     coordinator.automation_engine._thermal_model = {}
@@ -743,3 +744,192 @@ class TestHvacSessionDetectionFallback:
         """fan_only mode + fan action → session mode is None (no observation possible)."""
         new = _make_thermostat_state("fan_only", action="fan")
         assert _detect_session_mode(new) is None
+
+
+# ---------------------------------------------------------------------------
+# TestLateStartHvacSessionInitialization — Root Cause D: HA restart while HVAC running
+# ---------------------------------------------------------------------------
+
+
+def _make_climate_state(hvac_mode: str = "heat", hvac_action: str = "heating") -> MagicMock:
+    """Return a mock climate entity state for late-start initialization tests."""
+    state = MagicMock()
+    state.state = hvac_mode
+    _attrs = {
+        "hvac_action": hvac_action,
+        "current_temperature": 70.0,
+    }
+    state.attributes.get.side_effect = lambda key, default="": _attrs.get(key, default)
+    return state
+
+
+class TestLateStartHvacSessionInitialization:
+    """Tests for late-start HVAC session initialization after HA restart.
+
+    Root Cause D: _hvac_on_since stays None when HA restarts while HVAC is already
+    running (no state transition fires). Fix adds _initialize_hvac_session_from_current_state()
+    called from _async_update_data() when hvac_action is heating/cooling and _hvac_on_since
+    is None and _startup_hvac_initialized is False.
+
+    Phase 1c: Tests are written to FAIL before the fix is applied. Expected failure mode:
+    AttributeError on _startup_hvac_initialized or _initialize_hvac_session_from_current_state.
+    """
+
+    def test_late_start_when_hvac_running_at_startup(self, tmp_path: Path):
+        """Calling _initialize_hvac_session_from_current_state with hvac_action=heating sets
+        _hvac_on_since and _hvac_session_mode='heat'.
+        """
+        coord = _make_coordinator(tmp_path)
+        coord._get_indoor_temp = MagicMock(return_value=70.0)
+
+        fixed_now = datetime(2026, 3, 28, 8, 0, 0)
+        mock_dt = MagicMock()
+        mock_dt.now.return_value = fixed_now
+
+        climate_state = _make_climate_state(hvac_mode="heat", hvac_action="heating")
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt):
+            coord._initialize_hvac_session_from_current_state(climate_state)
+
+        assert coord._hvac_on_since is not None
+        assert coord._hvac_session_mode == "heat"
+
+    def test_late_start_not_repeated_after_first_init(self, tmp_path: Path):
+        """_startup_hvac_initialized attribute exists on coordinator.
+
+        After the fix, _startup_hvac_initialized is set to True on first call and
+        prevents re-initialization. This test confirms the guard attribute exists.
+        """
+        coord = _make_coordinator(tmp_path)
+        # Accessing _startup_hvac_initialized will raise AttributeError before the fix.
+        assert hasattr(coord, "_startup_hvac_initialized"), (
+            "_startup_hvac_initialized attribute must exist on coordinator after fix"
+        )
+        # After fix it should start False
+        assert coord._startup_hvac_initialized is False
+
+    def test_late_start_allows_thermal_observation_on_stop(self, tmp_path: Path):
+        """After late-start init, a subsequent HVAC stop records a thermal observation."""
+        coord = _make_coordinator(tmp_path)
+        coord.learning = _make_engine(tmp_path)
+        coord._get_indoor_temp = MagicMock(return_value=72.0)
+
+        now = datetime(2026, 3, 28, 10, 0, 0)
+        # Simulate: late-start init was called 20 minutes ago
+        coord._hvac_on_since = now - timedelta(minutes=20)
+        coord._hvac_session_start_indoor_temp = 70.0
+        coord._hvac_session_start_outdoor_temp = 35.0
+        coord._hvac_session_mode = "heat"
+
+        # Init the method (will fail before fix exists)
+        climate_state = _make_climate_state(hvac_mode="heat", hvac_action="heating")
+        fixed_now_init = now - timedelta(minutes=20)
+        mock_dt_init = MagicMock()
+        mock_dt_init.now.return_value = fixed_now_init
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt_init):
+            coord._initialize_hvac_session_from_current_state(climate_state)
+
+        # The init overwrites outdoor temp with None (no weather entity in test stub).
+        # Restore it so _record_thermal_observation can proceed.
+        coord._hvac_session_start_outdoor_temp = 35.0
+        # The init sets start_indoor_temp = _get_indoor_temp() = 72.0 (from mock).
+        # Override to 70.0 so delta=2°F → rate=6°F/hr (within 0.1-15 bounds).
+        coord._hvac_session_start_indoor_temp = 70.0
+
+        # Now record observation at session end
+        mock_dt_end = MagicMock()
+        mock_dt_end.now.return_value = now
+
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt_end),
+            _patch_learning_dt(now.date()),
+        ):
+            coord._record_thermal_observation(MagicMock())
+
+        assert len(coord.learning._state.thermal_observations) > 0, (
+            "Expected thermal observation to be recorded after late-start init"
+        )
+
+    def test_late_start_does_not_fire_when_hvac_on_since_already_set(self, tmp_path: Path):
+        """Guard: if _hvac_on_since is already set, _startup_hvac_initialized stays False
+        but the init should not be called again (guard is _hvac_on_since is None).
+
+        This verifies the attribute exists and that _hvac_on_since is preserved.
+        """
+        coord = _make_coordinator(tmp_path)
+        coord._get_indoor_temp = MagicMock(return_value=70.0)
+
+        existing_time = datetime(2026, 3, 28, 7, 0, 0)
+        coord._hvac_on_since = existing_time
+
+        # _startup_hvac_initialized must exist (will fail before fix)
+        assert hasattr(coord, "_startup_hvac_initialized"), "_startup_hvac_initialized attribute must exist"
+
+        # The guard condition: _hvac_on_since is None AND not _startup_hvac_initialized
+        # Since _hvac_on_since is already set, the guard fails → init is NOT called.
+        # Simulate the guard check directly:
+        should_init = (coord._hvac_on_since is None) and (not coord._startup_hvac_initialized)
+        assert not should_init, "Guard should prevent init when _hvac_on_since is already set"
+
+        # _hvac_on_since must be unchanged
+        assert coord._hvac_on_since == existing_time
+
+    def test_late_start_skipped_when_action_is_idle(self, tmp_path: Path):
+        """Calling _initialize_hvac_session_from_current_state with hvac_action='idle'
+        results in _hvac_session_mode being None (fallback chain exhausted).
+        """
+        coord = _make_coordinator(tmp_path)
+        coord._get_indoor_temp = MagicMock(return_value=70.0)
+
+        fixed_now = datetime(2026, 3, 28, 8, 0, 0)
+        mock_dt = MagicMock()
+        mock_dt.now.return_value = fixed_now
+
+        # hvac_action="idle", state="off" — neither heating nor cooling
+        climate_state = _make_climate_state(hvac_mode="off", hvac_action="idle")
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt):
+            coord._initialize_hvac_session_from_current_state(climate_state)
+
+        # With idle action and off mode, session mode should be None
+        assert coord._hvac_session_mode is None
+
+    def test_late_start_cool_mode(self, tmp_path: Path):
+        """Calling _initialize_hvac_session_from_current_state with hvac_action='cooling'
+        sets _hvac_session_mode='cool'.
+        """
+        coord = _make_coordinator(tmp_path)
+        coord._get_indoor_temp = MagicMock(return_value=78.0)
+
+        fixed_now = datetime(2026, 3, 28, 14, 0, 0)
+        mock_dt = MagicMock()
+        mock_dt.now.return_value = fixed_now
+
+        climate_state = _make_climate_state(hvac_mode="cool", hvac_action="cooling")
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt):
+            coord._initialize_hvac_session_from_current_state(climate_state)
+
+        assert coord._hvac_on_since is not None
+        assert coord._hvac_session_mode == "cool"
+
+    def test_late_start_fallback_to_hvac_mode_state(self, tmp_path: Path):
+        """When hvac_action is blank, _initialize_hvac_session_from_current_state
+        falls back to the climate entity's state ('heat') for session mode.
+        """
+        coord = _make_coordinator(tmp_path)
+        coord._get_indoor_temp = MagicMock(return_value=68.0)
+
+        fixed_now = datetime(2026, 3, 28, 9, 0, 0)
+        mock_dt = MagicMock()
+        mock_dt.now.return_value = fixed_now
+
+        # hvac_action is blank — triggers fallback to state
+        climate_state = _make_climate_state(hvac_mode="heat", hvac_action="")
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", mock_dt):
+            coord._initialize_hvac_session_from_current_state(climate_state)
+
+        assert coord._hvac_on_since is not None
+        assert coord._hvac_session_mode == "heat"

@@ -372,6 +372,10 @@ class ClimateAdvisorConfigView(HomeAssistantView):
 
         for key, meta in CONFIG_METADATA.items():
             value = config.get(key)
+            # Fall back to the metadata default so the UI shows the effective value,
+            # not "not set", when a key was added after the config entry was created.
+            if value is None:
+                value = meta.get("default")
             # Sanitize: replace notify service names (may reveal personal info)
             if key == "notify_service" or meta.get("sensitive"):
                 value = "configured" if value else "not set"

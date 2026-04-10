@@ -25,11 +25,13 @@ from custom_components.climate_advisor.const import (
     CONF_MANUAL_GRACE_PERIOD,
     CONF_OVERRIDE_CONFIRM_PERIOD,
     CONF_SENSOR_DEBOUNCE,
+    CONF_WELCOME_HOME_DEBOUNCE,
     CONFIG_METADATA,
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_OVERRIDE_CONFIRM_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS,
     DOMAIN,
 )
 from custom_components.climate_advisor.learning import DailyRecord
@@ -177,6 +179,7 @@ class TestConfigViewDisplayTransform:
         CONF_MANUAL_GRACE_PERIOD,
         CONF_AUTOMATION_GRACE_PERIOD,
         CONF_OVERRIDE_CONFIRM_PERIOD,
+        CONF_WELCOME_HOME_DEBOUNCE,
     )
 
     def test_seconds_keys_have_display_transform(self):
@@ -194,6 +197,7 @@ class TestConfigViewDisplayTransform:
             (DEFAULT_MANUAL_GRACE_SECONDS, 30),
             (DEFAULT_AUTOMATION_GRACE_SECONDS, 5),
             (DEFAULT_OVERRIDE_CONFIRM_SECONDS, 10),
+            (DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS, 60),
         ]
         for seconds, expected_minutes in cases:
             assert seconds // 60 == expected_minutes

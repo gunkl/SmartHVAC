@@ -209,6 +209,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._hvac_session_start_indoor_temp: float | None = None
         self._hvac_session_start_outdoor_temp: float | None = None
         self._hvac_session_mode: str | None = None  # "heat" or "cool"
+        self._startup_hvac_initialized: bool = False  # Issue #96: prevents repeated late-start init
         self._last_state_contradiction_time: datetime | None = None  # dedup for state_contradiction_warning events
         self._last_violation_check: datetime | None = None
 
@@ -1014,6 +1015,18 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         hvac_action = _cs.attributes.get("hvac_action", "") if _cs else ""
         hvac_mode = _cs.state if _cs else ""
 
+        # Issue #96 Root Cause D: Late-start thermal session for HVAC running at HA startup.
+        # _hvac_on_since is only set via state transitions in _async_thermostat_changed.
+        # If HA restarts mid-HVAC-session, no transition fires and thermal obs are skipped.
+        if (
+            _cs is not None
+            and str(hvac_action).lower() in {"heating", "cooling"}
+            and self._hvac_on_since is None
+            and not self._startup_hvac_initialized
+        ):
+            self._startup_hvac_initialized = True
+            self._initialize_hvac_session_from_current_state(_cs)
+
         # Emit a structured warning event when the HVAC entity reports an active action
         # (heating/cooling/fan) while hvac_mode is "off".  This surfaces the contradiction
         # in the investigator event log so it is not invisible outside the AI narrative.
@@ -1640,18 +1653,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     old_state.state,
                     new_state.state,
                 )
-                self._emit_event(
-                    "override_detected",
-                    {
-                        "old_mode": old_state.state,
-                        "new_mode": new_state.state,
-                        "classification_mode": (
-                            self._current_classification.hvac_mode if self._current_classification else None
-                        ),
-                        "source": "pause",
-                    },
+                await self.automation_engine.handle_manual_override_during_pause(
+                    old_mode=old_state.state,
+                    new_mode=new_state.state,
+                    classification_mode=(
+                        self._current_classification.hvac_mode if self._current_classification else None
+                    ),
                 )
-                await self.automation_engine.handle_manual_override_during_pause()
                 self._cancel_all_debounce_timers()
             else:
                 _LOGGER.debug(
@@ -1677,15 +1685,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 new_state.state,
                 self._current_classification.hvac_mode,
             )
-            self._emit_event(
-                "override_detected",
-                {
-                    "old_mode": old_state.state,
-                    "new_mode": new_state.state,
-                    "classification_mode": self._current_classification.hvac_mode,
-                    "source": "normal",
-                },
-            )
             with contextlib.suppress(Exception):
                 _indoor = self._get_indoor_temp()
                 _cs_attrs = self.hass.states.get(self.config.get("climate_entity", ""))
@@ -1697,7 +1696,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     outdoor=float(_outdoor_val) if _outdoor_val is not None else None,
                     event="override",
                 )
-            self.automation_engine.handle_manual_override()
+            self.automation_engine.handle_manual_override(
+                old_mode=old_state.state,
+                new_mode=new_state.state,
+                classification_mode=(self._current_classification.hvac_mode if self._current_classification else None),
+            )
 
         # HVAC runtime tracking via hvac_action (preferred) or mode
         new_action = new_state.attributes.get("hvac_action", "").lower()
@@ -1765,7 +1768,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         new_temp = new_state.attributes.get("temperature")
         old_temp = old_state.attributes.get("temperature")
 
-        if new_temp != old_temp and self._today_record and not self.automation_engine._temp_command_pending:
+        if (
+            new_temp != old_temp
+            and self._today_record
+            and not self.automation_engine._temp_command_pending
+            and not self.automation_engine._hvac_command_pending
+            and not self._is_recent_hvac_command(threshold_seconds=30.0)
+        ):
             self._today_record.manual_overrides += 1
             try:
                 old_val = float(old_temp)
@@ -1794,6 +1803,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             and new_fan_mode != old_fan_mode
             and not self.automation_engine._fan_command_pending
             and not self.automation_engine._fan_override_active
+            and not self.automation_engine._hvac_command_pending
+            and not self._is_recent_hvac_command(threshold_seconds=30.0)
         ):
             _LOGGER.info(
                 "Manual HVAC fan_mode change detected: %s -> %s",
@@ -1839,6 +1850,39 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 new_state.state,
             )
             self.automation_engine.handle_fan_manual_override()
+
+    def _initialize_hvac_session_from_current_state(self, climate_state: Any) -> None:
+        """Late-start HVAC session when HA restarted mid-session (Issue #96).
+
+        Sets session start from current time. Thermal observations will cover
+        only the post-restart portion — better than zero observations.
+        Called from _async_update_data() on first update if HVAC is already running.
+        """
+        self._hvac_on_since = dt_util.now()
+        self._hvac_session_start_indoor_temp = self._get_indoor_temp()
+        weather_entity = self.config.get("weather_entity")
+        weather_attrs = (
+            self.hass.states.get(weather_entity).attributes
+            if weather_entity and self.hass.states.get(weather_entity)
+            else {}
+        )
+        self._hvac_session_start_outdoor_temp = self._get_outdoor_temp(weather_attrs)
+        action = climate_state.attributes.get("hvac_action", "").lower()
+        if action == "heating":
+            self._hvac_session_mode = "heat"
+        elif action == "cooling":
+            self._hvac_session_mode = "cool"
+        elif climate_state.state == "heat":
+            self._hvac_session_mode = "heat"
+        elif climate_state.state == "cool":
+            self._hvac_session_mode = "cool"
+        else:
+            self._hvac_session_mode = None
+        _LOGGER.warning(
+            "Late-start HVAC session initialized: mode=%s (HVAC was running at HA startup — "
+            "session duration will be shorter than actual)",
+            self._hvac_session_mode,
+        )
 
     def _record_thermal_observation(self, new_state: Any) -> None:
         """Record a thermal observation when HVAC session ends."""
