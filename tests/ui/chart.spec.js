@@ -93,20 +93,21 @@ test.describe('Temperature Forecast Chart', () => {
     }
   });
 
-  test('range button 6h narrows x-axis to ~6 hours', async ({ page }) => {
+  test('range button 6h centers x-axis on now (±3h)', async ({ page }) => {
     await page.click('button[data-range="6h"]');
     await page.waitForTimeout(500);
 
-    const axisMin = await page.evaluate(() => {
+    const { axisMin, axisMax } = await page.evaluate(() => {
       const canvas = document.getElementById('temp-chart');
       const chart = Chart.getChart(canvas);
-      return chart ? chart.scales.x.min : null;
+      return chart ? { axisMin: chart.scales.x.min, axisMax: chart.scales.x.max } : {};
     });
 
-    const expectedMin = Date.now() - 6 * 3600000;
+    const now = Date.now();
+    // 6h range centered: min ≈ now-3h, max ≈ now+3h (allow 2 min tolerance)
     expect(axisMin).not.toBeNull();
-    // Allow 2 min tolerance
-    expect(Math.abs(axisMin - expectedMin)).toBeLessThan(2 * 60 * 1000);
+    expect(Math.abs(axisMin - (now - 3 * 3600000))).toBeLessThan(2 * 60 * 1000);
+    expect(Math.abs(axisMax - (now + 3 * 3600000))).toBeLessThan(2 * 60 * 1000);
   });
 
   test('hover panel clears when mouse leaves chart', async ({ page }) => {
@@ -303,6 +304,82 @@ test.describe('Temperature Forecast Chart', () => {
       return ds.data.some(p => p.x < todayMidnight.getTime());
     });
     expect(hasPastPoints).toBe(true);
+  });
+
+  // ── Navigation / windowing tests (TDD — written before implementation) ──────
+
+  test('24h default view is centered on now — max ≈ now+12h', async ({ page }) => {
+    const axisMax = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? chart.scales.x.max : null;
+    });
+    expect(axisMax).not.toBeNull();
+    // 24h centered: max = now + 12h (allow 2 min tolerance)
+    expect(Math.abs(axisMax - (Date.now() + 12 * 3600000))).toBeLessThan(2 * 60 * 1000);
+  });
+
+  test('forward nav button shifts 24h window forward by 4h', async ({ page }) => {
+    const maxBefore = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? chart.scales.x.max : null;
+    });
+    await page.click('#chart-nav-fwd');
+    await page.waitForTimeout(200);
+    const maxAfter = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? chart.scales.x.max : null;
+    });
+    // Step for 24h = 4h
+    expect(Math.abs((maxAfter - maxBefore) - 4 * 3600000)).toBeLessThan(60 * 1000);
+  });
+
+  test('back nav button shifts 24h window backward by 4h', async ({ page }) => {
+    const minBefore = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? chart.scales.x.min : null;
+    });
+    await page.click('#chart-nav-back');
+    await page.waitForTimeout(200);
+    const minAfter = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? chart.scales.x.min : null;
+    });
+    // min should decrease by 4h
+    expect(Math.abs((minBefore - minAfter) - 4 * 3600000)).toBeLessThan(60 * 1000);
+  });
+
+  test('switching range resets pan offset — 12h window midpoint ≈ now', async ({ page }) => {
+    // After switching to any range the window should be re-centered on now (offset = 0)
+    await page.click('button[data-range="12h"]');
+    await page.waitForTimeout(500);
+    const { xMin, xMax } = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? { xMin: chart.scales.x.min, xMax: chart.scales.x.max } : {};
+    });
+    const midpoint = (xMin + xMax) / 2;
+    // Midpoint of a 0-offset 12h window must be ≈ now (allow 5 min)
+    expect(Math.abs(midpoint - Date.now())).toBeLessThan(5 * 60 * 1000);
+  });
+
+  test('swipe right on chart canvas scrolls backward in time', async ({ page }) => {
+    const minBefore = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? chart.scales.x.min : null;
+    });
+    // Dispatch touchstart then touchend with dx = +60px (rightward swipe = back in time)
+    await page.evaluate(() => {
+      const canvas = document.getElementById('temp-chart');
+      const t1 = new Touch({ identifier: 1, target: canvas, clientX: 200, clientY: 100 });
+      const t2 = new Touch({ identifier: 1, target: canvas, clientX: 260, clientY: 100 });
+      canvas.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [t1], changedTouches: [t1] }));
+      canvas.dispatchEvent(new TouchEvent('touchend',   { bubbles: true, touches: [],   changedTouches: [t2] }));
+    });
+    await page.waitForTimeout(200);
+    const minAfter = await page.evaluate(() => {
+      const chart = Chart.getChart(document.getElementById('temp-chart'));
+      return chart ? chart.scales.x.min : null;
+    });
+    expect(minAfter).toBeLessThan(minBefore);
   });
 
 });

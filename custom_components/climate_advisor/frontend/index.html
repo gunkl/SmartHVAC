@@ -154,6 +154,22 @@
   .chart-range-bar .range-btn:hover:not(.active) {
     background: var(--primary-light);
   }
+  .chart-nav-btn {
+    padding: 3px 10px;
+    font-size: 1rem;
+    line-height: 1;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    min-width: 44px;
+    min-height: 28px;
+    transition: all 0.15s;
+  }
+  .chart-nav-btn:hover {
+    background: var(--primary-light);
+  }
   .activity-timeline {
     width: 100%;
     margin-top: 4px;
@@ -396,6 +412,7 @@
       <button class="chart-zoom-reset" id="chart-zoom-reset" onclick="resetChartZoom()">Reset Zoom</button>
     </div>
     <div class="chart-range-bar">
+      <button class="chart-nav-btn" id="chart-nav-back" title="Scroll back" onclick="shiftChartWindow(-1)">&#8249;</button>
       <button class="range-btn" data-range="6h" onclick="setChartRange('6h', this)">6h</button>
       <button class="range-btn" data-range="12h" onclick="setChartRange('12h', this)">12h</button>
       <button class="range-btn active" data-range="24h" onclick="setChartRange('24h', this)">24h</button>
@@ -403,6 +420,7 @@
       <button class="range-btn" data-range="7d" onclick="setChartRange('7d', this)">7d</button>
       <button class="range-btn" data-range="30d" onclick="setChartRange('30d', this)">30d</button>
       <button class="range-btn" data-range="1y" onclick="setChartRange('1y', this)">1y</button>
+      <button class="chart-nav-btn" id="chart-nav-fwd" title="Scroll forward" onclick="shiftChartWindow(1)">&#8250;</button>
     </div>
     <div id="chart-hover-panel" class="chart-hover-panel"></div>
     <div class="chart-container">
@@ -771,6 +789,8 @@
   let _chartRange = '24h';        // current range preset
   let _lastChartData = null;      // cache for overlay toggles
   let _chartZoomed = false;       // track zoom state
+  let _windowOffset = 0;          // ms pan offset from now-centered position
+  let _touchStartX = 0;           // touch start x for swipe navigation
 
   // Colour palette (matches the dark theme screenshot)
   const CHART_COLORS = {
@@ -800,12 +820,32 @@
   // Parse ISO timestamp → milliseconds (numeric, no date adapter needed)
   function _parseTs(ts) { return new Date(ts).getTime(); }
 
-  // Convert range string to { min, max } ms window for x-axis
+  // Step sizes for nav buttons: range / 6 (matches user specification)
+  function _rangeStep(range) {
+    const steps = { '6h': 1, '12h': 2, '24h': 4, '3d': 12, '7d': 28, '30d': 120, '1y': 1460 };
+    return (steps[range] || 4) * 3600000;
+  }
+
+  // Convert range string to { min, max } ms window for x-axis.
+  // Short ranges (≤24h): centered on now so forecast data is visible.
+  // Long ranges (>24h): past-anchored so history is visible by default.
   function _rangeToWindow(range) {
-    const now = Date.now();
+    const center = Date.now() + _windowOffset;
     const hoursMap = { '6h': 6, '12h': 12, '24h': 24, '3d': 72, '7d': 168, '30d': 720, '1y': 8760 };
     const hours = hoursMap[range] || 24;
-    return { min: now - hours * 3600000, max: now + 1800000 }; // +30 min so "Now" marker isn't clipped
+    if (hours <= 24) {
+      // Center on now: equal past/future exposure (reveals forecast curve)
+      const halfMs = hours * 1800000;
+      return { min: center - halfMs, max: center + halfMs };
+    }
+    // Past-anchored: full history visible, one step of future buffer
+    return { min: center - hours * 3600000, max: center + _rangeStep(range) };
+  }
+
+  // Shift the chart window by direction (±1) × step, redrawing from cached data (no API refetch)
+  function shiftChartWindow(direction) {
+    _windowOffset += direction * _rangeStep(_chartRange);
+    if (_lastChartData) drawChart(_lastChartData);
   }
 
   // Draw horizontal activity timeline above the temperature chart
@@ -1403,6 +1443,7 @@
 
   function setChartRange(range, btn) {
     _chartRange = range;
+    _windowOffset = 0;
     _chartZoomed = false;
     document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
     if (btn) btn.classList.add('active');
@@ -1437,6 +1478,7 @@
   window.setChartRange = setChartRange;
   window.resetChartZoom = resetChartZoom;
   window.toggleOverlay = toggleOverlay;
+  window.shiftChartWindow = shiftChartWindow;
 
   // --- Debug tab ---
   window.doAction = async function(action) {
@@ -2385,6 +2427,16 @@
     const panel = document.getElementById('chart-hover-panel');
     if (panel) panel.innerHTML = '';
   });
+
+  // Touch swipe navigation (attached once — not inside drawChart to avoid duplicate handlers)
+  // Swipe right = back in time, swipe left = forward in time
+  document.getElementById('temp-chart')?.addEventListener('touchstart', e => {
+    _touchStartX = e.touches[0].clientX;
+  }, { passive: true });
+  document.getElementById('temp-chart')?.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - _touchStartX;
+    if (Math.abs(dx) > 30) shiftChartWindow(dx > 0 ? -1 : 1);
+  }, { passive: true });
 })();
 </script>
 </body>
