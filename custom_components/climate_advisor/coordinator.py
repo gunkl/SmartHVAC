@@ -1096,6 +1096,21 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         with contextlib.suppress(Exception):
             indoor_temp = forecast.current_indoor_temp if forecast else None
             outdoor_temp = forecast.current_outdoor_temp if forecast else None
+            # Extract current-hour prediction to persist alongside actual reading
+            _pred_outdoor_val: float | None = None
+            _pred_indoor_val: float | None = None
+            if self._current_classification:
+                _pred_out, _pred_in = compute_predicted_temps(
+                    self._current_classification,
+                    self.config,
+                    self._hourly_forecast_temps,
+                    thermal_model=getattr(self.automation_engine, "_thermal_model", None),
+                )
+                _now_h = dt_util.now().hour
+                if _pred_out and _now_h < len(_pred_out):
+                    _pred_outdoor_val = _pred_out[_now_h]["temp"]
+                if _pred_in and _now_h < len(_pred_in):
+                    _pred_indoor_val = _pred_in[_now_h]["temp"]
             self._chart_log.append(
                 hvac=str(hvac_action) if hvac_action else "",
                 fan=bool(fan_running),
@@ -1105,6 +1120,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 windows_recommended=bool(self._current_classification.windows_recommended)
                 if self._current_classification
                 else False,
+                pred_outdoor=_pred_outdoor_val,
+                pred_indoor=_pred_indoor_val,
             )
             self._chart_log.save()
 

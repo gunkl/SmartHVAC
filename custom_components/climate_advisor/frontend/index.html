@@ -938,6 +938,19 @@
     const predOutdoorPts = (chartData.predicted_outdoor || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
     const predIndoorPts  = (chartData.predicted_indoor  || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
 
+    // Historical predicted points stored in state_log (absolute timestamps)
+    const _nowMs = Date.now();
+    const histPredOutdoorPts = (chartData.state_log || [])
+      .map(e => ({ x: _parseTs(e.ts), y: e.pred_outdoor != null ? e.pred_outdoor : e.pred_outdoor_avg != null ? e.pred_outdoor_avg : null }))
+      .filter(p => p.y != null);
+    const histPredIndoorPts = (chartData.state_log || [])
+      .map(e => ({ x: _parseTs(e.ts), y: e.pred_indoor != null ? e.pred_indoor : e.pred_indoor_avg != null ? e.pred_indoor_avg : null }))
+      .filter(p => p.y != null);
+
+    // Merge: historical stored predictions + today's remaining forecast (future hours only)
+    const mergedPredOutdoor = [...histPredOutdoorPts, ...predOutdoorPts.filter(p => p.x >= _nowMs)].sort((a, b) => a.x - b.x);
+    const mergedPredIndoor  = [...histPredIndoorPts,  ...predIndoorPts.filter(p => p.x >= _nowMs)].sort((a, b) => a.x - b.x);
+
     // Actual series from temp history (ISO timestamps)
     const actOutdoorPts = (chartData.actual_outdoor || []).map(p => ({ x: _parseTs(p.time), y: p.temp }));
     const actIndoorPts  = (chartData.actual_indoor  || []).map(p => ({ x: _parseTs(p.time), y: p.temp }));
@@ -979,7 +992,7 @@
       {
         label: 'Predicted Outdoor',
         type: 'line',
-        data: predOutdoorPts,
+        data: mergedPredOutdoor,
         borderColor: CHART_COLORS.pred_outdoor,
         borderWidth: 2,
         borderDash: [6, 4],
@@ -992,7 +1005,7 @@
       {
         label: 'Predicted Indoor',
         type: 'line',
-        data: predIndoorPts,
+        data: mergedPredIndoor,
         borderColor: CHART_COLORS.pred_indoor,
         borderWidth: 2,
         borderDash: [6, 4],

@@ -275,4 +275,34 @@ test.describe('Temperature Forecast Chart', () => {
     expect(html.toLowerCase()).not.toContain('fan on');
   });
 
+  test('predicted outdoor dataset contains points from state_log (historical predicted)', async ({ page }) => {
+    // The fixture state_log has 48 entries with pred_outdoor set. After drawChart(),
+    // the 'Predicted Outdoor' dataset must include points sourced from those stored values.
+    const predOutdoorCount = await page.evaluate(() => {
+      const canvas = document.getElementById('temp-chart');
+      const chart = Chart.getChart(canvas);
+      if (!chart) return 0;
+      const ds = chart.data.datasets.find(d => d.label === 'Predicted Outdoor');
+      return ds ? ds.data.length : 0;
+    });
+    // 48 fixture state_log entries all have pred_outdoor; plus today's remaining forecast hours
+    expect(predOutdoorCount).toBeGreaterThan(20);
+  });
+
+  test('historical predicted points include past timestamps (not today-only)', async ({ page }) => {
+    // If predicted series were today-only (hourToDate based), all x values would be >= todayMidnight.
+    // With historical storage, at least some points must be before today midnight.
+    const hasPastPoints = await page.evaluate(() => {
+      const canvas = document.getElementById('temp-chart');
+      const chart = Chart.getChart(canvas);
+      if (!chart) return false;
+      const ds = chart.data.datasets.find(d => d.label === 'Predicted Outdoor');
+      if (!ds || !ds.data.length) return false;
+      const todayMidnight = new Date();
+      todayMidnight.setHours(0, 0, 0, 0);
+      return ds.data.some(p => p.x < todayMidnight.getTime());
+    });
+    expect(hasPastPoints).toBe(true);
+  });
+
 });

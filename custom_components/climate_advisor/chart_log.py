@@ -125,6 +125,8 @@ class ChartStateLog:
         outdoor: float | None,
         windows_open: bool = False,
         windows_recommended: bool = False,
+        pred_outdoor: float | None = None,
+        pred_indoor: float | None = None,
         event: str | None = None,
         ts: str | None = None,
     ) -> None:
@@ -140,6 +142,8 @@ class ChartStateLog:
             "outdoor": outdoor,
             "windows_open": windows_open,
             "windows_recommended": windows_recommended,
+            "pred_outdoor": pred_outdoor,
+            "pred_indoor": pred_indoor,
         }
         if event is not None:
             entry["event"] = event
@@ -245,6 +249,9 @@ class ChartStateLog:
             outdoor_vals = [e["outdoor"] for e in group if e.get("outdoor") is not None]
             events = [e["event"] for e in group if "event" in e]
 
+            pred_outdoor_vals = [e["pred_outdoor"] for e in group if e.get("pred_outdoor") is not None]
+            pred_indoor_vals = [e["pred_indoor"] for e in group if e.get("pred_indoor") is not None]
+
             summary: dict[str, Any] = {
                 "ts": bucket_key,
                 "hvac": self._dominant_hvac([e.get("hvac", "") for e in group]),
@@ -253,6 +260,10 @@ class ChartStateLog:
                 "outdoor": (round(sum(outdoor_vals) / len(outdoor_vals), 1) if outdoor_vals else None),
                 "windows_open": any(e.get("windows_open", False) for e in group),
                 "windows_recommended": any(e.get("windows_recommended", False) for e in group),
+                "pred_outdoor": (
+                    round(sum(pred_outdoor_vals) / len(pred_outdoor_vals), 1) if pred_outdoor_vals else None
+                ),
+                "pred_indoor": (round(sum(pred_indoor_vals) / len(pred_indoor_vals), 1) if pred_indoor_vals else None),
             }
             if events:
                 summary["event"] = events
@@ -278,6 +289,9 @@ class ChartStateLog:
             events = [e["event"] for e in group if "event" in e]
             fan_count = sum(1 for e in group if e.get("fan", False))
 
+            pred_outdoor_vals = [e["pred_outdoor"] for e in group if e.get("pred_outdoor") is not None]
+            pred_indoor_vals = [e["pred_indoor"] for e in group if e.get("pred_indoor") is not None]
+
             summary: dict[str, Any] = {
                 "ts": f"{day_key}T00:00:00+00:00",
                 "hvac": self._dominant_hvac([e.get("hvac", "") for e in group]),
@@ -290,6 +304,12 @@ class ChartStateLog:
                 "outdoor_max": max(outdoor_vals) if outdoor_vals else None,
                 "windows_open": any(e.get("windows_open", False) for e in group),
                 "windows_recommended": any(e.get("windows_recommended", False) for e in group),
+                "pred_outdoor_avg": (
+                    round(sum(pred_outdoor_vals) / len(pred_outdoor_vals), 1) if pred_outdoor_vals else None
+                ),
+                "pred_indoor_avg": (
+                    round(sum(pred_indoor_vals) / len(pred_indoor_vals), 1) if pred_indoor_vals else None
+                ),
             }
             if events:
                 summary["events"] = events

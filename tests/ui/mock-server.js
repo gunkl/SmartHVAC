@@ -31,6 +31,8 @@ function makeChartFixture() {
     fan: i % 7 === 0,
     indoor: 69 + 3*Math.sin((i/48)*Math.PI*2),
     outdoor: 52 + 18*Math.sin((i/48)*Math.PI),
+    pred_outdoor: 55 + 20*Math.sin(((i/48) - 0.25)*Math.PI),
+    pred_indoor: 68 + 4*Math.sin(((i/48) - 0.58)*Math.PI),
     windows_open: i >= 16 && i < 28,
     windows_recommended: i >= 12 && i < 30,
   }));

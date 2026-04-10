@@ -454,3 +454,105 @@ class TestEntryCount:
         (tmp_path / "climate_advisor_chart_log.json").write_text(json.dumps({"entries": entries}), encoding="utf-8")
         log.load()
         assert log.entry_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 7. pred_outdoor / pred_indoor fields
+# ---------------------------------------------------------------------------
+
+
+class TestPredFields:
+    def test_append_stores_pred_fields(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        log.append(hvac="off", fan=False, indoor=70.0, outdoor=50.0, pred_outdoor=65.5, pred_indoor=72.0)
+        entry = log._entries[0]
+        assert entry["pred_outdoor"] == 65.5
+        assert entry["pred_indoor"] == 72.0
+
+    def test_append_pred_fields_default_none(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        log.append(hvac="off", fan=False, indoor=70.0, outdoor=50.0)
+        entry = log._entries[0]
+        assert entry["pred_outdoor"] is None
+        assert entry["pred_indoor"] is None
+
+    def test_get_entries_exposes_pred_fields(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        log.append(
+            hvac="off",
+            fan=False,
+            indoor=70.0,
+            outdoor=50.0,
+            pred_outdoor=60.0,
+            pred_indoor=71.5,
+            ts=_iso(_ago(hours=1)),
+        )
+        result = log.get_entries("24h")
+        assert len(result) == 1
+        assert result[0]["pred_outdoor"] == 60.0
+        assert result[0]["pred_indoor"] == 71.5
+
+    def test_bucket_hourly_averages_pred_fields(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        # Two entries in the same hour bucket: one with pred values, one without
+        base_ts = _ago(days=5).replace(minute=0, second=0, microsecond=0)
+        ts_a = _iso(base_ts.replace(minute=10))
+        ts_b = _iso(base_ts.replace(minute=40))
+        log.append(hvac="off", fan=False, indoor=70.0, outdoor=50.0, pred_outdoor=65.0, pred_indoor=70.0, ts=ts_a)
+        log.append(hvac="off", fan=False, indoor=72.0, outdoor=52.0, ts=ts_b)  # no pred vals
+        result = log.get_entries("7d")
+        assert len(result) == 1
+        assert result[0]["pred_outdoor"] == 65.0
+        assert result[0]["pred_indoor"] == 70.0
+
+    def test_bucket_hourly_averages_two_pred_values(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        base_ts = _ago(days=5).replace(minute=0, second=0, microsecond=0)
+        ts_a = _iso(base_ts.replace(minute=10))
+        ts_b = _iso(base_ts.replace(minute=50))
+        log.append(hvac="off", fan=False, indoor=70.0, outdoor=50.0, pred_outdoor=64.0, pred_indoor=70.0, ts=ts_a)
+        log.append(hvac="off", fan=False, indoor=72.0, outdoor=52.0, pred_outdoor=66.0, pred_indoor=72.0, ts=ts_b)
+        result = log.get_entries("7d")
+        assert len(result) == 1
+        assert result[0]["pred_outdoor"] == 65.0  # (64+66)/2
+        assert result[0]["pred_indoor"] == 71.0  # (70+72)/2
+
+    def test_bucket_daily_averages_pred_fields(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        base_ts = _ago(days=60).replace(hour=12, minute=0, second=0, microsecond=0)
+        ts_a = _iso(base_ts.replace(hour=10))
+        ts_b = _iso(base_ts.replace(hour=14))
+        log.append(hvac="off", fan=False, indoor=70.0, outdoor=50.0, pred_outdoor=64.0, pred_indoor=70.0, ts=ts_a)
+        log.append(hvac="off", fan=False, indoor=72.0, outdoor=52.0, pred_outdoor=66.0, pred_indoor=72.0, ts=ts_b)
+        result = log.get_entries("1y")
+        assert len(result) == 1
+        assert result[0]["pred_outdoor_avg"] == 65.0
+        assert result[0]["pred_indoor_avg"] == 71.0
+
+    def test_bucket_daily_none_when_no_pred_values(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        base_ts = _ago(days=60).replace(hour=12, minute=0, second=0, microsecond=0)
+        log.append(hvac="off", fan=False, indoor=70.0, outdoor=50.0, ts=_iso(base_ts))
+        result = log.get_entries("1y")
+        assert len(result) == 1
+        assert result[0]["pred_outdoor_avg"] is None
+        assert result[0]["pred_indoor_avg"] is None
+
+    def test_pred_fields_survive_save_load(self, tmp_path: Path) -> None:
+        log = _make_log(tmp_path)
+        log.append(
+            hvac="heating",
+            fan=False,
+            indoor=68.0,
+            outdoor=35.0,
+            pred_outdoor=40.5,
+            pred_indoor=69.0,
+            ts=_iso(_ago(hours=1)),
+        )
+        log.save()
+        log2 = _make_log(tmp_path)
+        log2.load()
+        assert log2.entry_count == 1
+        entry = log2._entries[0]
+        assert entry["pred_outdoor"] == 40.5
+        assert entry["pred_indoor"] == 69.0
