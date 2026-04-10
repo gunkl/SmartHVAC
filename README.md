@@ -276,7 +276,7 @@ entities:
 
 ## Development Roadmap
 
-See [Issue #11](https://github.com/gunkl/SmartHVAC/issues/11) for full tracking.
+See [Issue #11](https://github.com/gunkl/ClimateAdvisor/issues/11) for full tracking.
 
 ### Phase 1: Core (v0.1.0) — Complete
 - [x] 5-level day type classification with trend analysis

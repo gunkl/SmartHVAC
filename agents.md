@@ -18,7 +18,7 @@ This repository expects any automation agent (Codex CLI, LLM assistants, scripte
 ## Project Structure
 
 ```
-SmartHVAC/
+ClimateAdvisor/
 ├── custom_components/
 │   └── climate_advisor/
 │       ├── __init__.py          # Integration entry point and service registration

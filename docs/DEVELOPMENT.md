@@ -12,8 +12,8 @@ How to set up your local environment, run tests, and lint the Climate Advisor co
 1. Clone the repo:
 
    ```bash
-   git clone https://github.com/gunkl/SmartHVAC.git
-   cd SmartHVAC
+   git clone https://github.com/gunkl/ClimateAdvisor.git
+   cd ClimateAdvisor
    ```
 
 2. Create and activate a virtual environment (recommended):
