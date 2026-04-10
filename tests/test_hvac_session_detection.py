@@ -170,6 +170,8 @@ def _make_update_data_coord(*, hvac_mode: str, hvac_action: str, ca_fan_active: 
 
     ae = MagicMock()
     ae._fan_active = ca_fan_active
+    ae._natural_vent_active = False
+    ae._fan_override_active = False
     ae._last_action_time = None
     ae._last_action_reason = ""
     ae._fan_override_time = None
@@ -247,7 +249,7 @@ def _make_update_data_coord(*, hvac_mode: str, hvac_action: str, ca_fan_active: 
     coord._compute_next_automation_action = MagicMock(return_value=("No action", ""))
     coord._compute_next_action = MagicMock(return_value="No action")
     coord._compute_automation_status = MagicMock(return_value="active")
-    coord._compute_fan_status = MagicMock(return_value="off")
+    coord._compute_fan_status = MagicMock(return_value="inactive")
     coord._compute_contact_status = MagicMock(return_value="closed")
     coord._any_sensor_open = MagicMock(return_value=False)
     coord._last_briefing = ""

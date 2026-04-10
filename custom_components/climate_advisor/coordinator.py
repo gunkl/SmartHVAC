@@ -1020,8 +1020,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # Suppress when Climate Advisor itself activated fan-only mode (natural ventilation).
         _active_hvac_actions = {"heating", "cooling", "fan"}
         if hvac_mode == "off" and str(hvac_action).lower() in _active_hvac_actions:
-            _ca_fan_running = self.automation_engine._fan_active
-            _is_expected_fan = str(hvac_action).lower() == "fan" and _ca_fan_running
+            # Suppress when CA activated the fan OR when thermostat ground-truth shows
+            # fan running (untracked) — either way the fan action is not a contradiction.
+            _ca_fan_running = self.automation_engine._fan_active or self.automation_engine._natural_vent_active
+            _fan_untracked = str(hvac_action).lower() == "fan" and self._compute_fan_status() == "running (untracked)"
+            _is_expected_fan = str(hvac_action).lower() == "fan" and (_ca_fan_running or _fan_untracked)
             if not _is_expected_fan:
                 _now = dt_util.now()
                 _dedup_window = timedelta(minutes=30)
@@ -1750,10 +1753,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         # If thermostat is now fully off, clear any stale HVAC-based fan active flag.
         # Only applies to HVAC/Both fan modes — whole-house fans run independently.
+        # Natural ventilation is intentionally hvac_mode=off + fan active — do not clear.
         ae = self.automation_engine
         if new_state.state == "off" and ae._fan_active and not ae._fan_override_active:
             _fan_mode = ae.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
-            if _fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+            if _fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH) and not ae._natural_vent_active:
                 _LOGGER.warning("Thermostat set to off while HVAC fan was marked active — clearing stale fan state")
                 ae._fan_active = False
 
@@ -1983,7 +1987,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         return "active"
 
     def _compute_fan_status(self) -> str:
-        """Compute the current fan status string."""
+        """Compute the current fan status string.
+
+        Priority order:
+        1. CA-activated fan (_fan_active=True) → "active"
+        2. Manual override → "running (manual override)" / "off (manual override)"
+        3. Ground-truth fallback: read thermostat fan_mode/hvac_action — catches
+           post-restart state, user/Ecobee-initiated fan runs that CA didn't command.
+        4. "inactive"
+        """
         ae = self.automation_engine
         fan_mode = ae.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
         if fan_mode == FAN_MODE_DISABLED:
@@ -1992,6 +2004,16 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return "running (manual override)" if ae._fan_active else "off (manual override)"
         if ae._fan_active:
             return "active"
+        # Ground-truth fallback: CA's flag says inactive, but check what the
+        # thermostat is actually doing. Catches post-restart and externally-run fan.
+        if fan_mode in (FAN_MODE_HVAC, FAN_MODE_BOTH):
+            climate_entity_id = self.config.get("climate_entity", "")
+            cs = self.hass.states.get(climate_entity_id) if climate_entity_id else None
+            if cs is not None:
+                thermostat_fan_mode = cs.attributes.get("fan_mode", "")
+                thermostat_hvac_action = str(cs.attributes.get("hvac_action", "")).lower()
+                if thermostat_fan_mode == "on" or thermostat_hvac_action == "fan":
+                    return "running (untracked)"
         return "inactive"
 
     def _compute_contact_status(self) -> str:

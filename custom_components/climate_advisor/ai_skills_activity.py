@@ -144,7 +144,7 @@ async def async_build_activity_context(
         # Suppress if CA intentionally has the fan running (e.g., natural ventilation).
         # hvac_mode=off + hvac_action=fan is expected when CA activated fan_mode=on.
         # Only warn when the thermostat reports activity CA cannot account for.
-        ca_fan_running = fan_status in ("active", "running (manual override)")
+        ca_fan_running = fan_status in ("active", "running (manual override)", "running (untracked)")
         if str(hvac_action).lower() == "fan" and ca_fan_running:
             pass  # Expected: CA activated HVAC fan-only mode for natural ventilation
         else:

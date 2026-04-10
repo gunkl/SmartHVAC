@@ -1,0 +1,51 @@
+{
+    "name": "nat-vent-fan-preserved-on-thermostat-event",
+    "description": "Natural ventilation fan stays active when thermostat emits state_changed with hvac_mode=off (Issue #95)",
+    "source": "synthetic",
+    "issue": 95,
+    "verdict": {
+        "type": "positive",
+        "summary": "Verifies the stale-clear guard: fan_active must NOT be cleared when natural_vent_active=True, even when thermostat reports hvac_mode=off",
+        "observed_behavior": "fan_active preserved during nat vent despite thermostat state_changed event",
+        "expected_behavior": "fan_active preserved during nat vent despite thermostat state_changed event"
+    },
+    "config": {
+        "comfort_heat": 70,
+        "comfort_cool": 75,
+        "natural_vent_delta": 3.0,
+        "fan_mode": "hvac_fan"
+    },
+    "events": [
+        {
+            "time": "2026-04-09T14:00:00",
+            "type": "temp_update",
+            "indoor_f": 73.0,
+            "outdoor_f": 61.0,
+            "note": "Outdoor 61F well below threshold (75+3=78F) — nat vent conditions met"
+        },
+        {
+            "time": "2026-04-09T14:00:00",
+            "type": "sensor_open",
+            "entity": "binary_sensor.door_window",
+            "note": "Door opens — triggers handle_sensor_opened(), which enters nat vent and activates fan"
+        },
+        {
+            "time": "2026-04-09T14:01:00",
+            "type": "thermostat_state_changed",
+            "hvac_mode": "off",
+            "note": "Ecobee emits state_changed after fan_mode=on was set (hvac_mode stays off). Pre-fix: this cleared fan_active. Post-fix: nat_vent_active guard prevents the clear."
+        }
+    ],
+    "assertions": [
+        {
+            "at": "2026-04-09T14:00:00",
+            "expect": "natural_ventilation",
+            "reason": "sensor opened; outdoor 61F <= comfort_cool 75F + delta 3F = 78F threshold — nat vent mode"
+        },
+        {
+            "at": "2026-04-09T14:01:00",
+            "expect": "nat_vent_fan_preserved",
+            "reason": "thermostat_state_changed with hvac_mode=off while natural_vent_active=True — stale-clear guard must prevent fan_active from being cleared"
+        }
+    ]
+}

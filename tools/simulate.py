@@ -180,6 +180,9 @@ class ClimateSimulator:
             self.state.grace_active = False
             return None
 
+        if etype == "thermostat_state_changed":
+            return self._handle_thermostat_state_changed(ts, event)
+
         return None
 
     # ------------------------------------------------------------------
@@ -242,6 +245,7 @@ class ClimateSimulator:
         if outdoor is not None and outdoor <= threshold:
             self.state.hvac_mode = "off"
             self.state.fan_mode = "on"
+            self.state.fan_active = True
             self.state.natural_vent_active = True
             self.state.paused_by_door = False
             d = Decision(
@@ -947,6 +951,55 @@ class ClimateSimulator:
             self.state.hvac_mode,
             self.state.fan_mode,
             target_temp=self.state.hvac_target_temp,
+        )
+        self.decisions.append(d)
+        return d
+
+    # ------------------------------------------------------------------
+    # Thermostat state-change handler (Issue #95)
+    # ------------------------------------------------------------------
+
+    def _handle_thermostat_state_changed(self, ts: str, event: dict) -> Decision | None:
+        """Mirror coordinator.py _async_thermostat_changed stale-clear logic.
+
+        When the thermostat emits a state_changed event with hvac_mode='off'
+        while CA has fan_active=True (but not natural_vent_active), the stale-clear
+        block fires and incorrectly clears fan_active. This event type lets scenarios
+        test that the guard (not natural_vent_active) prevents the spurious clear.
+
+        Issue #95: natural ventilation is intentionally hvac_mode=off + fan active.
+        """
+        new_hvac_mode = event.get("hvac_mode", self.state.hvac_mode)
+        fan_mode_cfg = self.config.get("fan_mode", "disabled")
+
+        # Mirror the stale-clear condition from coordinator.py (post-fix):
+        # Clear fan_active only when hvac is off + fan was active + NOT natural vent + fan_mode is hvac/both
+        if (
+            new_hvac_mode == "off"
+            and self.state.fan_active
+            and not self.state.natural_vent_active  # the fix: don't clear during nat vent
+            and fan_mode_cfg in ("hvac_fan", "hvac_and_whole_house")
+        ):
+            self.state.fan_active = False
+            d = Decision(
+                ts,
+                "thermostat_state_changed",
+                "stale_fan_cleared",
+                "hvac_mode=off + fan_active=True but not nat vent — stale state cleared",
+                new_hvac_mode,
+                self.state.fan_mode,
+            )
+            self.decisions.append(d)
+            return d
+
+        # No stale-clear fired — nat vent guard protected fan_active
+        d = Decision(
+            ts,
+            "thermostat_state_changed",
+            "nat_vent_fan_preserved",
+            "hvac_mode=off + fan_active=True + natural_vent_active=True — fan NOT cleared",
+            new_hvac_mode,
+            self.state.fan_mode,
         )
         self.decisions.append(d)
         return d
