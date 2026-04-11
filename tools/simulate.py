@@ -271,7 +271,30 @@ class ClimateSimulator:
         return d
 
     def _check_natural_vent_exit(self, ts: str) -> Decision | None:
-        """Exit natural ventilation if outdoor climbed above threshold."""
+        """Exit natural ventilation if indoor hit comfort floor OR outdoor climbed above threshold."""
+        # Issue #99: Comfort-floor exit — mirrors automation.py check_natural_vent_conditions()
+        # Check BEFORE outdoor warmth to take priority when both conditions are true.
+        comfort_heat = float(self.config.get("comfort_heat", 70))
+        indoor = self.state.indoor_temp
+        if indoor is not None and indoor <= comfort_heat:
+            self.state.natural_vent_active = False
+            # Do NOT set paused_by_door — heat should restore, not wait for nat vent re-evaluation
+            self.state.fan_mode = "auto"
+            self.state.fan_active = False
+            if self.state.classification and self.state.classification.hvac_mode in ("heat", "cool"):
+                self.state.hvac_mode = self.state.classification.hvac_mode
+            d = Decision(
+                ts,
+                "temp_update",
+                "nat_vent_comfort_floor_exit",
+                f"indoor {indoor}F \u2264 comfort_heat {comfort_heat}F \u2014 fan stopped, heat restored",
+                self.state.hvac_mode,
+                "auto",
+            )
+            self.decisions.append(d)
+            return d
+
+        # Existing: exit nat vent if outdoor climbed above threshold
         comfort_cool = float(self.config.get("comfort_cool", 75))
         delta = float(self.config.get("natural_vent_delta", 3.0))
         outdoor = self.state.outdoor_temp

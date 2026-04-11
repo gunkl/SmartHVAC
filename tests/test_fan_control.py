@@ -35,6 +35,7 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     CONF_FAN_MIN_RUNTIME_PER_HOUR,
     CONF_FAN_MODE,
     DAY_TYPE_HOT,
+    DAY_TYPE_MILD,
     FAN_MODE_BOTH,
     FAN_MODE_DISABLED,
     FAN_MODE_HVAC,
@@ -93,6 +94,28 @@ def _make_hot_classification() -> DayClassification:
     c.hvac_mode = "cool"
     c.pre_condition = True
     c.pre_condition_target = -2.0
+    c.windows_recommended = False
+    c.window_open_time = None
+    c.window_close_time = None
+    c.setback_modifier = 0.0
+    c.window_opportunity_morning = False
+    c.window_opportunity_evening = False
+    return c
+
+
+def _make_heat_classification() -> DayClassification:
+    """Build a MILD/heat DayClassification (bypasses __post_init__)."""
+    c = object.__new__(DayClassification)
+    c.day_type = DAY_TYPE_MILD
+    c.trend_direction = "stable"
+    c.trend_magnitude = 0.0
+    c.today_high = 65.0
+    c.today_low = 50.0
+    c.tomorrow_high = 65.0
+    c.tomorrow_low = 50.0
+    c.hvac_mode = "heat"
+    c.pre_condition = False
+    c.pre_condition_target = 0.0
     c.windows_recommended = False
     c.window_open_time = None
     c.window_close_time = None
@@ -1125,3 +1148,171 @@ class TestFanStateCleanupOnThermostatOff:
         _apply_thermostat_off_fan_cleanup(engine, "off")
 
         assert engine._fan_active is False
+
+
+# ---------------------------------------------------------------------------
+# Natural vent comfort-floor exit tests (TDD — feature not yet implemented)
+# ---------------------------------------------------------------------------
+
+
+def _make_nat_vent_engine(indoor_temp: float) -> AutomationEngine:
+    """Create engine pre-configured for nat-vent comfort-floor-exit tests."""
+    engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_HVAC})
+    engine._natural_vent_active = True
+    engine._paused_by_door = False
+    engine._fan_active = True
+    engine._fan_override_active = False
+    engine._last_outdoor_temp = 62.0  # well below threshold (75+3=78) — outdoor alone won't exit
+    engine._current_classification = _make_heat_classification()
+
+    mock_cs = MagicMock()
+    mock_cs.attributes = {"current_temperature": indoor_temp}
+    mock_cs.state = "off"
+    engine.hass.states.get.return_value = mock_cs
+
+    return engine
+
+
+class TestNatVentComfortFloorExit:
+    """TDD tests for the comfort-floor exit condition in check_natural_vent_conditions().
+
+    These tests FAIL until the comfort-floor exit feature is implemented in automation.py.
+    When indoor temp drops to (or below) comfort_heat, natural vent should be deactivated
+    and HVAC restored to the classification mode.
+    """
+
+    def test_nat_vent_exits_when_indoor_at_comfort_heat_floor(self):
+        """Indoor exactly at comfort_heat floor (70) → nat vent exits, HVAC restored to heat."""
+        engine = _make_nat_vent_engine(indoor_temp=70.0)
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is False
+        assert engine._paused_by_door is False
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 1
+        assert fan_calls[0][0][2]["fan_mode"] == "auto"
+
+        hvac_calls = _get_service_calls(engine, "climate", "set_hvac_mode")
+        assert len(hvac_calls) == 1
+        assert hvac_calls[0][0][2]["hvac_mode"] == "heat"
+
+    def test_nat_vent_exits_when_indoor_below_comfort_heat_floor(self):
+        """Indoor strictly below comfort_heat floor (68 < 70) → nat vent exits, HVAC restored."""
+        engine = _make_nat_vent_engine(indoor_temp=68.0)
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is False
+        assert engine._paused_by_door is False
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 1
+        assert fan_calls[0][0][2]["fan_mode"] == "auto"
+
+        hvac_calls = _get_service_calls(engine, "climate", "set_hvac_mode")
+        assert len(hvac_calls) == 1
+        assert hvac_calls[0][0][2]["hvac_mode"] == "heat"
+
+    def test_nat_vent_continues_when_indoor_above_comfort_heat_floor(self):
+        """Indoor above comfort_heat floor (72 > 70) → nat vent continues, no service calls."""
+        engine = _make_nat_vent_engine(indoor_temp=72.0)
+        asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is True
+
+        assert len(_get_service_calls(engine, "climate", "set_fan_mode")) == 0
+        assert len(_get_service_calls(engine, "climate", "set_hvac_mode")) == 0
+
+    def test_comfort_floor_exit_takes_priority_over_outdoor_warmth(self):
+        """Both comfort-floor AND outdoor-warm conditions true — comfort-floor path wins (no paused_by_door)."""
+        engine = _make_nat_vent_engine(indoor_temp=70.0)
+        engine._last_outdoor_temp = 80.0  # above threshold 78 too
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        # Comfort-floor path does NOT set paused_by_door; outdoor-warmth path does
+        assert engine._paused_by_door is False
+        assert engine._natural_vent_active is False
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 1
+        assert fan_calls[0][0][2]["fan_mode"] == "auto"
+
+    def test_comfort_floor_exit_without_classification_only_deactivates_fan(self):
+        """No current classification → fan deactivated but no set_hvac_mode call."""
+        engine = _make_nat_vent_engine(indoor_temp=70.0)
+        engine._current_classification = None
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is False
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 1
+        assert fan_calls[0][0][2]["fan_mode"] == "auto"
+
+        assert len(_get_service_calls(engine, "climate", "set_hvac_mode")) == 0
+
+    def test_comfort_floor_exit_skips_hvac_restore_when_classification_off(self):
+        """Classification hvac_mode='off' → fan deactivated but no set_hvac_mode call."""
+        cls_off = object.__new__(DayClassification)
+        cls_off.day_type = DAY_TYPE_MILD
+        cls_off.trend_direction = "stable"
+        cls_off.trend_magnitude = 0.0
+        cls_off.today_high = 65.0
+        cls_off.today_low = 50.0
+        cls_off.tomorrow_high = 65.0
+        cls_off.tomorrow_low = 50.0
+        cls_off.hvac_mode = "off"
+        cls_off.pre_condition = False
+        cls_off.pre_condition_target = 0.0
+        cls_off.windows_recommended = False
+        cls_off.window_open_time = None
+        cls_off.window_close_time = None
+        cls_off.setback_modifier = 0.0
+        cls_off.window_opportunity_morning = False
+        cls_off.window_opportunity_evening = False
+
+        engine = _make_nat_vent_engine(indoor_temp=70.0)
+        engine._current_classification = cls_off
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 1
+        assert fan_calls[0][0][2]["fan_mode"] == "auto"
+
+        assert len(_get_service_calls(engine, "climate", "set_hvac_mode")) == 0
+
+    def test_comfort_floor_exit_emits_event(self):
+        """Comfort-floor exit fires the nat_vent_comfort_floor_exit event with indoor_temp payload.
+
+        Note: _start_grace_period also fires a grace_started event, so call_count may be > 1.
+        We assert the specific nat_vent_comfort_floor_exit event was emitted with correct payload.
+        """
+        engine = _make_nat_vent_engine(indoor_temp=70.0)
+        engine._emit_event_callback = MagicMock()
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        # Extract all event names fired
+        event_names = [call[0][0] for call in engine._emit_event_callback.call_args_list]
+        assert "nat_vent_comfort_floor_exit" in event_names
+
+        # Verify the payload of the nat_vent_comfort_floor_exit event
+        comfort_floor_call = next(
+            call for call in engine._emit_event_callback.call_args_list if call[0][0] == "nat_vent_comfort_floor_exit"
+        )
+        assert "indoor_temp" in comfort_floor_call[0][1]
+
+    def test_comfort_floor_check_skipped_when_not_in_nat_vent(self):
+        """_natural_vent_active=False → no service calls even when indoor is below floor."""
+        engine = _make_nat_vent_engine(indoor_temp=65.0)
+        engine._natural_vent_active = False
+        engine._paused_by_door = False
+        asyncio.run(engine.check_natural_vent_conditions())
+
+        assert len(engine.hass.services.async_call.call_args_list) == 0
+        assert engine._natural_vent_active is False

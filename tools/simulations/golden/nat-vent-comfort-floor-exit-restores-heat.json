@@ -1,0 +1,59 @@
+{
+    "name": "nat-vent-comfort-floor-exit-restores-heat",
+    "description": "Natural ventilation fan shuts off and heat restores when indoor temp drops to comfort_heat floor (Issue #99)",
+    "source": "synthetic",
+    "issue": 99,
+    "verdict": {
+        "type": "positive",
+        "summary": "When _natural_vent_active=True and indoor drops to comfort_heat, fan deactivates and HVAC restores to heat without entering pause",
+        "observed_behavior": "nat_vent_comfort_floor_exit with hvac_mode restored to heat, paused_by_door=False",
+        "expected_behavior": "nat_vent_comfort_floor_exit with hvac_mode restored to heat, paused_by_door=False"
+    },
+    "config": {
+        "comfort_heat": 70,
+        "comfort_cool": 75,
+        "natural_vent_delta": 3.0,
+        "fan_mode": "hvac_fan"
+    },
+    "events": [
+        {
+            "time": "2026-04-11T08:00:00",
+            "type": "classification",
+            "day_type": "mild",
+            "hvac_mode": "heat",
+            "note": "Morning classification — heat day, comfort_heat=70F"
+        },
+        {
+            "time": "2026-04-11T09:00:00",
+            "type": "temp_update",
+            "indoor_f": 73.5,
+            "outdoor_f": 62.0,
+            "note": "Indoor above floor, outdoor 62F well below threshold 78F — nat vent eligible"
+        },
+        {
+            "time": "2026-04-11T09:05:00",
+            "type": "sensor_open",
+            "entity": "binary_sensor.front_door",
+            "note": "Door opens — enters natural ventilation, fan activates, HVAC off"
+        },
+        {
+            "time": "2026-04-11T11:00:00",
+            "type": "temp_update",
+            "indoor_f": 70.0,
+            "outdoor_f": 62.0,
+            "note": "Indoor dropped to comfort_heat=70F. Outdoor still cool — no outdoor exit. Comfort-floor exit must fire."
+        }
+    ],
+    "assertions": [
+        {
+            "at": "2026-04-11T09:05:00",
+            "expect": "natural_ventilation",
+            "reason": "door opened; outdoor 62F <= threshold 78F — nat vent activated"
+        },
+        {
+            "at": "2026-04-11T11:00:00",
+            "expect": "nat_vent_comfort_floor_exit",
+            "reason": "indoor 70F <= comfort_heat 70F — fan stops, heat restores, paused_by_door stays False"
+        }
+    ]
+}

@@ -1131,6 +1131,44 @@ class AutomationEngine:
         nat_vent_delta = float(self.config.get(CONF_NATURAL_VENT_DELTA, DEFAULT_NATURAL_VENT_DELTA))
         threshold = comfort_cool + nat_vent_delta
 
+        # Issue #99: Comfort-floor exit — check BEFORE outdoor warmth to avoid conflicting
+        # transitions. If indoor drops to comfort_heat, stop fan and restore heat.
+        # Do NOT enter pause — the house needs to warm up, not wait for nat vent re-evaluation.
+        if self._natural_vent_active:
+            comfort_heat = float(self.config.get("comfort_heat", 70))
+            indoor = self._get_indoor_temp_f()
+            if indoor is not None and indoor <= comfort_heat:
+                self._natural_vent_active = False
+                await self._deactivate_fan(
+                    reason=(
+                        f"natural vent exit: indoor {indoor:.1f}\u00b0F \u2264 comfort floor {comfort_heat:.1f}\u00b0F"
+                    )
+                )
+                _LOGGER.info(
+                    "Natural vent exit (comfort floor): indoor %.1f\u00b0F"
+                    " \u2264 comfort_heat %.1f\u00b0F \u2014 restoring heat",
+                    indoor,
+                    comfort_heat,
+                )
+                if self._emit_event_callback:
+                    self._emit_event_callback(
+                        "nat_vent_comfort_floor_exit",
+                        {"indoor_temp": indoor, "comfort_heat": comfort_heat},
+                    )
+                if self._current_classification:
+                    c = self._current_classification
+                    if c.hvac_mode in ("heat", "cool"):
+                        await self._set_hvac_mode(
+                            c.hvac_mode,
+                            reason=f"natural vent comfort-floor exit \u2014 restoring {c.hvac_mode} mode",
+                        )
+                        await self._set_temperature_for_mode(
+                            c,
+                            reason="natural vent comfort-floor exit \u2014 restoring comfort",
+                        )
+                        self._start_grace_period("automation")
+                return
+
         if self._natural_vent_active and outdoor is not None and outdoor > threshold:
             # Outdoor got too warm — exit nat vent, enter pause
             self._natural_vent_active = False
