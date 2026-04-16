@@ -139,14 +139,16 @@ class TestCoordinatorDataContract:
     def test_chart_data_structure(self):
         """Chart data should have all expected series."""
         chart_data = {
-            "predicted_outdoor": [{"hour": 0, "temp": 60.0}],
-            "predicted_indoor": [{"hour": 0, "temp": 70.0}],
+            # predicted_outdoor removed — now consumed from state_log.pred_outdoor (historical)
+            # and forecast_outdoor (future), merged in the frontend
+            "predicted_indoor": [{"ts": "2026-03-18T08:00:00+00:00", "temp": 70.0}],
+            "forecast_outdoor": [{"ts": "2026-03-18T08:00:00+00:00", "temp": 60.0}],
             "actual_outdoor": [{"time": "2026-03-18T08:00:00", "temp": 62.0}],
             "actual_indoor": [{"time": "2026-03-18T08:00:00", "temp": 70.0}],
             "current_hour": 14.5,
         }
-        assert "predicted_outdoor" in chart_data
         assert "predicted_indoor" in chart_data
+        assert "forecast_outdoor" in chart_data
         assert "actual_outdoor" in chart_data
         assert "actual_indoor" in chart_data
         assert "current_hour" in chart_data

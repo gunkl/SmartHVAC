@@ -972,14 +972,6 @@
     const comfortCool = chartData.comfort_cool ?? null;
     const { min: rMin, max: rMax } = _rangeToWindow(_chartRange);
 
-    // Predicted series anchored to today midnight
-    const todayMidnight = new Date();
-    todayMidnight.setHours(0, 0, 0, 0);
-    function hourToDate(h) { return todayMidnight.getTime() + h * 3600000; }
-
-    const predOutdoorPts = (chartData.predicted_outdoor || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
-    const predIndoorPts  = (chartData.predicted_indoor  || []).map(p => ({ x: hourToDate(p.hour), y: p.temp }));
-
     // Historical predicted points stored in state_log (absolute timestamps)
     const _nowMs = Date.now();
     const histPredOutdoorPts = (chartData.state_log || [])
@@ -989,14 +981,15 @@
       .map(e => ({ x: _parseTs(e.ts), y: e.pred_indoor != null ? e.pred_indoor : e.pred_indoor_avg != null ? e.pred_indoor_avg : null }))
       .filter(p => p.y != null);
 
-    // Multi-day forecast (absolute timestamps, all entries >= now from API)
+    // Multi-day forecast outdoor (absolute timestamps, all entries >= now from API)
     const forecastOutdoorPts = (chartData.forecast_outdoor || []).map(p => ({ x: _parseTs(p.ts), y: p.temp }));
 
-    // Merge: historical snapshots (past) + multi-day future forecast (covers today's remaining
-    // hours and all future days — no double-count with histPredOutdoorPts which are all past)
+    // Multi-day predicted indoor: automation-plan-based, future-only, ts-keyed
+    const predIndoorFuturePts = (chartData.predicted_indoor || []).map(p => ({ x: _parseTs(p.ts), y: p.temp }));
+
+    // Merge: historical snapshots (past) + multi-day future forecast
     const mergedPredOutdoor = [...histPredOutdoorPts, ...forecastOutdoorPts].sort((a, b) => a.x - b.x);
-    // Indoor prediction stays today-only (future days require per-day classification)
-    const mergedPredIndoor  = [...histPredIndoorPts,  ...predIndoorPts.filter(p => p.x >= _nowMs)].sort((a, b) => a.x - b.x);
+    const mergedPredIndoor  = [...histPredIndoorPts, ...predIndoorFuturePts].sort((a, b) => a.x - b.x);
 
     // Actual series from temp history (ISO timestamps)
     const actOutdoorPts = (chartData.actual_outdoor || []).map(p => ({ x: _parseTs(p.time), y: p.temp }));

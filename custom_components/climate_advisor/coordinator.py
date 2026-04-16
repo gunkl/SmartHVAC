@@ -110,6 +110,9 @@ from .const import (
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_SENSOR,
     TEMP_SOURCE_WEATHER_SERVICE,
+    THRESHOLD_HOT,
+    THRESHOLD_MILD,
+    THRESHOLD_WARM,
     VERSION,
 )
 from .learning import DailyRecord, LearningEngine
@@ -517,10 +520,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
     async def async_store_ai_report(self, result: dict) -> None:
         """Store an AI activity report result and persist to disk."""
         import json  # noqa: F401 — imported for _save_ai_reports called via executor
-        from datetime import datetime as _datetime
 
         report_entry = {
-            "timestamp": _datetime.now().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "result": result,
         }
         self._ai_report_history.append(report_entry)
@@ -1287,7 +1289,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             for entry in forecast:
                 fc_dt = entry.get("datetime", "")
                 try:
-                    fc_date = datetime.fromisoformat(fc_dt).date()
+                    fc_obj = datetime.fromisoformat(fc_dt)
+                    fc_date = dt_util.as_local(fc_obj).date() if fc_obj.tzinfo else fc_obj.date()
                 except (ValueError, TypeError):
                     continue
                 if fc_date == now_date and today_fc is None:
@@ -2247,14 +2250,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         now = dt_util.now()
         current_hour = now.hour + now.minute / 60.0
 
-        predicted_outdoor, predicted_indoor = compute_predicted_temps(
-            self._current_classification,
-            self.config,
-            self._hourly_forecast_temps,
-            thermal_model=getattr(self.automation_engine, "_thermal_model", None),
-            thermal_factors=self._thermal_factors,
-        )
-
         thermal_model = self.learning.get_thermal_model() if self.learning else {}
         unit = self.config.get("temp_unit", "fahrenheit")
         _LOGGER.debug(
@@ -2283,8 +2278,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         actual_outdoor = [{"time": p["time"], "temp": _conv(p["temp"])} for p in actual_outdoor]
         actual_indoor = [{"time": p["time"], "temp": _conv(p["temp"])} for p in actual_indoor]
-        predicted_outdoor = [{"hour": p["hour"], "temp": _conv(p["temp"])} for p in predicted_outdoor]
-        predicted_indoor = [{"hour": p["hour"], "temp": _conv(p["temp"])} for p in predicted_indoor]
+
+        predicted_indoor = [
+            {"ts": p["ts"], "temp": _conv(p["temp"])}
+            for p in _build_predicted_indoor_future(self._hourly_forecast_temps, self.config, now)
+        ]
 
         def _conv_log_entry(e: dict) -> dict:
             e = dict(e)
@@ -2301,7 +2299,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         ]
 
         return {
-            "predicted_outdoor": predicted_outdoor,
             "predicted_indoor": predicted_indoor,
             "forecast_outdoor": forecast_outdoor,
             "actual_outdoor": actual_outdoor,
@@ -2528,6 +2525,153 @@ def _outdoor_conditional_diff(outdoor: float, thermal_factors: dict) -> float:
         return mild + frac * (warm - mild)
     else:
         return warm
+
+
+def _build_predicted_indoor_future(
+    hourly_forecast: list[dict] | None,
+    config: dict[str, Any],
+    now: Any,
+) -> list[dict]:
+    """Build future predicted indoor temps from the automation plan.
+
+    Mirrors the automation engine's setpoint logic:
+    - heat days: sleep_heat (or comfort_heat−4°F default) overnight, comfort_heat waking
+    - cool days: sleep_cool (or comfort_cool+3°F default) overnight, comfort_cool waking
+    - off days: outdoor + 2°F buffer, floored at setback_heat
+
+    Returns list of {"ts": ISO_str, "temp": float} for hours strictly after now.
+    """
+    if not hourly_forecast:
+        _LOGGER.debug("_build_predicted_indoor_future: no hourly_forecast — returning empty")
+        return []
+
+    _LOGGER.debug(
+        "_build_predicted_indoor_future: %d forecast entries, now=%s",
+        len(hourly_forecast),
+        now.isoformat() if hasattr(now, "isoformat") else now,
+    )
+
+    comfort_heat = float(config.get("comfort_heat", 70))
+    comfort_cool = float(config.get("comfort_cool", 75))
+    setback_heat = float(config.get("setback_heat", 60))  # absolute floor for heat
+    setback_cool = float(config.get("setback_cool", 80))  # absolute ceiling for cool
+
+    # Mirror automation engine (automation.py compute_setback_temp) and
+    # compute_predicted_temps (coordinator.py ~line 2678) — use sleep_heat/sleep_cool if
+    # configured; otherwise default to comfort ± DEFAULT_SETBACK_DEPTH_*F.
+    # setback_heat/setback_cool remain as hard floor/ceiling guards.
+    setback_temp_heat = float(config.get("sleep_heat", comfort_heat - DEFAULT_SETBACK_DEPTH_F))
+    setback_temp_heat = max(setback_temp_heat, setback_heat)
+    setback_temp_cool = float(config.get("sleep_cool", comfort_cool + DEFAULT_SETBACK_DEPTH_COOL_F))
+    setback_temp_cool = min(setback_temp_cool, setback_cool)
+
+    wake_time = _parse_time(config.get("wake_time", "06:30"))
+    sleep_time = _parse_time(config.get("sleep_time", "22:30"))
+    wake_h = wake_time.hour + wake_time.minute / 60.0
+    sleep_h = sleep_time.hour + sleep_time.minute / 60.0
+    ramp_h = 2.0
+
+    # --- Classify each future day by forecast high ---
+    day_highs: dict = {}
+    parse_errors = 0
+    for entry in hourly_forecast:
+        dt_str = entry.get("datetime") or entry.get("time")
+        if not dt_str:
+            parse_errors += 1
+            continue
+        try:
+            dt_obj = datetime.fromisoformat(dt_str)
+            local_ts = dt_util.as_local(dt_obj) if dt_obj.tzinfo else dt_obj
+            temp = entry.get("temperature")
+            if temp is not None:
+                day_highs.setdefault(local_ts.date(), []).append(float(temp))
+        except (ValueError, TypeError) as exc:
+            parse_errors += 1
+            _LOGGER.debug("_build_predicted_indoor_future: skipping %r — %s", dt_str, exc)
+
+    if parse_errors:
+        _LOGGER.warning(
+            "_build_predicted_indoor_future: %d entries failed to parse",
+            parse_errors,
+        )
+    if not day_highs:
+        _LOGGER.warning(
+            "_build_predicted_indoor_future: no valid entries in %d-entry forecast — "
+            "predicted indoor will be empty. First entry: %r",
+            len(hourly_forecast),
+            hourly_forecast[0] if hourly_forecast else None,
+        )
+        return []
+
+    def _day_mode(temps: list[float]) -> str:
+        high = max(temps)
+        if high >= THRESHOLD_HOT:
+            return "cool"
+        if high >= THRESHOLD_WARM or high >= THRESHOLD_MILD:
+            return "off"
+        return "heat"
+
+    day_modes = {d: _day_mode(t) for d, t in day_highs.items()}
+    _LOGGER.debug(
+        "_build_predicted_indoor_future: %d days classified: %s",
+        len(day_modes),
+        {str(d): m for d, m in sorted(day_modes.items())},
+    )
+
+    result = []
+    skipped_past = 0
+    for entry in hourly_forecast:
+        dt_str = entry.get("datetime") or entry.get("time")
+        if not dt_str:
+            continue
+        try:
+            dt_obj = datetime.fromisoformat(dt_str)
+            local_ts = dt_util.as_local(dt_obj) if dt_obj.tzinfo else dt_obj
+        except (ValueError, TypeError):
+            continue
+        if local_ts <= now:
+            skipped_past += 1
+            continue
+        outdoor = entry.get("temperature")
+        mode = day_modes.get(local_ts.date(), "off")
+        h = local_ts.hour + local_ts.minute / 60.0
+
+        if mode == "heat":
+            if h < wake_h:
+                temp = setback_temp_heat
+            elif h < wake_h + ramp_h:
+                temp = setback_temp_heat + (h - wake_h) / ramp_h * (comfort_heat - setback_temp_heat)
+            elif h < sleep_h:
+                temp = comfort_heat
+            else:
+                temp = setback_temp_heat
+        elif mode == "cool":
+            if h < wake_h:
+                temp = setback_temp_cool
+            elif h < wake_h + ramp_h:
+                temp = setback_temp_cool + (h - wake_h) / ramp_h * (comfort_cool - setback_temp_cool)
+            elif h < sleep_h:
+                temp = comfort_cool
+            else:
+                temp = setback_temp_cool
+        else:
+            temp = max(setback_heat, float(outdoor) + 2.0) if outdoor is not None else comfort_heat
+
+        result.append({"ts": local_ts.isoformat(), "temp": round(temp, 1)})
+
+    _LOGGER.debug(
+        "_build_predicted_indoor_future: %d past skipped, %d future returned",
+        skipped_past,
+        len(result),
+    )
+    if not result:
+        _LOGGER.warning(
+            "_build_predicted_indoor_future: zero future entries (now=%s, forecast %r → %r)",
+            now.isoformat() if hasattr(now, "isoformat") else now,
+            ((hourly_forecast[0].get("datetime") or hourly_forecast[0].get("time")) if hourly_forecast else None),
+            ((hourly_forecast[-1].get("datetime") or hourly_forecast[-1].get("time")) if hourly_forecast else None),
+        )
+    return result
 
 
 def compute_predicted_temps(

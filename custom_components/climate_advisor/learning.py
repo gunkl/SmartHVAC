@@ -194,7 +194,7 @@ class LearningEngine:
 
         # Keep a rolling window (90 days)
         pre_trim_count = len(self._state.records)
-        cutoff = (datetime.now() - timedelta(days=90)).isoformat()[:10]
+        cutoff = (datetime.now().date() - timedelta(days=90)).isoformat()
         self._state.records = [r for r in self._state.records if r.get("date", "") >= cutoff]
         trimmed = pre_trim_count - len(self._state.records)
         if trimmed > 0:

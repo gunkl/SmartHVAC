@@ -9,9 +9,11 @@ const FRONTEND_DIR = path.join(__dirname, '../../custom_components/climate_advis
 function makeChartFixture() {
   const now = Date.now();
 
-  // 24 predicted hourly points (hour 0..23)
-  const predicted_outdoor = Array.from({length:24}, (_,h) => ({ hour: h, temp: 55 + 20*Math.sin((h-6)*Math.PI/12) }));
-  const predicted_indoor  = Array.from({length:24}, (_,h) => ({ hour: h, temp: 68 + 4*Math.sin((h-14)*Math.PI/12) }));
+  // 120 predicted hourly points (future-only, ts-keyed, 5 days)
+  const predicted_indoor = Array.from({length:120}, (_,i) => ({
+    ts: new Date(now + (i + 1) * 3600000).toISOString(),
+    temp: parseFloat((68 + 4 * Math.sin((i - 14) * Math.PI / 12)).toFixed(1))
+  }));
 
   // 5 days of future hourly forecast (absolute timestamps, 120 entries)
   const forecast_outdoor = Array.from({length:120}, (_,i) => ({
@@ -44,7 +46,7 @@ function makeChartFixture() {
   }));
 
   return {
-    predicted_outdoor, predicted_indoor,
+    predicted_indoor,
     forecast_outdoor,
     actual_outdoor, actual_indoor,
     state_log,

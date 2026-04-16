@@ -4,20 +4,27 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.21"
+VERSION = "0.3.22"
 
 RELEASE_NOTES: dict[str, list[str]] = {
+    "0.3.22": [
+        "Fixed #107: Predicted indoor line now appears on chart after Now"
+        " (HA forecast key is 'datetime', not 'time' — all entries were silently dropped)",
+        "Fixed #107: Overnight sleep setpoints use sleep_heat/sleep_cool"
+        " (was using setback floor — 6°F too cold on heat days)",
+        "Fixed #107: Predicted indoor schedule now uses local time, not UTC hour",
+        "Fixed #107: UTC/local confusion eliminated in _get_forecast and AI report timestamps",
+        "Fixed #108: Sleep temp config no longer enforces ordering vs comfort/setback",
+    ],
     "0.3.21": [
-        "Fixed #102: Chart now captures short heating/cooling cycles (hvac_action transition logging)",
-        "Fixed #102: Fan+heat mode correctly shown as heating in graph (normalization fix)",
-        "Added #102: Thermostat swing (deadband) detection in debug window",
-    ],
-    "0.3.18": [
-        "Fixed #99: Natural ventilation fan exits when indoor reaches comfort_heat floor",
-        "Security: CI workflow permissions hardened (contents: read)",
-    ],
-    "0.3.17": [
-        "Fixed #100, #102, #93: Multiple dashboard and automation fixes",
+        "Fixed #106: Eliminated predicted indoor spike at bucket boundary",
+        "Fixed #104: Wildly wrong predicted indoor temps — off-mode days used"
+        " setback_cool overnight; daytime drift now accumulates correctly",
+        "Fixed #103: HVAC bars align with temperature swings on chart load; bars zoom and reset correctly",
+        "Fixed #101: Added sleep_heat/sleep_cool as separate config keys from away setback",
+        "Added #105: AI Investigator gains version context, live GitHub issues, and rotating UI status display",
+        "Fixed #102: Chart captures short cycles; fan+heat shown as heating; thermostat swing detection added",
+        "Fixed #99: Natural ventilation exits when indoor reaches comfort_heat floor",
     ],
 }
 

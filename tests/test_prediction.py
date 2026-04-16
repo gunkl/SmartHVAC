@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, time
+from datetime import UTC, date, datetime, time, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +12,7 @@ from custom_components.climate_advisor.coordinator import (
     ClimateAdvisorCoordinator,
     _build_future_forecast_outdoor,
     _build_outdoor_curve,
+    _build_predicted_indoor_future,
     _compute_ramp_hours,
     _compute_thermal_factors,
     _cosine_outdoor_curve,
@@ -1035,4 +1036,178 @@ class TestSleepTempInPrediction:
         assert indoor_69[-1]["temp"] > indoor_66[-1]["temp"], (
             f"sleep_heat=69 should give warmer h=23 than sleep_heat=66; "
             f"got {indoor_69[-1]['temp']} vs {indoor_66[-1]['temp']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _build_predicted_indoor_future tests
+# ---------------------------------------------------------------------------
+
+_PRED_CONFIG = {
+    "comfort_heat": 70,
+    "comfort_cool": 75,
+    "setback_heat": 60,
+    "setback_cool": 80,
+    "wake_time": "06:30",
+    "sleep_time": "22:30",
+    # Note: no sleep_heat/sleep_cool → function defaults to comfort ± DEFAULT_SETBACK_DEPTH_*F
+}
+_PRED_NOW = datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC)  # noon UTC
+
+
+def _pred_entry(dt: datetime, temp: float) -> dict:
+    """Make a forecast entry in HA format (datetime key, UTC-aware ISO string)."""
+    return {"datetime": dt.isoformat(), "temperature": temp}
+
+
+class TestBuildPredictedIndoorFuture:
+    """Tests for _build_predicted_indoor_future — automation-plan-based future prediction."""
+
+    def _call(self, forecast, config=_PRED_CONFIG, now=_PRED_NOW):
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+            return _build_predicted_indoor_future(forecast, config, now)
+
+    def test_empty_on_none(self):
+        assert self._call(None) == []
+
+    def test_empty_on_empty_list(self):
+        assert self._call([]) == []
+
+    def test_all_entries_are_future(self):
+        """No result entry should have ts <= now."""
+        entries = [
+            _pred_entry(_PRED_NOW - timedelta(hours=2), 65.0),  # past — must be excluded
+            _pred_entry(_PRED_NOW + timedelta(hours=1), 65.0),
+            _pred_entry(_PRED_NOW + timedelta(hours=2), 65.0),
+        ]
+        result = self._call(entries)
+        assert len(result) == 2
+        for e in result:
+            ts = datetime.fromisoformat(e["ts"])
+            assert ts > _PRED_NOW
+
+    def test_heat_day_waking_hours_at_comfort(self):
+        """Cold day (high=40°F) → heat mode → hour 14 (waking) at comfort_heat=70."""
+        now = datetime(2026, 4, 10, 6, 0, 0, tzinfo=UTC)  # 6 AM so h=14 is future
+        entries = [_pred_entry(now + timedelta(hours=i), 40.0) for i in range(1, 25)]
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+            result = _build_predicted_indoor_future(entries, _PRED_CONFIG, now)
+        waking = [e for e in result if datetime.fromisoformat(e["ts"]).hour == 14]
+        assert waking, "Expected hour-14 entries"
+        for e in waking:
+            assert e["temp"] == pytest.approx(70.0, abs=0.1)
+
+    def test_cool_day_waking_hours_at_comfort_cool(self):
+        """Hot day (high=90°F) → cool mode → hour 14 (waking) at comfort_cool=75."""
+        now = datetime(2026, 4, 10, 6, 0, 0, tzinfo=UTC)
+        entries = [_pred_entry(now + timedelta(hours=i), 90.0) for i in range(1, 25)]
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+            result = _build_predicted_indoor_future(entries, _PRED_CONFIG, now)
+        waking = [e for e in result if datetime.fromisoformat(e["ts"]).hour == 14]
+        assert waking
+        for e in waking:
+            assert e["temp"] == pytest.approx(75.0, abs=0.1)
+
+    def test_off_day_tracks_outdoor_plus_buffer(self):
+        """Mild day (high=65°F) → off mode → indoor = outdoor+2."""
+        now = datetime(2026, 4, 10, 6, 0, 0, tzinfo=UTC)
+        entries = [_pred_entry(now + timedelta(hours=i), 65.0) for i in range(1, 25)]
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+            result = _build_predicted_indoor_future(entries, _PRED_CONFIG, now)
+        for e in result:
+            assert e["temp"] == pytest.approx(67.0, abs=0.1)
+
+    def test_off_day_floor_at_setback_heat(self):
+        """Off day with outdoor=50°F → 50+2=52 < setback_heat=60 → floored at 60."""
+        now = datetime(2026, 4, 10, 6, 0, 0, tzinfo=UTC)
+        # Mix: entries at 50°F plus one at 65°F to push day_high to THRESHOLD_MILD → "off"
+        entries = [_pred_entry(now + timedelta(hours=i), 50.0) for i in range(1, 25)]
+        entries.append(_pred_entry(now + timedelta(hours=3), 65.0))  # sets day high = 65
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+            result = _build_predicted_indoor_future(entries, _PRED_CONFIG, now)
+        for e in result:
+            assert e["temp"] >= 59.9, f"Floor should clamp to setback_heat=60, got {e['temp']}"
+
+    def test_heat_day_sleep_hours_use_sleep_heat_default(self):
+        """Heat day, hour=2 (before wake_time=06:30) → default sleep setback = 66°F.
+
+        Without sleep_heat in config, Bug 4 fix computes:
+        max(comfort_heat(70) - DEFAULT_SETBACK_DEPTH_F(4), setback_heat(60)) = max(66, 60) = 66°F.
+        Old (buggy) code used setback_heat=60 directly.
+        """
+        now = datetime(2026, 4, 10, 0, 0, 0, tzinfo=UTC)  # midnight
+        entries = [_pred_entry(now + timedelta(hours=i), 40.0) for i in range(1, 49)]
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+            result = _build_predicted_indoor_future(entries, _PRED_CONFIG, now)
+        sleep_entries = [e for e in result if datetime.fromisoformat(e["ts"]).hour == 2]
+        assert sleep_entries, "Expected entries at hour=2 (pre-wake sleep period)"
+        for e in sleep_entries:
+            assert e["temp"] == pytest.approx(66.0, abs=0.1), (
+                f"Default heat sleep setback should be comfort_heat-4=66°F, got {e['temp']}"
+            )
+
+    def test_heat_day_sleep_heat_config_respected(self):
+        """Explicit sleep_heat config overrides the default depth calculation."""
+        config = {**_PRED_CONFIG, "sleep_heat": 63}  # explicit user preference
+        now = datetime(2026, 4, 10, 0, 0, 0, tzinfo=UTC)
+        entries = [_pred_entry(now + timedelta(hours=i), 40.0) for i in range(1, 25)]
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+            result = _build_predicted_indoor_future(entries, config, now)
+        sleep_entries = [e for e in result if datetime.fromisoformat(e["ts"]).hour == 2]
+        assert sleep_entries
+        for e in sleep_entries:
+            # sleep_heat=63 > setback_heat=60 → clamp to max(63, 60) = 63°F
+            assert e["temp"] == pytest.approx(63.0, abs=0.1)
+
+    def test_result_uses_ts_format(self):
+        """Each entry must have 'ts' (ISO string) and 'temp' (float)."""
+        entries = [_pred_entry(_PRED_NOW + timedelta(hours=i), 65.0) for i in range(1, 5)]
+        result = self._call(entries)
+        for e in result:
+            assert "ts" in e and "temp" in e
+            assert isinstance(e["temp"], float)
+            datetime.fromisoformat(e["ts"])  # must be valid ISO
+
+    def test_accepts_datetime_key(self):
+        """Function must work with 'datetime' key (HA weather format); 'time' key is fallback."""
+        entries = [{"datetime": (_PRED_NOW + timedelta(hours=i)).isoformat(), "temperature": 65.0} for i in range(1, 4)]
+        result = self._call(entries)
+        assert len(result) == 3
+
+    def test_timezone_aware_now_no_error(self):
+        """Timezone-aware now must not raise TypeError in comparison."""
+
+        now_aware = datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC)
+        entries = [{"datetime": (now_aware + timedelta(hours=i)).isoformat(), "temperature": 65.0} for i in range(1, 4)]
+        with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now_aware)):
+            result = _build_predicted_indoor_future(entries, _PRED_CONFIG, now_aware)
+        assert len(result) == 3
+
+    def test_local_hour_used_not_utc(self):
+        """Schedule must use LOCAL hour, not UTC hour.
+
+        Scenario: UTC-5 user. Entry at 02:00 UTC = 21:00 local (UTC-5).
+        - UTC hour h=2 < wake_h=6.5 → setback (66°F) — WRONG
+        - Local hour h=21 in [8.5, 22.5) → comfort_heat=70°F — CORRECT
+        """
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
+
+        utc_minus5 = _tz(_td(hours=-5))
+        now_utc = datetime(2026, 4, 10, 0, 0, 0, tzinfo=UTC)
+
+        tz_mock = MagicMock()
+        tz_mock.now.return_value = now_utc
+        tz_mock.as_local = lambda dt: dt.astimezone(utc_minus5)
+
+        # Entry at 02:00 UTC = 21:00 local (UTC-5) — heat day, waking hours locally
+        entries = [_pred_entry(now_utc + timedelta(hours=2), 40.0)]
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", tz_mock):
+            result = _build_predicted_indoor_future(entries, _PRED_CONFIG, now_utc)
+
+        assert result, "Expected entry at 02:00 UTC / 21:00 local to appear in result"
+        # h=21 is in waking hours (between wake+ramp=8.5 and sleep_h=22.5) → comfort_heat=70
+        assert result[0]["temp"] == pytest.approx(70.0, abs=0.1), (
+            f"02:00 UTC = 21:00 local must map to comfort zone (70°F), got {result[0]['temp']}"
         )
