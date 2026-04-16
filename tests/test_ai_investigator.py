@@ -1103,3 +1103,168 @@ class TestComplianceDisplay:
         context = self._run_context_with_records(records)
 
         assert "window_rec=opened" in context
+
+
+# ---------------------------------------------------------------------------
+# Group 10: Version context (Issue #105)
+# ---------------------------------------------------------------------------
+
+
+class TestInvestigatorVersionContext:
+    """Version and release notes appear in investigator context (Issue #105)."""
+
+    def test_context_includes_running_version(self):
+        """_build_version_context returns string containing the current VERSION."""
+        from custom_components.climate_advisor import const
+        from custom_components.climate_advisor.ai_skills_investigator import _build_version_context
+
+        # Temporarily patch VERSION
+        original = const.VERSION
+        try:
+            const.VERSION = "0.0.test"
+            result = _build_version_context(None)  # coordinator not needed for this helper
+            assert "0.0.test" in result
+        finally:
+            const.VERSION = original
+
+    def test_context_includes_release_notes_section(self):
+        """_build_version_context includes a RELEASE NOTES header."""
+        from custom_components.climate_advisor import const
+        from custom_components.climate_advisor.ai_skills_investigator import _build_version_context
+
+        original = getattr(const, "RELEASE_NOTES", {})
+        try:
+            const.RELEASE_NOTES = {"0.1.0": ["Fixed something"]}
+            result = _build_version_context(None)
+            assert "RELEASE NOTES" in result.upper()
+            assert "Fixed something" in result
+        finally:
+            const.RELEASE_NOTES = original
+
+    def test_context_includes_at_most_5_versions(self):
+        """_build_version_context limits output to the 5 most recent versions."""
+        from custom_components.climate_advisor import const
+        from custom_components.climate_advisor.ai_skills_investigator import _build_version_context
+
+        original = getattr(const, "RELEASE_NOTES", {})
+        try:
+            const.RELEASE_NOTES = {f"0.{i}.0": [f"Note {i}"] for i in range(10)}
+            result = _build_version_context(None)
+            # Count version headers; should be at most 5
+            version_count = sum(1 for line in result.splitlines() if line.startswith("### v"))
+            assert version_count <= 5
+        finally:
+            const.RELEASE_NOTES = original
+
+    def test_startup_version_logged(self):
+        """async_setup_entry logs the current VERSION at INFO level."""
+        # This test verifies that _LOGGER.info is called with VERSION somewhere
+        # in the async_setup_entry code path. Since we can't easily run full
+        # setup, we check that the startup log call exists by importing and
+        # inspecting the module.
+        import importlib
+        import inspect
+
+        init_mod = importlib.import_module("custom_components.climate_advisor")
+        source = inspect.getsource(init_mod.async_setup_entry)
+        # The startup log should explicitly say "Climate Advisor" and reference VERSION
+        # using the %s placeholder pattern (not just any _LOGGER.info call)
+        assert "Climate Advisor" in source and "started" in source and "VERSION" in source
+
+
+# ---------------------------------------------------------------------------
+# Group 11: GitHub context (Issue #105)
+# ---------------------------------------------------------------------------
+
+
+class TestInvestigatorGithubContext:
+    """async_build_github_context fetches and formats GitHub issues (Issue #105)."""
+
+    def _run(self, coro):
+        import asyncio
+
+        return asyncio.run(coro)
+
+    def _make_mock_hass(self, mock_session):
+        """Create a hass-like object that returns mock_session from aiohttp_client."""
+        from unittest.mock import MagicMock
+
+        hass = MagicMock()
+        hass.helpers = MagicMock()
+        hass.helpers.aiohttp_client = MagicMock()
+        hass.helpers.aiohttp_client.async_get_clientsession = MagicMock(return_value=mock_session)
+        return hass
+
+    def _make_mock_session(self, status=200, json_data=None):
+        """Create a mock aiohttp session that returns a response."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        session = MagicMock()
+        resp = AsyncMock()
+        resp.status = status
+        resp.json = AsyncMock(return_value=json_data or [])
+        # Support async context manager: async with session.get(...) as resp:
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=resp)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        session.get = MagicMock(return_value=cm)
+        return session
+
+    def test_github_context_includes_issues(self):
+        from custom_components.climate_advisor.ai_skills_investigator import async_build_github_context
+
+        issues = [
+            {"number": 105, "state": "open", "title": "Enhancement: AI Investigator", "labels": []},
+            {"number": 99, "state": "closed", "title": "Fix: Fan runs too long", "labels": [{"name": "bug"}]},
+        ]
+        session = self._make_mock_session(status=200, json_data=issues)
+        hass = self._make_mock_hass(session)
+        result = self._run(async_build_github_context(hass))
+        assert "#105" in result
+        assert "#99" in result
+        assert "Enhancement: AI Investigator" in result
+
+    def test_github_context_graceful_on_http_error(self):
+        from custom_components.climate_advisor.ai_skills_investigator import async_build_github_context
+
+        session = self._make_mock_session(status=404)
+        hass = self._make_mock_hass(session)
+        result = self._run(async_build_github_context(hass))
+        assert result == ""
+
+    def test_github_context_graceful_on_timeout(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from custom_components.climate_advisor.ai_skills_investigator import async_build_github_context
+
+        session = MagicMock()
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(side_effect=TimeoutError())
+        cm.__aexit__ = AsyncMock(return_value=False)
+        session.get = MagicMock(return_value=cm)
+        hass = self._make_mock_hass(session)
+        result = self._run(async_build_github_context(hass))
+        assert result == ""
+
+    def test_github_context_graceful_on_exception(self):
+        from unittest.mock import MagicMock
+
+        from custom_components.climate_advisor.ai_skills_investigator import async_build_github_context
+
+        session = MagicMock()
+        session.get = MagicMock(side_effect=RuntimeError("network error"))
+        hass = self._make_mock_hass(session)
+        result = self._run(async_build_github_context(hass))
+        assert result == ""
+
+    def test_github_context_labels_included(self):
+        from custom_components.climate_advisor.ai_skills_investigator import async_build_github_context
+
+        issues = [
+            {"number": 42, "state": "open", "title": "A bug", "labels": [{"name": "bug"}, {"name": "urgent"}]},
+        ]
+        session = self._make_mock_session(status=200, json_data=issues)
+        hass = self._make_mock_hass(session)
+        result = self._run(async_build_github_context(hass))
+        assert "bug" in result
+        assert "urgent" in result

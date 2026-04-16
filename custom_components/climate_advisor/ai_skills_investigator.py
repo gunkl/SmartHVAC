@@ -107,6 +107,51 @@ Scientific, evidence-based, methodical. Prefer "no evidence of X" over "X is fin
 """
 
 
+def _build_version_context(coordinator) -> str:
+    """Build version/release notes section for investigator context."""
+    from .const import RELEASE_NOTES, VERSION  # noqa: PLC0415
+
+    lines = [f"## RUNNING VERSION\n{VERSION}\n"]
+    lines.append("## RECENT RELEASE NOTES")
+    for ver, notes in list(RELEASE_NOTES.items())[:5]:
+        lines.append(f"\n### v{ver}")
+        for note in notes:
+            lines.append(f"- {note}")
+    return "\n".join(lines)
+
+
+async def async_build_github_context(hass) -> str:
+    """Fetch recent GitHub issues for investigator context. Returns '' on any error."""
+    import aiohttp  # noqa: PLC0415
+
+    from .const import (  # noqa: PLC0415
+        GITHUB_API_BASE,
+        GITHUB_CONTEXT_TIMEOUT,
+        GITHUB_ISSUES_LIMIT,
+        GITHUB_REPO,
+        GITHUB_REPO_URL,
+    )
+
+    try:
+        session = hass.helpers.aiohttp_client.async_get_clientsession()
+        url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/issues?state=all&per_page={GITHUB_ISSUES_LIMIT}&sort=updated"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=GITHUB_CONTEXT_TIMEOUT)) as resp:
+            if resp.status != 200:
+                return ""
+            issues = await resp.json()
+        lines = [f"## GITHUB REPOSITORY\n{GITHUB_REPO_URL}\n", "## RECENT GITHUB ISSUES"]
+        for issue in issues:
+            state = issue.get("state", "?")
+            number = issue.get("number", "?")
+            title = issue.get("title", "")[:100]
+            labels = ", ".join(lbl["name"] for lbl in issue.get("labels", []))
+            label_str = f" [{labels}]" if labels else ""
+            lines.append(f"- #{number} ({state}){label_str}: {title}")
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 async def async_build_investigator_context(
     hass: HomeAssistant,
     coordinator: Any,
@@ -419,6 +464,14 @@ async def async_build_investigator_context(
     except Exception:
         _LOGGER.warning("investigator: failed to read config — skipping")
         lines += ["=== CONFIGURATION ===", "  unavailable", ""]
+
+    # Version and release notes (Issue #105)
+    lines.append(_build_version_context(coordinator))
+
+    # GitHub issues context (Issue #105)
+    github_ctx = await async_build_github_context(coordinator.hass)
+    if github_ctx:
+        lines.append(github_ctx)
 
     return "\n".join(lines)
 

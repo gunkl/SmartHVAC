@@ -2206,8 +2206,24 @@
 
     btn.disabled = true;
     dlBtn.style.display = 'none';
-    status.textContent = 'Running investigation...';
     resultDiv.style.display = 'none';
+
+    const _stages = [
+      'Collecting HVAC state and sensor readings\u2026',
+      'Reading thermal model and weather patterns\u2026',
+      'Scanning 48h event log for anomalies\u2026',
+      'Reviewing recent AI report history\u2026',
+      'Fetching release notes and GitHub issues\u2026',
+      'Applying scientific method to data\u2026',
+      'Formulating hypotheses (this may take a moment)\u2026',
+      'Writing investigation report\u2026',
+    ];
+    let _stageIdx = 0;
+    status.textContent = _stages[0];
+    const _stageTimer = setInterval(() => {
+      _stageIdx = (_stageIdx + 1) % _stages.length;
+      status.textContent = _stages[_stageIdx];
+    }, 2500);
 
     try {
       const body = { hours: 48 };
@@ -2259,6 +2275,7 @@
         : '';
       status.textContent = 'Error: ' + err.message + hint;
     } finally {
+      clearInterval(_stageTimer);
       btn.disabled = false;
     }
   }

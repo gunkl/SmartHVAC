@@ -6,6 +6,27 @@ DOMAIN = "climate_advisor"
 # A test in tests/test_version_sync.py enforces this.
 VERSION = "0.3.20"
 
+RELEASE_NOTES: dict[str, list[str]] = {
+    "0.3.21": [
+        "Fixed #102: Chart now captures short heating/cooling cycles (hvac_action transition logging)",
+        "Fixed #102: Fan+heat mode correctly shown as heating in graph (normalization fix)",
+        "Added #102: Thermostat swing (deadband) detection in debug window",
+    ],
+    "0.3.18": [
+        "Fixed #99: Natural ventilation fan exits when indoor reaches comfort_heat floor",
+        "Security: CI workflow permissions hardened (contents: read)",
+    ],
+    "0.3.17": [
+        "Fixed #100, #102, #93: Multiple dashboard and automation fixes",
+    ],
+}
+
+GITHUB_REPO = "gunkl/ClimateAdvisor"
+GITHUB_REPO_URL = "https://github.com/gunkl/ClimateAdvisor"
+GITHUB_API_BASE = "https://api.github.com"
+GITHUB_CONTEXT_TIMEOUT = 5.0  # seconds — skip if API is slow
+GITHUB_ISSUES_LIMIT = 15  # max issues to include in context
+
 # Default setpoints (°F)
 DEFAULT_COMFORT_HEAT = 70
 DEFAULT_COMFORT_COOL = 75
