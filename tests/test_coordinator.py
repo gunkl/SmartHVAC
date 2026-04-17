@@ -949,11 +949,13 @@ class TestStateContradictionEvent:
 # ---------------------------------------------------------------------------
 
 
-def _apply_fan_to_hvac_action_mapping(hvac_action, hvac_mode):
+def _apply_fan_to_hvac_action_mapping(hvac_action, hvac_mode, fan_mode=""):
     """Replicate the fan→heating/cooling mapping logic from _async_update_data."""
     _hvac_action_str = str(hvac_action).lower() if hvac_action else ""
     _hvac_mode_str = str(hvac_mode).lower() if hvac_mode else ""
-    if _hvac_action_str == "fan":
+    _fan_mode_str = str(fan_mode).lower() if fan_mode else ""
+    _fan_is_auto = not _fan_mode_str or _fan_mode_str.startswith("auto")
+    if _hvac_action_str == "fan" and _fan_is_auto:
         if _hvac_mode_str == "heat":
             _hvac_action_str = "heating"
         elif _hvac_mode_str in ("cool", "heat_cool"):
@@ -1004,4 +1006,32 @@ class TestChartLogFanMapping:
     def test_fan_action_case_insensitive(self):
         """Input 'FAN' (uppercase) should also be mapped correctly."""
         result = _apply_fan_to_hvac_action_mapping("FAN", "heat")
+        assert result == "heating"
+
+    def test_fan_continuous_mode_stays_fan_in_heat(self):
+        """fan_mode=on means continuous circulation — must NOT remap to heating.
+        Regression test for #109: thermostat with fan_mode=on reports hvac_action=fan
+        all day in heat mode, causing 12 hours of red on the HVAC bar.
+        """
+        result = _apply_fan_to_hvac_action_mapping("fan", "heat", fan_mode="on")
+        assert result == "fan"
+
+    def test_fan_continuous_mode_stays_fan_in_cool(self):
+        """fan_mode=on in cool mode — circulation fan, not active cooling."""
+        result = _apply_fan_to_hvac_action_mapping("fan", "cool", fan_mode="on")
+        assert result == "fan"
+
+    def test_fan_auto_mode_still_maps_to_heating(self):
+        """fan_mode=auto means fan runs with HVAC cycle — #102 remap preserved."""
+        result = _apply_fan_to_hvac_action_mapping("fan", "heat", fan_mode="auto")
+        assert result == "heating"
+
+    def test_fan_auto_low_mode_maps_to_heating(self):
+        """auto_low is a speed variant of auto — still remap to heating."""
+        result = _apply_fan_to_hvac_action_mapping("fan", "heat", fan_mode="auto_low")
+        assert result == "heating"
+
+    def test_fan_no_fan_mode_maps_to_heating(self):
+        """fan_mode unset (empty string) — preserves original #102 behavior."""
+        result = _apply_fan_to_hvac_action_mapping("fan", "heat", fan_mode="")
         assert result == "heating"

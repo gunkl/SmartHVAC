@@ -1017,6 +1017,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         _cs = self.hass.states.get(_climate_entity_id) if _climate_entity_id else None
         hvac_action = _cs.attributes.get("hvac_action", "") if _cs else ""
         hvac_mode = _cs.state if _cs else ""
+        fan_mode = _cs.attributes.get("fan_mode", "") if _cs else ""
 
         # Issue #96 Root Cause D: Late-start thermal session for HVAC running at HA startup.
         # _hvac_on_since is only set via state transitions in _async_thermostat_changed.
@@ -1117,7 +1118,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     _pred_indoor_val = _pred_in[_now_h]["temp"]
             _hvac_action_str = str(hvac_action).lower() if hvac_action else ""
             _hvac_mode_str = str(hvac_mode).lower() if hvac_mode else ""
-            if _hvac_action_str == "fan":
+            _fan_mode_str = str(fan_mode).lower() if fan_mode else ""
+            # Only remap fan→heating/cooling when fan_mode is auto (fan runs as part of
+            # HVAC cycle). When fan_mode=on the fan circulates independently — "fan"
+            # action does not imply active heating or cooling (#109 regression fix).
+            _fan_is_auto = not _fan_mode_str or _fan_mode_str.startswith("auto")
+            if _hvac_action_str == "fan" and _fan_is_auto:
                 if _hvac_mode_str == "heat":
                     _hvac_action_str = "heating"
                 elif _hvac_mode_str in ("cool", "heat_cool"):
