@@ -27,6 +27,7 @@ Key insight on the existing guard:
 from __future__ import annotations
 
 import asyncio
+import importlib as _importlib
 from datetime import UTC, datetime, time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -504,3 +505,123 @@ class TestWindowsRecommendedPauseSuppression:
                 asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
 
         assert engine._paused_by_door is True, "Pause must fire outside the window period when HVAC is active"
+
+
+# ---------------------------------------------------------------------------
+# Stub factory for _apply_outdoor_windows_gate() tests
+# ---------------------------------------------------------------------------
+
+
+def _make_gate_coord_stub(
+    outdoor_temp,
+    *,
+    day_type=DAY_TYPE_MILD,
+    windows_recommended=True,
+    today_low=55.0,
+    comfort_cool=75.0,
+    comfort_heat=70.0,
+):
+    """Create a minimal coordinator stub for _apply_outdoor_windows_gate() tests."""
+    coord_mod = _importlib.import_module("custom_components.climate_advisor.coordinator")
+    coord = object.__new__(coord_mod.ClimateAdvisorCoordinator)
+
+    cls_obj = DayClassification(
+        day_type=day_type,
+        trend_direction="stable",
+        trend_magnitude=0.0,
+        today_high=80.0 if day_type == DAY_TYPE_WARM else 68.0,
+        today_low=today_low,
+        tomorrow_high=82.0 if day_type == DAY_TYPE_WARM else 70.0,
+        tomorrow_low=today_low + 2.0,
+    )
+    cls_obj.windows_recommended = windows_recommended
+
+    coord._current_classification = cls_obj
+    coord._last_outdoor_temp = outdoor_temp
+    coord.config = {
+        "comfort_cool": comfort_cool,
+        "comfort_heat": comfort_heat,
+    }
+    return coord
+
+
+# ---------------------------------------------------------------------------
+# Issue #111: outdoor temperature gate for windows_recommended
+# ---------------------------------------------------------------------------
+
+
+class TestOutdoorTempGate:
+    """Validate _apply_outdoor_windows_gate() on ClimateAdvisorCoordinator.
+
+    Issue #111: windows_recommended must account for current outdoor conditions.
+    The gate clears windows_recommended=True when outdoor temp is:
+      - above comfort_cool (would push indoor over comfort ceiling), OR
+      - below comfort_heat - 15 degrees F (extreme cold, not comfortable to open)
+
+    All 7 tests FAIL before _apply_outdoor_windows_gate() is implemented
+    (AttributeError: 'ClimateAdvisorCoordinator' object has no attribute
+    '_apply_outdoor_windows_gate').
+    """
+
+    def test_outdoor_above_comfort_cool_disables(self):
+        """Outdoor temp above comfort_cool clears windows_recommended to False."""
+        coord = _make_gate_coord_stub(80.0, comfort_cool=75.0)
+        assert coord._current_classification.windows_recommended is True
+
+        coord._apply_outdoor_windows_gate()
+
+        assert coord._current_classification.windows_recommended is False, (
+            "outdoor=80 > comfort_cool=75 should disable windows_recommended"
+        )
+
+    def test_outdoor_at_comfort_cool_allows(self):
+        """Outdoor at exactly comfort_cool stays True (> is the disable condition, not >=)."""
+        coord = _make_gate_coord_stub(75.0, comfort_cool=75.0)
+        coord._apply_outdoor_windows_gate()
+        assert coord._current_classification.windows_recommended is True, (
+            "outdoor=75 == comfort_cool=75 should NOT disable windows_recommended"
+        )
+
+    def test_outdoor_in_range_allows(self):
+        """Outdoor temp well within comfort range keeps windows_recommended True."""
+        coord = _make_gate_coord_stub(68.0)
+        coord._apply_outdoor_windows_gate()
+        assert coord._current_classification.windows_recommended is True
+
+    def test_outdoor_extreme_cold_disables(self):
+        """Outdoor below comfort_heat - 15 clears windows_recommended to False."""
+        coord = _make_gate_coord_stub(52.0, comfort_heat=70.0)
+        coord._apply_outdoor_windows_gate()
+        assert coord._current_classification.windows_recommended is False, (
+            "outdoor=52 < threshold=55 (comfort_heat=70 - 15) should disable windows_recommended"
+        )
+
+    def test_outdoor_at_cold_threshold_allows(self):
+        """Outdoor at exactly comfort_heat - 15 stays True (< is the disable condition)."""
+        coord = _make_gate_coord_stub(55.0, comfort_heat=70.0)
+        coord._apply_outdoor_windows_gate()
+        assert coord._current_classification.windows_recommended is True, (
+            "outdoor=55 == threshold=55 should NOT disable windows_recommended"
+        )
+
+    def test_outdoor_none_preserves_classifier(self):
+        """No outdoor temp data keeps the classifier's recommendation unchanged."""
+        coord = _make_gate_coord_stub(None)
+        coord._apply_outdoor_windows_gate()
+        assert coord._current_classification.windows_recommended is True, (
+            "outdoor=None should keep windows_recommended=True from classifier"
+        )
+
+    def test_warm_day_outdoor_above_comfort_cool(self):
+        """WARM day eligible classification with outdoor above comfort_cool is disabled."""
+        coord = _make_gate_coord_stub(
+            80.0,
+            day_type=DAY_TYPE_WARM,
+            today_low=68.0,
+            windows_recommended=True,
+            comfort_cool=75.0,
+        )
+        coord._apply_outdoor_windows_gate()
+        assert coord._current_classification.windows_recommended is False, (
+            "WARM day with outdoor=80 > comfort_cool=75 should disable windows_recommended"
+        )

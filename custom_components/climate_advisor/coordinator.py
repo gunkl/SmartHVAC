@@ -121,6 +121,10 @@ from .temperature import convert_delta, format_temp, from_fahrenheit, to_fahrenh
 
 _LOGGER = logging.getLogger(__name__)
 
+# Degrees below comfort_heat at which outdoor temp is too cold to recommend opening windows.
+# With default comfort_heat=70°F this means outdoor must be ≥ 55°F for windows to be recommended.
+_WINDOWS_EXTREME_COLD_MARGIN = 15.0
+
 
 class ClimateAdvisorCoordinator(DataUpdateCoordinator):
     """Coordinate all Climate Advisor activities."""
@@ -213,6 +217,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._hvac_session_start_indoor_temp: float | None = None
         self._hvac_session_start_outdoor_temp: float | None = None
         self._hvac_session_mode: str | None = None  # "heat" or "cool"
+        self._last_outdoor_temp: float | None = None  # most recent outdoor reading for gate checks
         self._startup_hvac_initialized: bool = False  # Issue #96: prevents repeated late-start init
         self._last_state_contradiction_time: datetime | None = None  # dedup for state_contradiction_warning events
         self._last_violation_check: datetime | None = None
@@ -844,6 +849,45 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         """Return True if any monitored contact sensor is currently open."""
         return any(self._is_sensor_open(s) for s in self._resolved_sensors)
 
+    def _apply_outdoor_windows_gate(self) -> None:
+        """Gate windows_recommended against current outdoor temp (Issue #111).
+
+        The classifier sets windows_recommended based on forecast day-type only.
+        This method clears the flag when current outdoor conditions would push
+        indoor temps outside the comfort zone:
+          - outdoor > comfort_cool  → opening windows would overheat the house
+          - outdoor < comfort_heat - _WINDOWS_EXTREME_COLD_MARGIN  → extreme cold
+
+        Called after every classify_day() in _async_update_data() and
+        async_send_briefing(). No-op when classification is None,
+        windows_recommended is already False, or outdoor temp is unavailable.
+        """
+        c = self._current_classification
+        if c is None or not c.windows_recommended:
+            return
+
+        outdoor = self._last_outdoor_temp
+        if outdoor is None:
+            return  # No current data — keep classifier's recommendation
+
+        comfort_cool = float(self.config.get("comfort_cool", 75))
+        comfort_heat = float(self.config.get("comfort_heat", 70))
+
+        if outdoor > comfort_cool:
+            _LOGGER.debug(
+                "windows_recommended → False: outdoor %.1f°F above comfort_cool %.1f°F",
+                outdoor,
+                comfort_cool,
+            )
+            c.windows_recommended = False
+        elif outdoor < comfort_heat - _WINDOWS_EXTREME_COLD_MARGIN:
+            _LOGGER.debug(
+                "windows_recommended → False: outdoor %.1f°F below extreme-cold threshold %.1f°F",
+                outdoor,
+                comfort_heat - _WINDOWS_EXTREME_COLD_MARGIN,
+            )
+            c.windows_recommended = False
+
     def _check_startup_override(
         self,
         climate_state: Any,
@@ -898,6 +942,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if forecast:
             prev_type = self._current_classification.day_type if self._current_classification else None
             self._current_classification = classify_day(forecast, previous_day_type=prev_type)
+            self._last_outdoor_temp = forecast.current_outdoor_temp
+            self._apply_outdoor_windows_gate()
 
             # Chart log: emit classification_change event when day type changes
             if prev_type is not None and prev_type != self._current_classification.day_type:
@@ -1449,6 +1495,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         prev_type = self._current_classification.day_type if self._current_classification else None
         classification = classify_day(forecast, previous_day_type=prev_type)
         self._current_classification = classification
+        self._last_outdoor_temp = forecast.current_outdoor_temp
+        self._apply_outdoor_windows_gate()
 
         # Inject thermal model into automation engine for adaptive scheduling
         if self.config.get("learning_enabled", True):
@@ -1725,13 +1773,18 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             )
             with contextlib.suppress(Exception):
                 _indoor = self._get_indoor_temp()
-                _cs_attrs = self.hass.states.get(self.config.get("climate_entity", ""))
-                _outdoor_val = _cs_attrs.attributes.get("current_temperature") if _cs_attrs else None
+                _ov_weather_entity = self.config.get("weather_entity")
+                _ov_weather_attrs = (
+                    self.hass.states.get(_ov_weather_entity).attributes
+                    if _ov_weather_entity and self.hass.states.get(_ov_weather_entity)
+                    else {}
+                )
+                _outdoor_val = self._get_outdoor_temp(_ov_weather_attrs)
                 self._chart_log.append(
                     hvac=new_state.state,
                     fan=bool(self.automation_engine._fan_active),
                     indoor=_indoor,
-                    outdoor=float(_outdoor_val) if _outdoor_val is not None else None,
+                    outdoor=_outdoor_val,
                     event="override",
                 )
             self.automation_engine.handle_manual_override(
