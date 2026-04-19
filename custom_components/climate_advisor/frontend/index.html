@@ -1840,13 +1840,14 @@
   // --- Settings tab ---
   const CATEGORY_LABELS = {
     core: 'Core',
+    setpoints: 'Temperature Setpoints',
     sensors: 'Sensors',
     fan: 'Fan',
     schedule: 'Schedule',
     advanced: 'Advanced',
     ai_settings: 'AI Settings (Claude)',
   };
-  const CATEGORY_ORDER = ['core', 'sensors', 'fan', 'schedule', 'advanced', 'ai_settings'];
+  const CATEGORY_ORDER = ['core', 'setpoints', 'sensors', 'fan', 'schedule', 'advanced', 'ai_settings'];
 
   async function loadSettings() {
     try {

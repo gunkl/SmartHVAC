@@ -135,6 +135,7 @@
         "description": "Select a section to configure.",
         "menu_options": {
           "core": "Core Settings",
+          "setpoints": "Temperature Setpoints",
           "temperature_sources": "Temperature Sources",
           "sensors": "Sensors & Fan",
           "occupancy": "Occupancy",
@@ -147,28 +148,36 @@
       },
       "core": {
         "title": "Core Settings",
-        "description": "Configure the main entities and temperature setpoints that Climate Advisor uses.",
+        "description": "Configure the main entities and notification service that Climate Advisor uses.",
         "data": {
           "weather_entity": "Weather Service",
           "climate_entity": "Thermostat",
-          "comfort_heat": "Comfortable Heating Temperature (\u00b0F)",
-          "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
-          "setback_heat": "Away Heating Temperature (\u00b0F)",
-          "setback_cool": "Away Cooling Temperature (\u00b0F)",
-          "sleep_heat": "Sleep Heating Temperature (\u00b0F)",
-          "sleep_cool": "Sleep Cooling Temperature (\u00b0F)",
           "notify_service": "Notification Service"
         },
         "data_description": {
           "weather_entity": "The weather integration Climate Advisor uses for forecasts and outdoor conditions.",
           "climate_entity": "The thermostat Climate Advisor will monitor and control.",
+          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone)."
+        }
+      },
+      "setpoints": {
+        "title": "Temperature Setpoints",
+        "description": "Configure comfort, setback, and sleep temperature targets.",
+        "data": {
+          "comfort_heat": "Comfortable Heating Temperature (\u00b0F)",
+          "comfort_cool": "Comfortable Cooling Temperature (\u00b0F)",
+          "setback_heat": "Away Heating Temperature (\u00b0F)",
+          "setback_cool": "Away Cooling Temperature (\u00b0F)",
+          "sleep_heat": "Sleep Heating Temperature (\u00b0F)",
+          "sleep_cool": "Sleep Cooling Temperature (\u00b0F)"
+        },
+        "data_description": {
           "comfort_heat": "Target temperature when heating and someone is home.",
           "comfort_cool": "Target temperature when cooling and someone is home.",
           "setback_heat": "Lower temperature used when away from home to save energy.",
           "setback_cool": "Higher temperature used when away from home to save energy.",
-          "sleep_heat": "Target temperature when heating during sleep hours (when home).",
-          "sleep_cool": "Target temperature when cooling during sleep hours (when home).",
-          "notify_service": "The Home Assistant notify service for alerts and daily briefings (e.g. notify.mobile_app_yourphone)."
+          "sleep_heat": "Target temperature when heating during sleep hours (when home). Must be between the away and comfort heating setpoints.",
+          "sleep_cool": "Target temperature when cooling during sleep hours (when home). Must be between the comfort and away cooling setpoints."
         }
       },
       "temperature_sources": {

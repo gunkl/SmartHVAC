@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.23"
+VERSION = "0.3.24"
 
 RELEASE_NOTES: dict[str, list[str]] = {
     "0.3.22": [
@@ -264,7 +264,7 @@ CONFIG_METADATA = {
             "Target temperature when heating is active. Lowering saves energy but may feel cooler."
             " Used for morning wake-up and occupancy-home restores."
         ),
-        "category": "core",
+        "category": "setpoints",
     },
     "comfort_cool": {
         "label": "Comfort Cool",
@@ -272,7 +272,7 @@ CONFIG_METADATA = {
             "Target temperature when cooling is active. Raising saves energy but may feel warmer."
             " The economizer uses this as the threshold for window cooling decisions."
         ),
-        "category": "core",
+        "category": "setpoints",
     },
     "setback_heat": {
         "label": "Setback Heat",
@@ -280,7 +280,7 @@ CONFIG_METADATA = {
             "Temperature when heating and away from home."
             " Lower values save more energy but take longer to recover when you return."
         ),
-        "category": "core",
+        "category": "setpoints",
     },
     "setback_cool": {
         "label": "Setback Cool",
@@ -288,7 +288,7 @@ CONFIG_METADATA = {
             "Temperature when cooling and away from home."
             " Higher values save more energy but take longer to cool down when you return."
         ),
-        "category": "core",
+        "category": "setpoints",
     },
     "notify_service": {
         "label": "Notification Service",
@@ -486,7 +486,7 @@ CONFIG_METADATA = {
             " Independent from your away setback — use this to stay warmer at night"
             " than when you leave the house."
         ),
-        "category": "schedule",
+        "category": "setpoints",
     },
     "sleep_cool": {
         "label": "Sleep Temperature (Cool)",
@@ -495,7 +495,7 @@ CONFIG_METADATA = {
             " Independent from your away setback — use this to stay cooler at night"
             " than when you leave the house."
         ),
-        "category": "schedule",
+        "category": "setpoints",
     },
     "briefing_time": {
         "label": "Briefing Time",

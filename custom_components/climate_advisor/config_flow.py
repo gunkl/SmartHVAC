@@ -77,6 +77,8 @@ from .const import (
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
     DEFAULT_SETBACK_COOL,
     DEFAULT_SETBACK_HEAT,
+    DEFAULT_SLEEP_COOL,
+    DEFAULT_SLEEP_HEAT,
     DEFAULT_TEMP_UNIT,
     DEFAULT_WELCOME_HOME_DEBOUNCE_SECONDS,
     DOMAIN,
@@ -117,6 +119,7 @@ INDOOR_SOURCE_OPTIONS = [
 # Menu options for the options flow (Issue #50)
 OPTIONS_MENU_OPTIONS = [
     "core",
+    "setpoints",
     "temperature_sources",
     "sensors",
     "occupancy",
@@ -547,66 +550,18 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
     # ---- Core Settings ----
 
     async def async_step_core(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
-        """Core entities and temperature setpoints."""
+        """Core entities, unit, and notification service."""
         errors: dict[str, str] = {}
 
         current = self.config_entry.data
-        unit = current.get(CONF_TEMP_UNIT, FAHRENHEIT)
-        is_celsius = unit == CELSIUS
 
         if user_input is not None:
-            # Validate notify_service format
             notify_svc = user_input.get("notify_service", "")
             if not _NOTIFY_SERVICE_RE.match(notify_svc):
                 errors["notify_service"] = "invalid_notify_service"
-            # Cross-field: setback must be more conservative than comfort
-            if user_input.get("setback_heat", 0) >= user_input.get("comfort_heat", 999):
-                errors["setback_heat"] = "setback_must_be_lower"
-            if user_input.get("setback_cool", 999) <= user_input.get("comfort_cool", 0):
-                errors["setback_cool"] = "setback_must_be_higher"
             if not errors:
-                # Convert display values → stored °F
-                unit_in = user_input.get(CONF_TEMP_UNIT, FAHRENHEIT)
-                for key in ("comfort_heat", "comfort_cool", "setback_heat", "setback_cool", "sleep_heat", "sleep_cool"):
-                    if key in user_input:
-                        user_input[key] = to_fahrenheit(user_input[key], unit_in)
                 self._updates.update(user_input)
                 return await self.async_step_init()
-
-        if is_celsius:
-            ranges = {
-                "comfort_heat": (13, 27, 0.5),
-                "comfort_cool": (20, 29, 0.5),
-                "setback_heat": (7, 18, 0.5),
-                "setback_cool": (24, 32, 0.5),
-                "sleep_heat": (13, 26, 0.5),
-                "sleep_cool": (21, 32, 0.5),
-            }
-            unit_label = "°C"
-            # Pre-fill: convert stored °F to display unit
-            comfort_heat_disp = from_fahrenheit(current.get("comfort_heat", DEFAULT_COMFORT_HEAT), unit)
-            comfort_cool_disp = from_fahrenheit(current.get("comfort_cool", DEFAULT_COMFORT_COOL), unit)
-            setback_heat_disp = from_fahrenheit(current.get("setback_heat", DEFAULT_SETBACK_HEAT), unit)
-            setback_cool_disp = from_fahrenheit(current.get("setback_cool", DEFAULT_SETBACK_COOL), unit)
-            sleep_heat_disp = from_fahrenheit(current.get("sleep_heat", 66.0), unit)
-            sleep_cool_disp = from_fahrenheit(current.get("sleep_cool", 78.0), unit)
-        else:
-            ranges = {
-                "comfort_heat": (55, 80, 1),
-                "comfort_cool": (68, 85, 1),
-                "setback_heat": (45, 65, 1),
-                "setback_cool": (75, 90, 1),
-                "sleep_heat": (55, 79, 1),
-                "sleep_cool": (69, 89, 1),
-            }
-            unit_label = "°F"
-            # Stored in °F already — use directly
-            comfort_heat_disp = current.get("comfort_heat", DEFAULT_COMFORT_HEAT)
-            comfort_cool_disp = current.get("comfort_cool", DEFAULT_COMFORT_COOL)
-            setback_heat_disp = current.get("setback_heat", DEFAULT_SETBACK_HEAT)
-            setback_cool_disp = current.get("setback_cool", DEFAULT_SETBACK_COOL)
-            sleep_heat_disp = current.get("sleep_heat", 66.0)
-            sleep_cool_disp = current.get("sleep_cool", 78.0)
 
         return self.async_show_form(
             step_id="core",
@@ -629,6 +584,85 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                             mode=selector.SelectSelectorMode.LIST,
                         )
                     ),
+                    vol.Required(
+                        "notify_service",
+                        default=current.get("notify_service", "notify.notify"),
+                    ): selector.TextSelector(),
+                }
+            ),
+            errors=errors,
+        )
+
+    # ---- Temperature Setpoints ----
+
+    async def async_step_setpoints(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
+        """Comfort, setback, and sleep temperature setpoints."""
+        errors: dict[str, str] = {}
+
+        current = self.config_entry.data
+        unit = current.get(CONF_TEMP_UNIT, FAHRENHEIT)
+        is_celsius = unit == CELSIUS
+
+        if user_input is not None:
+            # Cross-field: setback must be more conservative than comfort
+            if user_input.get("setback_heat", 0) >= user_input.get("comfort_heat", 999):
+                errors["setback_heat"] = "setback_must_be_lower"
+            if user_input.get("setback_cool", 999) <= user_input.get("comfort_cool", 0):
+                errors["setback_cool"] = "setback_must_be_higher"
+            # Cross-field: sleep temps must be between setback and comfort
+            if user_input.get("sleep_heat", 999) >= user_input.get("comfort_heat", 0):
+                errors["sleep_heat"] = "sleep_must_be_below_comfort"
+            if user_input.get("sleep_heat", 0) <= user_input.get("setback_heat", 999):
+                errors["sleep_heat"] = "sleep_must_be_above_setback"
+            if user_input.get("sleep_cool", 0) <= user_input.get("comfort_cool", 999):
+                errors["sleep_cool"] = "sleep_must_be_above_comfort"
+            if user_input.get("sleep_cool", 999) >= user_input.get("setback_cool", 0):
+                errors["sleep_cool"] = "sleep_must_be_below_setback"
+            if not errors:
+                # Convert display values → stored °F
+                for key in ("comfort_heat", "comfort_cool", "setback_heat", "setback_cool", "sleep_heat", "sleep_cool"):
+                    if key in user_input:
+                        user_input[key] = to_fahrenheit(user_input[key], unit)
+                self._updates.update(user_input)
+                return await self.async_step_init()
+
+        if is_celsius:
+            ranges = {
+                "comfort_heat": (13, 27, 0.5),
+                "comfort_cool": (20, 29, 0.5),
+                "setback_heat": (7, 18, 0.5),
+                "setback_cool": (24, 32, 0.5),
+                "sleep_heat": (13, 26, 0.5),
+                "sleep_cool": (21, 32, 0.5),
+            }
+            unit_label = "°C"
+            comfort_heat_disp = from_fahrenheit(current.get("comfort_heat", DEFAULT_COMFORT_HEAT), unit)
+            comfort_cool_disp = from_fahrenheit(current.get("comfort_cool", DEFAULT_COMFORT_COOL), unit)
+            setback_heat_disp = from_fahrenheit(current.get("setback_heat", DEFAULT_SETBACK_HEAT), unit)
+            setback_cool_disp = from_fahrenheit(current.get("setback_cool", DEFAULT_SETBACK_COOL), unit)
+            sleep_heat_disp = from_fahrenheit(current.get("sleep_heat", DEFAULT_SLEEP_HEAT), unit)
+            sleep_cool_disp = from_fahrenheit(current.get("sleep_cool", DEFAULT_SLEEP_COOL), unit)
+        else:
+            ranges = {
+                "comfort_heat": (55, 80, 1),
+                "comfort_cool": (68, 85, 1),
+                "setback_heat": (45, 65, 1),
+                "setback_cool": (75, 90, 1),
+                "sleep_heat": (55, 79, 1),
+                "sleep_cool": (69, 89, 1),
+            }
+            unit_label = "°F"
+            comfort_heat_disp = current.get("comfort_heat", DEFAULT_COMFORT_HEAT)
+            comfort_cool_disp = current.get("comfort_cool", DEFAULT_COMFORT_COOL)
+            setback_heat_disp = current.get("setback_heat", DEFAULT_SETBACK_HEAT)
+            setback_cool_disp = current.get("setback_cool", DEFAULT_SETBACK_COOL)
+            sleep_heat_disp = current.get("sleep_heat", DEFAULT_SLEEP_HEAT)
+            sleep_cool_disp = current.get("sleep_cool", DEFAULT_SLEEP_COOL)
+
+        return self.async_show_form(
+            step_id="setpoints",
+            data_schema=vol.Schema(
+                {
                     vol.Required(
                         "comfort_heat",
                         default=comfort_heat_disp,
@@ -701,10 +735,6 @@ class ClimateAdvisorOptionsFlow(config_entries.OptionsFlow):
                             mode="slider",
                         )
                     ),
-                    vol.Required(
-                        "notify_service",
-                        default=current.get("notify_service", "notify.notify"),
-                    ): selector.TextSelector(),
                 }
             ),
             errors=errors,
