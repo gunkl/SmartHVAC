@@ -467,3 +467,47 @@ class TestChartLogEventDriven:
         append_calls = coord._chart_log.append.call_args_list
         event_calls = [c for c in append_calls if c.kwargs.get("event") == "hvac_action_change"]
         assert len(event_calls) == 0, f"Expected no hvac_action_change writes for idle→idle, got: {event_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Fix #110: override event must log real outdoor temp, not climate entity indoor
+# ---------------------------------------------------------------------------
+
+
+class TestChartLogOverrideEvent:
+    """Verify the override chart_log entry uses _get_outdoor_temp(), not the
+    climate entity's current_temperature attribute (which is indoor temp).
+
+    Root cause: coordinator.py used _cs_attrs.attributes.get("current_temperature")
+    on the climate/thermostat entity — that attribute stores the indoor temperature,
+    not the outdoor weather temperature — creating a spike in the outdoor chart line
+    at every manual override event.
+    """
+
+    def _trigger_override(self, coord):
+        """Trigger the manual override branch: off → heat while classification wants off."""
+        old = _make_state("off", hvac_action="")
+        new = _make_state("heat", hvac_action="")
+        asyncio.run(coord._async_thermostat_changed(_make_thermostat_event(old, new)))
+
+    def test_override_event_writes_chart_log_with_outdoor_temp(self):
+        """Override event appends to chart_log with event='override' and correct outdoor value."""
+        coord = _make_thermostat_coord()
+        # _get_outdoor_temp is mocked to return 65.0 in _make_thermostat_coord
+        self._trigger_override(coord)
+
+        override_calls = [c for c in coord._chart_log.append.call_args_list if c.kwargs.get("event") == "override"]
+        assert len(override_calls) == 1, f"Expected 1 override append; got: {coord._chart_log.append.call_args_list}"
+        assert override_calls[0].kwargs.get("outdoor") == 65.0
+
+    def test_override_event_outdoor_from_weather_not_climate_entity(self):
+        """Override event uses _get_outdoor_temp(), not climate entity current_temperature."""
+        coord = _make_thermostat_coord()
+        coord._get_outdoor_temp = MagicMock(return_value=45.0)
+        self._trigger_override(coord)
+
+        override_calls = [c for c in coord._chart_log.append.call_args_list if c.kwargs.get("event") == "override"]
+        assert len(override_calls) == 1
+        assert override_calls[0].kwargs.get("outdoor") == 45.0, (
+            "outdoor should come from _get_outdoor_temp (weather source), not the climate entity"
+        )
