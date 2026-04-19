@@ -1635,6 +1635,7 @@ class TestOptionsFlowMenu:
 
         expected = [
             "core",
+            "setpoints",
             "temperature_sources",
             "sensors",
             "occupancy",

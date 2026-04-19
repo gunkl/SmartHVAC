@@ -73,7 +73,17 @@ EXPECTED_KEYS = {
     "override_confirm_seconds",
 }
 
-VALID_CATEGORIES = {"core", "sensors", "fan", "schedule", "advanced", "occupancy", "notifications", "ai_settings"}
+VALID_CATEGORIES = {
+    "core",
+    "setpoints",
+    "sensors",
+    "fan",
+    "schedule",
+    "advanced",
+    "occupancy",
+    "notifications",
+    "ai_settings",
+}
 
 
 class TestConfigMetadataHasAllKeys:
