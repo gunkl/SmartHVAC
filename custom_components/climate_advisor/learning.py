@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,14 @@ from .const import (
     MIN_DATA_POINTS_FOR_SUGGESTION,
     MIN_THERMAL_OBSERVATIONS,
     MIN_WEATHER_BIAS_OBSERVATIONS,
-    THERMAL_MODEL_MAX_OBS,
+    THERMAL_K_ACTIVE_COOL_MAX,
+    THERMAL_K_ACTIVE_COOL_MIN,
+    THERMAL_K_ACTIVE_HEAT_MAX,
+    THERMAL_K_ACTIVE_HEAT_MIN,
+    THERMAL_K_PASSIVE_MAX,
+    THERMAL_K_PASSIVE_MIN,
+    THERMAL_MIN_POST_HEAT_SAMPLES,
+    THERMAL_MIN_R_SQUARED,
     THERMAL_OBS_CAP,
     WEATHER_BIAS_MAX_OBS,
 )
@@ -38,16 +46,186 @@ MAX_DAILY_RECORDS = 730
 
 @dataclass
 class ThermalObservation:
-    """A single observed HVAC heating or cooling session."""
+    """A single observed HVAC session — v2 two-parameter physics model."""
 
-    timestamp: str  # ISO8601 — when session ended
+    event_id: str
+    timestamp: str  # ISO8601 — when committed
     date: str  # YYYY-MM-DD — for rolling trim
-    hvac_mode: str  # "heat" or "cool"
+    hvac_mode: str  # "heat" / "cool" / "fan_only"
     session_minutes: float
-    rate_f_per_hour: float  # abs(end_indoor - start_indoor) / (session_minutes / 60)
-    outdoor_temp_f: float
     start_indoor_f: float
     end_indoor_f: float
+    peak_indoor_f: float
+    start_outdoor_f: float
+    avg_outdoor_f: float
+    delta_t_avg: float
+    k_passive: float  # hr⁻¹, always negative
+    k_active: float | None  # °F/hr; None for fan_only sessions
+    passive_baseline_rate: float
+    r_squared_passive: float
+    r_squared_active: float | None  # None for fan_only
+    sample_count_pre: int
+    sample_count_active: int
+    sample_count_post: int
+    confidence_grade: str  # "low" | "medium" | "high"
+    schema_version: int = 2
+
+
+# ---------------------------------------------------------------------------
+# Module-level physics functions (importable for tests)
+# ---------------------------------------------------------------------------
+
+
+def _smooth_temps(temps: list[float]) -> list[float]:
+    """Apply 3-sample centered moving average to smooth 1-degF integer staircase noise.
+
+    Edge samples are unchanged (no padding artifacts).
+    """
+    if len(temps) < 3:
+        return list(temps)
+    smoothed = [temps[0]]
+    for i in range(1, len(temps) - 1):
+        smoothed.append((temps[i - 1] + temps[i] + temps[i + 1]) / 3.0)
+    smoothed.append(temps[-1])
+    return smoothed
+
+
+def compute_k_passive(
+    post_samples: list[dict],
+    pre_samples: list[dict] | None = None,
+) -> tuple[float | None, float]:
+    """Estimate envelope decay rate (k_passive, hr⁻¹) from HVAC-off sample windows.
+
+    Uses OLS regression forced through origin:
+        rate_i = k_passive * delta_i
+    where:
+        rate_i = (T_indoor[i+1] - T_indoor[i]) / dt_hours
+        delta_i = midpoint(T_indoor - T_outdoor) over interval
+
+    Args:
+        post_samples: Post-heat/cool samples (list of dicts with
+            timestamp, indoor_temp_f, outdoor_temp_f, elapsed_minutes).
+        pre_samples: Optional pre-heat samples (also HVAC-off), used to
+            increase regression data density.
+
+    Returns:
+        Tuple of (k_passive, r_squared). k_passive is None if regression
+        fails validation (too few points, wrong sign, or bad R²).
+    """
+    # Process each window independently to avoid spurious rates at the pre→post boundary.
+    # The boundary between pre-heat and post-heat spans the active heating phase where
+    # indoor temp rises — computing a rate across that gap yields a large positive spike
+    # that corrupts the OLS estimate.
+    windows: list[list[dict]] = []
+    if pre_samples:
+        windows.append(list(pre_samples))
+    windows.append(list(post_samples))
+
+    total_samples = sum(len(w) for w in windows)
+    if total_samples < THERMAL_MIN_POST_HEAT_SAMPLES + 1:
+        return None, 0.0
+
+    rates: list[float] = []
+    deltas: list[float] = []
+    for window in windows:
+        if len(window) < 2:
+            continue
+        indoor_raw = [s["indoor_temp_f"] for s in window]
+        outdoor = [s["outdoor_temp_f"] for s in window]
+        elapsed = [s["elapsed_minutes"] for s in window]
+        indoor = _smooth_temps(indoor_raw)
+        for i in range(len(indoor) - 1):
+            dt_hours = (elapsed[i + 1] - elapsed[i]) / 60.0
+            if dt_hours <= 0:
+                continue
+            rate = (indoor[i + 1] - indoor[i]) / dt_hours
+            delta = ((indoor[i] + indoor[i + 1]) / 2.0) - ((outdoor[i] + outdoor[i + 1]) / 2.0)
+            rates.append(rate)
+            deltas.append(delta)
+
+    if len(rates) < THERMAL_MIN_POST_HEAT_SAMPLES:
+        return None, 0.0
+
+    sum_rd = sum(r * d for r, d in zip(rates, deltas, strict=False))
+    sum_d2 = sum(d * d for d in deltas)
+    if sum_d2 == 0:
+        return None, 0.0
+
+    k_p = sum_rd / sum_d2
+
+    # Validate sign and bounds
+    if not (THERMAL_K_PASSIVE_MIN <= k_p <= THERMAL_K_PASSIVE_MAX):
+        return None, 0.0
+
+    # R² (vs forced-through-origin model)
+    ss_res = sum((r - k_p * d) ** 2 for r, d in zip(rates, deltas, strict=False))
+    ss_tot = sum(r * r for r in rates)
+    r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+    r_squared = max(0.0, r_squared)
+
+    if r_squared < THERMAL_MIN_R_SQUARED:
+        return None, r_squared
+
+    return k_p, r_squared
+
+
+def compute_k_active(
+    active_samples: list[dict],
+    k_passive: float,
+    session_mode: str,
+) -> tuple[float | None, float]:
+    """Estimate HVAC contribution rate (k_active, °F/hr) from active-phase samples.
+
+    For each active interval:
+        k_active_i = rate_i - k_passive * delta_i
+
+    Args:
+        active_samples: Samples during active heating/cooling phase.
+        k_passive: Validated k_passive from the same event.
+        session_mode: "heat", "cool", or "fan_only".
+
+    Returns:
+        Tuple of (k_active, r_squared). k_active is None for fan_only or
+        when fewer than 2 active samples are available.
+    """
+    if session_mode == "fan_only" or len(active_samples) < 2:
+        return None, 0.0
+
+    indoor_raw = [s["indoor_temp_f"] for s in active_samples]
+    outdoor = [s["outdoor_temp_f"] for s in active_samples]
+    elapsed = [s["elapsed_minutes"] for s in active_samples]
+
+    indoor = _smooth_temps(indoor_raw)
+
+    k_actives: list[float] = []
+    rates: list[float] = []
+    for i in range(len(indoor) - 1):
+        dt_hours = (elapsed[i + 1] - elapsed[i]) / 60.0
+        if dt_hours <= 0:
+            continue
+        rate = (indoor[i + 1] - indoor[i]) / dt_hours
+        delta = ((indoor[i] + indoor[i + 1]) / 2.0) - ((outdoor[i] + outdoor[i + 1]) / 2.0)
+        k_a_i = rate - k_passive * delta
+        k_actives.append(k_a_i)
+        rates.append(rate)
+
+    if not k_actives:
+        return None, 0.0
+
+    k_active = sum(k_actives) / len(k_actives)
+
+    # Sanity bounds
+    if session_mode == "heat" and not (THERMAL_K_ACTIVE_HEAT_MIN <= k_active <= THERMAL_K_ACTIVE_HEAT_MAX):
+        return None, 0.0
+    if session_mode == "cool" and not (THERMAL_K_ACTIVE_COOL_MIN <= k_active <= THERMAL_K_ACTIVE_COOL_MAX):
+        return None, 0.0
+
+    var_residual = sum((k_a - k_active) ** 2 for k_a in k_actives)
+    var_total = sum((r - sum(rates) / len(rates)) ** 2 for r in rates)
+    r_squared = 1.0 - (var_residual / var_total) if var_total > 0 else 0.0
+    r_squared = max(0.0, r_squared)
+
+    return k_active, r_squared
 
 
 @dataclass
@@ -113,6 +291,8 @@ class LearningState:
     dismissed_suggestions: list[str] = field(default_factory=list)
     settings_history: list[dict] = field(default_factory=list)
     thermal_observations: list[dict] = field(default_factory=list)  # cap: THERMAL_OBS_CAP
+    pending_thermal_event: dict | None = None  # in-progress observation window
+    thermal_model_cache: dict | None = None  # EWMA-accumulated k_passive, k_active_heat/cool
 
 
 class LearningEngine:
@@ -166,6 +346,16 @@ class LearningEngine:
                 self._state.thermal_observations = [
                     obs for obs in self._state.thermal_observations if isinstance(obs, dict)
                 ]
+                # Validate dict|None fields
+                for field_name in ("pending_thermal_event", "thermal_model_cache"):
+                    val = getattr(self._state, field_name, None)
+                    if val is not None and not isinstance(val, dict):
+                        _LOGGER.warning(
+                            "Learning state field %r has unexpected type %r, resetting to None",
+                            field_name,
+                            type(val).__name__,
+                        )
+                        setattr(self._state, field_name, None)
                 return
             except (json.JSONDecodeError, TypeError) as err:
                 _LOGGER.warning("Failed to load learning state, starting fresh: %s", err)
@@ -212,10 +402,11 @@ class LearningEngine:
         )
 
     def record_thermal_observation(self, obs: dict) -> None:
-        """Record a thermal observation from an HVAC session.
+        """Record a thermal observation and update the EWMA thermal model cache.
 
+        obs must be a dict representation of a committed ThermalObservation (v2).
         Trims to 90-day rolling window and enforces THERMAL_OBS_CAP.
-        obs must include a "date" key (YYYY-MM-DD) for trimming.
+        Also updates thermal_model_cache via EWMA using obs.confidence_grade.
         """
         if not isinstance(obs, dict) or "date" not in obs:
             return
@@ -227,22 +418,73 @@ class LearningEngine:
         if len(self._state.thermal_observations) > THERMAL_OBS_CAP:
             self._state.thermal_observations = self._state.thermal_observations[-THERMAL_OBS_CAP:]
 
+        # Update EWMA cache
+        self._update_thermal_model_cache(obs)
+
+    def _update_thermal_model_cache(self, obs: dict) -> None:
+        """Apply one observation to the EWMA thermal model cache."""
+        grade = obs.get("confidence_grade", "low")
+        alpha_map = {"high": 0.3, "medium": 0.15, "low": 0.05}
+        alpha = alpha_map.get(grade, 0.05)
+
+        cache = self._state.thermal_model_cache
+        if cache is None:
+            cache = {
+                "k_passive": None,
+                "k_active_heat": None,
+                "k_active_cool": None,
+                "observation_count_heat": 0,
+                "observation_count_cool": 0,
+                "last_observation_date": None,
+                "avg_r_squared_passive": None,
+            }
+
+        k_p = obs.get("k_passive")
+        if k_p is not None:
+            if cache["k_passive"] is None:
+                cache["k_passive"] = k_p
+            else:
+                cache["k_passive"] = (1.0 - alpha) * cache["k_passive"] + alpha * k_p
+
+        # Update avg_r_squared_passive (simple EWMA)
+        r2_p = obs.get("r_squared_passive")
+        if r2_p is not None:
+            if cache["avg_r_squared_passive"] is None:
+                cache["avg_r_squared_passive"] = r2_p
+            else:
+                cache["avg_r_squared_passive"] = (1.0 - alpha) * cache["avg_r_squared_passive"] + alpha * r2_p
+
+        mode = obs.get("hvac_mode")
+        k_a = obs.get("k_active")
+        if mode == "heat" and k_a is not None:
+            if cache["k_active_heat"] is None:
+                cache["k_active_heat"] = k_a
+            else:
+                cache["k_active_heat"] = (1.0 - alpha) * cache["k_active_heat"] + alpha * k_a
+            cache["observation_count_heat"] = cache.get("observation_count_heat", 0) + 1
+        elif mode == "cool" and k_a is not None:
+            if cache["k_active_cool"] is None:
+                cache["k_active_cool"] = k_a
+            else:
+                cache["k_active_cool"] = (1.0 - alpha) * cache["k_active_cool"] + alpha * k_a
+            cache["observation_count_cool"] = cache.get("observation_count_cool", 0) + 1
+
+        cache["last_observation_date"] = obs.get("date")
+        self._state.thermal_model_cache = cache
+
     def get_thermal_model(self) -> dict:
-        """Compute the thermal model from recent observations.
+        """Return the current thermal model from the EWMA cache.
 
-        Returns a dict with heating/cooling rates and confidence level.
-        Pure computation — no I/O. Returns "none" confidence when insufficient data.
+        Returns v2 model fields (k_active_heat, k_active_cool, k_passive) plus
+        legacy compat fields (heating_rate_f_per_hour, cooling_rate_f_per_hour).
+        Returns "none" confidence when insufficient data.
+        Pure computation — no I/O.
         """
-        heat_obs = [o for o in self._state.thermal_observations if o.get("hvac_mode") == "heat"]
-        cool_obs = [o for o in self._state.thermal_observations if o.get("hvac_mode") == "cool"]
-        # Use only most recent observations
-        heat_obs = heat_obs[-THERMAL_MODEL_MAX_OBS:]
-        cool_obs = cool_obs[-THERMAL_MODEL_MAX_OBS:]
+        cache = self._state.thermal_model_cache or {}
+        count_heat = cache.get("observation_count_heat", 0)
+        count_cool = cache.get("observation_count_cool", 0)
+        total = count_heat + count_cool
 
-        heating_rate = sum(o["rate_f_per_hour"] for o in heat_obs) / len(heat_obs) if heat_obs else None
-        cooling_rate = sum(o["rate_f_per_hour"] for o in cool_obs) / len(cool_obs) if cool_obs else None
-
-        total = len(heat_obs) + len(cool_obs)
         if total < MIN_THERMAL_OBSERVATIONS:
             confidence = "none"
         elif total < 10:
@@ -252,13 +494,187 @@ class LearningEngine:
         else:
             confidence = "high"
 
+        k_active_heat = cache.get("k_active_heat")
+        k_active_cool = cache.get("k_active_cool")
+
         return {
-            "heating_rate_f_per_hour": round(heating_rate, 2) if heating_rate is not None else None,
-            "cooling_rate_f_per_hour": round(cooling_rate, 2) if cooling_rate is not None else None,
-            "observation_count_heat": len(heat_obs),
-            "observation_count_cool": len(cool_obs),
+            "k_active_heat": k_active_heat,
+            "k_active_cool": k_active_cool,
+            "k_passive": cache.get("k_passive"),
+            # Legacy compat
+            "heating_rate_f_per_hour": round(k_active_heat, 2) if k_active_heat is not None else None,
+            "cooling_rate_f_per_hour": round(abs(k_active_cool), 2) if k_active_cool is not None else None,
+            "observation_count_heat": count_heat,
+            "observation_count_cool": count_cool,
+            "observation_count_total": total,
             "confidence": confidence,
+            "avg_r_squared_passive": cache.get("avg_r_squared_passive"),
+            "last_observation_date": cache.get("last_observation_date"),
         }
+
+    def get_pending_thermal_event(self) -> dict | None:
+        """Return the in-progress thermal event dict, or None."""
+        return self._state.pending_thermal_event
+
+    def set_pending_thermal_event(self, event: dict | None) -> None:
+        """Update the in-progress thermal event (does NOT call save_state)."""
+        self._state.pending_thermal_event = event
+
+    def recover_pending_event_on_startup(self) -> dict | None:
+        """Process any pending thermal event that survived an HA restart.
+
+        Called once at startup (via async_add_executor_job).
+        Commits, partially commits, or discards the event per the recovery table:
+
+        | Status                        | Action                                   |
+        |-------------------------------|------------------------------------------|
+        | active                        | Discard                                  |
+        | post_heat + ≥10 post samples  | Partial commit at low confidence         |
+        | post_heat + <10 post samples  | Discard                                  |
+        | stabilized                    | Full commit                              |
+        | complete / abandoned          | Clear                                    |
+
+        Returns the committed observation dict if one was produced, else None.
+        """
+        event = self._state.pending_thermal_event
+        if not isinstance(event, dict):
+            return None
+
+        status = event.get("status", "")
+        _LOGGER.info("Startup recovery: pending thermal event status=%s", status)
+
+        result = None
+        if status == "stabilized":
+            result = self._commit_event_from_dict(event, force_grade=None)
+        elif status == "post_heat":
+            post_samples = event.get("post_heat_samples", [])
+            if len(post_samples) >= THERMAL_MIN_POST_HEAT_SAMPLES:
+                result = self._commit_event_from_dict(event, force_grade="low")
+            else:
+                _LOGGER.info(
+                    "Startup recovery: discarding post_heat event with only %d post samples",
+                    len(post_samples),
+                )
+        elif status in ("complete", "abandoned"):
+            pass  # just clear
+        else:
+            _LOGGER.info("Startup recovery: discarding event with status=%r", status)
+
+        self._state.pending_thermal_event = None
+        self.save_state()
+        return result
+
+    def _commit_event_from_dict(self, event: dict, force_grade: str | None) -> dict | None:
+        """Compute k_passive/k_active from event samples and record the observation.
+
+        Returns the observation dict if successful, else None.
+        force_grade overrides the computed confidence grade when set.
+        """
+        post_samples = event.get("post_heat_samples", [])
+        pre_samples = event.get("pre_heat_samples", [])
+        active_samples = event.get("active_samples", [])
+        session_mode = event.get("session_mode") or event.get("hvac_mode") or "heat"
+
+        k_p, r2_p = compute_k_passive(post_samples, pre_samples)
+        if k_p is None:
+            _LOGGER.info(
+                "Thermal event commit failed: k_passive rejected (R²=%.3f, post_n=%d)",
+                r2_p,
+                len(post_samples),
+            )
+            return None
+
+        k_a, r2_a = compute_k_active(active_samples, k_p, session_mode)
+        # k_a may be None for fan_only — that is acceptable
+
+        # Passive baseline rate (mean of pre-heat rates)
+        passive_baseline = 0.0
+        if pre_samples and len(pre_samples) >= 2:
+            indoor_pre = [s["indoor_temp_f"] for s in pre_samples]
+            elapsed_pre = [s["elapsed_minutes"] for s in pre_samples]
+            rates_pre: list[float] = []
+            for i in range(len(indoor_pre) - 1):
+                dt_h = (elapsed_pre[i + 1] - elapsed_pre[i]) / 60.0
+                if dt_h > 0:
+                    rates_pre.append((indoor_pre[i + 1] - indoor_pre[i]) / dt_h)
+            if rates_pre:
+                passive_baseline = sum(rates_pre) / len(rates_pre)
+
+        # Aggregate outdoor temps
+        all_samples = pre_samples + active_samples + post_samples
+        outdoor_temps = [s["outdoor_temp_f"] for s in all_samples if s.get("outdoor_temp_f") is not None]
+        avg_outdoor = sum(outdoor_temps) / len(outdoor_temps) if outdoor_temps else 0.0
+
+        # Indoor stats
+        all_indoor = [s["indoor_temp_f"] for s in all_samples if s.get("indoor_temp_f") is not None]
+        peak_indoor = max(all_indoor) if all_indoor else (event.get("start_indoor_f") or 0.0)
+
+        start_indoor = event.get("start_indoor_f") or (active_samples[0]["indoor_temp_f"] if active_samples else 0.0)
+        end_indoor_samples = post_samples if post_samples else active_samples
+        end_indoor = end_indoor_samples[-1]["indoor_temp_f"] if end_indoor_samples else start_indoor
+        start_outdoor = active_samples[0]["outdoor_temp_f"] if active_samples else avg_outdoor
+        delta_t_avg = (
+            sum(s["indoor_temp_f"] - s["outdoor_temp_f"] for s in all_samples) / len(all_samples)
+            if all_samples
+            else 0.0
+        )
+
+        session_minutes = event.get("session_minutes") or 0.0
+        if not session_minutes and active_samples and len(active_samples) >= 2:
+            session_minutes = active_samples[-1]["elapsed_minutes"] - active_samples[0]["elapsed_minutes"]
+
+        # Confidence grade
+        if force_grade is not None:
+            grade = force_grade
+        else:
+            n_post = len(post_samples)
+            r2_thresh_high = 0.7
+            r2_thresh_med = 0.4
+            r2_ok_active = (r2_a is not None and r2_a >= r2_thresh_high) or session_mode == "fan_only"
+            r2_ok_active_med = (r2_a is not None and r2_a >= r2_thresh_med) or session_mode == "fan_only"
+            if r2_p >= r2_thresh_high and r2_ok_active and n_post >= 10:
+                grade = "high"
+            elif r2_p >= r2_thresh_med and r2_ok_active_med and n_post >= 5:
+                grade = "medium"
+            else:
+                grade = "low"
+
+        now_str = dt_util.now().isoformat()
+        date_str = dt_util.now().date().isoformat()
+        obs = {
+            "event_id": event.get("event_id", str(uuid.uuid4())),
+            "timestamp": now_str,
+            "date": date_str,
+            "hvac_mode": session_mode,
+            "session_minutes": round(session_minutes, 1),
+            "start_indoor_f": start_indoor,
+            "end_indoor_f": end_indoor,
+            "peak_indoor_f": peak_indoor,
+            "start_outdoor_f": start_outdoor,
+            "avg_outdoor_f": round(avg_outdoor, 1),
+            "delta_t_avg": round(delta_t_avg, 2),
+            "k_passive": round(k_p, 5),
+            "k_active": round(k_a, 3) if k_a is not None else None,
+            "passive_baseline_rate": round(passive_baseline, 3),
+            "r_squared_passive": round(r2_p, 3),
+            "r_squared_active": round(r2_a, 3) if r2_a is not None else None,
+            "sample_count_pre": len(pre_samples),
+            "sample_count_active": len(active_samples),
+            "sample_count_post": len(post_samples),
+            "confidence_grade": grade,
+            "schema_version": 2,
+        }
+
+        _LOGGER.info(
+            "Thermal observation committed: mode=%s grade=%s k_passive=%.4f k_active=%s R²_p=%.3f",
+            session_mode,
+            grade,
+            k_p,
+            f"{k_a:.3f}" if k_a is not None else "None",
+            r2_p,
+        )
+        self.record_thermal_observation(obs)
+        return obs
 
     def get_weather_bias(self) -> dict:
         """Compute the weather forecast bias from recent daily records.
@@ -654,6 +1070,8 @@ class LearningEngine:
             self.save_state()
         elif scope == "thermal_model":
             self._state.thermal_observations = []
+            self._state.pending_thermal_event = None
+            self._state.thermal_model_cache = None
             self.save_state()
         elif scope == "weather_bias":
             count = 0

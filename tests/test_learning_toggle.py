@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -140,36 +140,26 @@ class TestLearningEnabledToggle:
     """Tests that learning_enabled=False causes each guard to skip learning logic."""
 
     def test_thermal_observation_skipped_when_disabled(self, tmp_path: Path):
-        """_record_thermal_observation() returns early when learning_enabled=False."""
+        """_start_thermal_event() returns early when learning_enabled=False."""
+        import asyncio
+
         from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
 
         hass = MagicMock()
         hass.config.config_dir = str(tmp_path)
+        hass.async_add_executor_job = AsyncMock(return_value=None)
 
         config = dict(_BASE_CONFIG, learning_enabled=False)
         coordinator = ClimateAdvisorCoordinator(hass, config)
 
         # Spy on the learning engine
-        coordinator.learning.record_thermal_observation = MagicMock()
+        coordinator.learning.set_pending_thermal_event = MagicMock()
 
-        # Set up a valid HVAC session so the method would otherwise proceed
-        from datetime import timedelta
+        # Call _start_thermal_event — should return early without touching learning
+        asyncio.run(coordinator._start_thermal_event("heat"))
 
-        from homeassistant.util import dt as dt_util
-
-        coordinator._hvac_on_since = dt_util.now() - timedelta(minutes=60)
-        coordinator._hvac_session_mode = "heat"
-        coordinator._hvac_session_start_indoor_temp = 65.0
-        coordinator._hvac_session_start_outdoor_temp = 30.0
-
-        # Provide new_state with a valid current_temperature
-        new_state = MagicMock()
-        new_state.attributes = {"current_temperature": 70.0}
-
-        coordinator._record_thermal_observation(new_state)
-
-        # Guard must prevent the call to the learning engine
-        coordinator.learning.record_thermal_observation.assert_not_called()
+        coordinator.learning.set_pending_thermal_event.assert_not_called()
+        assert coordinator._pending_thermal_event is None
 
     def test_compute_bedtime_setback_uses_default_when_learning_disabled(self):
         """compute_bedtime_setback() returns default depth when learning_enabled=False."""

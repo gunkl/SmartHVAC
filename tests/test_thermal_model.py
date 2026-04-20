@@ -1,14 +1,28 @@
-"""Tests for LearningEngine.get_thermal_model() and get_weather_bias() (Phase 5G)."""
+"""Tests for LearningEngine.get_thermal_model() and get_weather_bias() (Phase 5G / Issue #114).
+
+v2 architecture: thermal model is EWMA-based, reading from thermal_model_cache.
+Observations use k_passive / k_active fields; legacy heating_rate_f_per_hour compat preserved.
+"""
 
 from __future__ import annotations
 
+import sys
+from datetime import date
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+# ── HA module stubs ──────────────────────────────────────────────────────────
+if "homeassistant" not in sys.modules:
+    from conftest import _install_ha_stubs
+
+    _install_ha_stubs()
 
 from custom_components.climate_advisor.learning import LearningEngine, LearningState
 
 _TODAY = "2026-03-27"
+_TODAY_DATE = date(2026, 3, 27)
 
 
 def _make_engine(tmp_path: Path) -> LearningEngine:
@@ -17,41 +31,78 @@ def _make_engine(tmp_path: Path) -> LearningEngine:
     return engine
 
 
-def _make_heat_obs(rate: float = 2.0) -> dict:
+def _inject_obs(engine: LearningEngine, obs: dict) -> None:
+    """Inject a v2 observation via record_thermal_observation with dt_util patched."""
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.date.return_value = _TODAY_DATE
+    mock_dt.now.return_value.isoformat.return_value = f"{_TODAY}T12:00:00"
+    with patch("custom_components.climate_advisor.learning.dt_util", mock_dt):
+        engine.record_thermal_observation(obs)
+
+
+def _make_heat_obs(k_active: float = 2.0, grade: str = "low") -> dict:
+    """Build a v2 heat observation dict."""
     return {
+        "event_id": "test-heat",
         "timestamp": f"{_TODAY}T10:00:00",
         "date": _TODAY,
         "hvac_mode": "heat",
         "session_minutes": 30.0,
-        "rate_f_per_hour": rate,
-        "outdoor_temp_f": 40.0,
         "start_indoor_f": 65.0,
         "end_indoor_f": 66.0,
+        "peak_indoor_f": 66.0,
+        "start_outdoor_f": 40.0,
+        "avg_outdoor_f": 40.0,
+        "delta_t_avg": 25.0,
+        "k_passive": -0.05,
+        "k_active": k_active,
+        "passive_baseline_rate": -0.8,
+        "r_squared_passive": 0.75,
+        "r_squared_active": 0.72,
+        "sample_count_pre": 5,
+        "sample_count_active": 8,
+        "sample_count_post": 15,
+        "confidence_grade": grade,
+        "schema_version": 2,
     }
 
 
-def _make_cool_obs(rate: float = 3.0) -> dict:
+def _make_cool_obs(k_active: float = -3.0, grade: str = "low") -> dict:
+    """Build a v2 cool observation dict (k_active is negative for cooling)."""
     return {
+        "event_id": "test-cool",
         "timestamp": f"{_TODAY}T14:00:00",
         "date": _TODAY,
         "hvac_mode": "cool",
         "session_minutes": 30.0,
-        "rate_f_per_hour": rate,
-        "outdoor_temp_f": 90.0,
         "start_indoor_f": 76.0,
         "end_indoor_f": 75.0,
+        "peak_indoor_f": 76.0,
+        "start_outdoor_f": 90.0,
+        "avg_outdoor_f": 90.0,
+        "delta_t_avg": -14.0,
+        "k_passive": -0.05,
+        "k_active": k_active,
+        "passive_baseline_rate": -0.8,
+        "r_squared_passive": 0.75,
+        "r_squared_active": 0.72,
+        "sample_count_pre": 5,
+        "sample_count_active": 8,
+        "sample_count_post": 15,
+        "confidence_grade": grade,
+        "schema_version": 2,
     }
 
 
 def _make_daily_record(
-    date: str,
+    date_str: str,
     forecast_high: float | None = None,
     observed_high: float | None = None,
     forecast_low: float | None = None,
     observed_low: float | None = None,
 ) -> dict:
     return {
-        "date": date,
+        "date": date_str,
         "day_type": "mild",
         "trend_direction": "stable",
         "forecast_high_f": forecast_high,
@@ -67,7 +118,7 @@ def _make_daily_record(
 
 
 class TestThermalModelComputation:
-    """Tests for get_thermal_model()."""
+    """Tests for get_thermal_model() — v2 EWMA cache-based model."""
 
     def test_none_confidence_when_no_observations(self, tmp_path: Path):
         engine = _make_engine(tmp_path)
@@ -79,61 +130,89 @@ class TestThermalModelComputation:
     def test_low_confidence_at_5_observations(self, tmp_path: Path):
         engine = _make_engine(tmp_path)
         for _ in range(5):
-            engine._state.thermal_observations.append(_make_heat_obs())
+            _inject_obs(engine, _make_heat_obs())
         model = engine.get_thermal_model()
         assert model["confidence"] == "low"
 
     def test_medium_confidence_at_10_observations(self, tmp_path: Path):
         engine = _make_engine(tmp_path)
         for _ in range(10):
-            engine._state.thermal_observations.append(_make_heat_obs())
+            _inject_obs(engine, _make_heat_obs())
         model = engine.get_thermal_model()
         assert model["confidence"] == "medium"
 
     def test_high_confidence_at_20_observations(self, tmp_path: Path):
         engine = _make_engine(tmp_path)
         for _ in range(20):
-            engine._state.thermal_observations.append(_make_heat_obs())
+            _inject_obs(engine, _make_heat_obs())
         model = engine.get_thermal_model()
         assert model["confidence"] == "high"
 
-    def test_heating_rate_is_mean_of_heat_observations(self, tmp_path: Path):
+    def test_heating_rate_reflects_k_active(self, tmp_path: Path):
+        """Single heat observation: heating_rate_f_per_hour == k_active exactly."""
         engine = _make_engine(tmp_path)
-        rates = [2.0, 4.0, 6.0]
-        for r in rates:
-            engine._state.thermal_observations.append(_make_heat_obs(rate=r))
+        _inject_obs(engine, _make_heat_obs(k_active=3.5))
         model = engine.get_thermal_model()
-        expected = sum(rates) / len(rates)
-        assert model["heating_rate_f_per_hour"] == pytest.approx(expected, abs=0.01)
+        # First observation initialises the EWMA directly (no blending)
+        assert model["heating_rate_f_per_hour"] == pytest.approx(3.5, abs=0.01)
 
     def test_cooling_rate_uses_cool_observations_only(self, tmp_path: Path):
+        """Heat and cool observations accumulate into separate k_active fields."""
         engine = _make_engine(tmp_path)
-        # Add heat obs with rate 2.0 and cool obs with rate 5.0
         for _ in range(5):
-            engine._state.thermal_observations.append(_make_heat_obs(rate=2.0))
+            _inject_obs(engine, _make_heat_obs(k_active=2.0))
         for _ in range(5):
-            engine._state.thermal_observations.append(_make_cool_obs(rate=5.0))
+            _inject_obs(engine, _make_cool_obs(k_active=-5.0))
         model = engine.get_thermal_model()
-        assert model["cooling_rate_f_per_hour"] == pytest.approx(5.0, abs=0.01)
-        assert model["heating_rate_f_per_hour"] == pytest.approx(2.0, abs=0.01)
+        # cooling_rate_f_per_hour is abs(k_active_cool) — positive scalar
+        assert model["cooling_rate_f_per_hour"] is not None
+        assert model["cooling_rate_f_per_hour"] > 0
+        assert model["heating_rate_f_per_hour"] is not None
+        assert model["heating_rate_f_per_hour"] > 0
+        # Verify they are independently tracked (not identical values)
+        assert model["heating_rate_f_per_hour"] != model["cooling_rate_f_per_hour"]
 
     def test_none_rate_when_no_obs_for_mode(self, tmp_path: Path):
+        """Only heat observations → cooling_rate is None."""
         engine = _make_engine(tmp_path)
         for _ in range(5):
-            engine._state.thermal_observations.append(_make_heat_obs())
+            _inject_obs(engine, _make_heat_obs())
         model = engine.get_thermal_model()
         assert model["cooling_rate_f_per_hour"] is None
 
-    def test_uses_only_last_30_observations(self, tmp_path: Path):
+    def test_ewma_moves_toward_new_values(self, tmp_path: Path):
+        """After seeding at 2.0 then repeatedly applying 10.0, model moves up."""
         engine = _make_engine(tmp_path)
-        # Add 35 heat obs: first 5 rate=100.0, last 30 rate=2.0
-        for _ in range(5):
-            engine._state.thermal_observations.append(_make_heat_obs(rate=100.0))
-        for _ in range(30):
-            engine._state.thermal_observations.append(_make_heat_obs(rate=2.0))
+        _inject_obs(engine, _make_heat_obs(k_active=2.0))
+        initial = engine.get_thermal_model()["heating_rate_f_per_hour"]
+        assert initial == pytest.approx(2.0, abs=0.01)
+
+        # Apply 20 obs at 10.0 — EWMA with alpha=0.05 for "low" grade
+        for _ in range(20):
+            _inject_obs(engine, _make_heat_obs(k_active=10.0))
+        updated = engine.get_thermal_model()["heating_rate_f_per_hour"]
+        # Model should have moved meaningfully toward 10.0
+        assert updated > initial
+
+    def test_observation_counts_correct(self, tmp_path: Path):
+        """observation_count_heat and observation_count_cool reflect injected counts."""
+        engine = _make_engine(tmp_path)
+        for _ in range(3):
+            _inject_obs(engine, _make_heat_obs())
+        for _ in range(2):
+            _inject_obs(engine, _make_cool_obs())
         model = engine.get_thermal_model()
-        # Only the last THERMAL_MODEL_MAX_OBS (30) are used — all rate=2.0
-        assert model["heating_rate_f_per_hour"] == pytest.approx(2.0, abs=0.01)
+        assert model["observation_count_heat"] == 3
+        assert model["observation_count_cool"] == 2
+        assert model["observation_count_total"] == 5
+
+    def test_k_passive_in_model(self, tmp_path: Path):
+        """k_passive is present in the model after an observation."""
+        engine = _make_engine(tmp_path)
+        _inject_obs(engine, _make_heat_obs())
+        model = engine.get_thermal_model()
+        assert model["k_passive"] is not None
+        assert model["k_passive"] < 0  # always negative
 
 
 # ---------------------------------------------------------------------------

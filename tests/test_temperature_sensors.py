@@ -238,6 +238,13 @@ def _make_update_data_coord(
     coord._last_violation_check = None
     coord._check_comfort_violations = MagicMock()
 
+    # Thermal event pipeline (v2)
+    coord._pending_thermal_event = None
+    coord._pre_heat_sample_buffer = []
+    coord._update_pre_heat_buffer = MagicMock()
+    coord._sample_thermal_event = MagicMock()
+    coord._check_stabilization = AsyncMock()
+
     coord._async_update_data = types.MethodType(ClimateAdvisorCoordinator._async_update_data, coord)
     return coord
 
@@ -287,6 +294,7 @@ def _make_chart_data_coord(
     coord._chart_log = chart_log
 
     coord._thermal_factors = None
+    coord._get_indoor_temp = MagicMock(return_value=None)
 
     coord.get_chart_data = types.MethodType(ClimateAdvisorCoordinator.get_chart_data, coord)
     return coord

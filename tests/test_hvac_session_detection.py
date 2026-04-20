@@ -58,7 +58,7 @@ def _make_thermostat_event(old_state: MagicMock, new_state: MagicMock) -> MagicM
     return event
 
 
-def _make_thermostat_coord(*, hvac_session_mode=None, hvac_on_since=None):
+def _make_thermostat_coord(*, hvac_on_since=None):
     """Coordinator stub with real _async_thermostat_changed bound."""
     ClimateAdvisorCoordinator = _get_coordinator_class()
     coord = object.__new__(ClimateAdvisorCoordinator)
@@ -120,11 +120,12 @@ def _make_thermostat_coord(*, hvac_session_mode=None, hvac_on_since=None):
     coord._is_recent_hvac_command = MagicMock(return_value=False)
     coord._emit_event = MagicMock()
     coord._hvac_on_since = hvac_on_since
-    coord._hvac_session_start_indoor_temp = None
-    coord._hvac_session_start_outdoor_temp = None
-    coord._hvac_session_mode = hvac_session_mode
+    coord._pending_thermal_event = None
+    coord._pre_heat_sample_buffer = []
     coord._flush_hvac_runtime = MagicMock()
-    coord._record_thermal_observation = MagicMock()
+    coord._start_thermal_event = AsyncMock()
+    coord._end_active_phase = AsyncMock()
+    coord._abandon_thermal_event = AsyncMock()
     coord._get_indoor_temp = MagicMock(return_value=72.0)
     coord._get_outdoor_temp = MagicMock(return_value=65.0)
     coord._cancel_all_debounce_timers = MagicMock()
@@ -143,6 +144,7 @@ def _make_update_data_coord(*, hvac_mode: str, hvac_action: str, ca_fan_active: 
     coord = object.__new__(ClimateAdvisorCoordinator)
 
     hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(return_value=None)
     climate_state = _make_state(hvac_mode, hvac_action)
     hass.states.get = MagicMock(return_value=climate_state)
     coord.hass = hass
@@ -264,6 +266,11 @@ def _make_update_data_coord(*, hvac_mode: str, hvac_action: str, ca_fan_active: 
 
     coord._startup_retries_remaining = 0
     coord._startup_hvac_initialized = False
+    coord._pending_thermal_event = None
+    coord._pre_heat_sample_buffer = []
+    coord._update_pre_heat_buffer = MagicMock()
+    coord._sample_thermal_event = MagicMock()
+    coord._check_stabilization = AsyncMock()
 
     coord._async_update_data = types.MethodType(ClimateAdvisorCoordinator._async_update_data, coord)
     return coord
@@ -288,7 +295,7 @@ class TestThermalSessionDetectionReal:
             asyncio.run(coord._async_thermostat_changed(_make_thermostat_event(old, new)))
 
         assert coord._hvac_on_since is not None, "Session should have started"
-        assert coord._hvac_session_mode == "heat", f"Expected session mode 'heat', got {coord._hvac_session_mode!r}"
+        coord._start_thermal_event.assert_called_once_with("heat")
 
     def test_session_mode_heat_set_from_state_not_hvac_action(self):
         """When hvac_action='fan', session mode is resolved from new_state.state='heat'."""
@@ -300,7 +307,7 @@ class TestThermalSessionDetectionReal:
             mock_dt.now.return_value = datetime(2026, 4, 8, 10, 0, 0)
             asyncio.run(coord._async_thermostat_changed(_make_thermostat_event(old, new)))
 
-        assert coord._hvac_session_mode == "heat"
+        coord._start_thermal_event.assert_called_once_with("heat")
 
     def test_session_mode_cool_set_from_state_when_hvac_action_is_fan(self):
         """hvac_action='fan' on a cool-mode turn-on → session mode = 'cool'."""
@@ -312,16 +319,13 @@ class TestThermalSessionDetectionReal:
             mock_dt.now.return_value = datetime(2026, 4, 8, 10, 0, 0)
             asyncio.run(coord._async_thermostat_changed(_make_thermostat_event(old, new)))
 
-        assert coord._hvac_session_mode == "cool"
+        coord._start_thermal_event.assert_called_once_with("cool")
 
     def test_turn_off_detected_when_hvac_action_stuck_at_fan(self):
-        """old=heat/fan, new=off/fan: turn-off fires and _record_thermal_observation is called."""
+        """old=heat/fan, new=off/fan: turn-off fires and _end_active_phase is called."""
         coord = _make_thermostat_coord(
-            hvac_session_mode="heat",
             hvac_on_since=datetime(2026, 4, 8, 9, 0, 0),
         )
-        coord.hass.async_add_executor_job = AsyncMock(return_value=None)
-        coord.learning = MagicMock()
         old = _make_state("heat", hvac_action="fan")
         new = _make_state("off", hvac_action="fan")
 
@@ -330,7 +334,7 @@ class TestThermalSessionDetectionReal:
             asyncio.run(coord._async_thermostat_changed(_make_thermostat_event(old, new)))
 
         coord._flush_hvac_runtime.assert_called_once()
-        coord._record_thermal_observation.assert_called_once()
+        coord._end_active_phase.assert_called_once()
 
     def test_normal_heating_action_still_works(self):
         """Standard old=off/'' → new=heat/'heating' path still sets mode correctly."""
@@ -343,10 +347,10 @@ class TestThermalSessionDetectionReal:
             asyncio.run(coord._async_thermostat_changed(_make_thermostat_event(old, new)))
 
         assert coord._hvac_on_since is not None
-        assert coord._hvac_session_mode == "heat"
+        coord._start_thermal_event.assert_called_once_with("heat")
 
-    def test_session_mode_none_when_state_is_unrecognised(self):
-        """fan_only mode + fan action → session mode stays None."""
+    def test_fan_only_mode_creates_fan_only_event(self):
+        """fan_only mode + fan action → _start_thermal_event called with 'fan_only'."""
         coord = _make_thermostat_coord()
         old = _make_state("off", hvac_action="")
         new = _make_state("fan_only", hvac_action="fan")
@@ -355,7 +359,7 @@ class TestThermalSessionDetectionReal:
             mock_dt.now.return_value = datetime(2026, 4, 8, 10, 0, 0)
             asyncio.run(coord._async_thermostat_changed(_make_thermostat_event(old, new)))
 
-        assert coord._hvac_session_mode is None
+        coord._start_thermal_event.assert_called_once_with("fan_only")
 
 
 # ---------------------------------------------------------------------------
@@ -441,10 +445,8 @@ class TestChartLogEventDriven:
     def test_heating_end_writes_chart_log(self):
         """heating → idle transition writes hvac_action_change entry with hvac='idle'."""
         coord = _make_thermostat_coord(
-            hvac_session_mode="heat",
             hvac_on_since=datetime(2026, 4, 17, 14, 26, 17),
         )
-        coord.learning = MagicMock()
         old = _make_state("heat", hvac_action="heating")
         new = _make_state("heat", hvac_action="idle")
 
