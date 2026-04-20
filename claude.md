@@ -220,6 +220,15 @@ Re-stage any files ruff modified, then run tests. Never run pytest on unlinted c
 
 A `tools/validate.py` hook also runs on `custom_components/climate_advisor/` files.
 
+### CONFIG_METADATA Category Sync
+
+When adding a new `category` value to CONFIG_METADATA in `const.py`, also update:
+- `VALID_CATEGORIES` set in `tests/test_config_metadata.py`
+- The `expected` list in `tests/test_config_flow.py::TestOptionsFlowMenu::test_menu_options_list`
+- `OPTIONS_MENU_OPTIONS` in `config_flow.py` if the category needs its own menu step
+
+Skipping any of these will produce silent `assert cat in VALID_CATEGORIES` failures.
+
 ### Automation Logic Table (CRITICAL)
 
 **Decision**: The automation logic table in `docs/08-COMPUTATION-REFERENCE.md` is the definitive reference for expected behavior across all classification contexts and events.
@@ -297,6 +306,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 The git history should reflect human authorship only.
+
+**Override**: If the user explicitly insists after receiving the standard reminder, proceed with the commit. Do not repeat the objection a second time.
 
 ### Recommended Workflow
 
