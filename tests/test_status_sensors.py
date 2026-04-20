@@ -9,8 +9,8 @@ Tests for:
 from __future__ import annotations
 
 import sys
-from datetime import time
-from unittest.mock import MagicMock
+from datetime import date, time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -443,16 +443,39 @@ def _make_coordinator_with_learning(tmp_path):
 
 
 def _make_thermal_obs(mode: str = "heat", rate: float = 2.0) -> dict:
+    """Build a v2 ThermalObservation dict. rate is used as k_active."""
     return {
+        "event_id": "test-status-obs",
         "timestamp": "2026-03-27T10:00:00",
         "date": "2026-03-27",
         "hvac_mode": mode,
-        "session_minutes": 30.0,
-        "rate_f_per_hour": rate,
-        "outdoor_temp_f": 40.0,
+        "session_minutes": 8.0,
         "start_indoor_f": 65.0,
-        "end_indoor_f": 66.0,
+        "end_indoor_f": 68.0,
+        "peak_indoor_f": 68.0,
+        "start_outdoor_f": 40.0,
+        "avg_outdoor_f": 40.0,
+        "delta_t_avg": 26.0,
+        "k_passive": -0.05,
+        "k_active": rate,  # used as k_active for legacy heating_rate_f_per_hour compat
+        "passive_baseline_rate": -0.8,
+        "r_squared_passive": 0.75,
+        "r_squared_active": 0.72,
+        "sample_count_pre": 5,
+        "sample_count_active": 8,
+        "sample_count_post": 15,
+        "confidence_grade": "low",
+        "schema_version": 2,
     }
+
+
+def _inject_thermal_obs(learning, obs: dict) -> None:
+    """Inject a v2 observation via record_thermal_observation with dt_util patched."""
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.date.return_value = date(2026, 3, 27)
+    mock_dt.now.return_value.isoformat.return_value = "2026-03-27T12:00:00"
+    with patch("custom_components.climate_advisor.learning.dt_util", mock_dt):
+        learning.record_thermal_observation(obs)
 
 
 def _make_bias_record(i: int, forecast_high: float, observed_high: float) -> dict:
@@ -474,7 +497,7 @@ class TestComplianceSensorThermalAttributes:
         """Inject observations → attrs have non-None rates."""
         coordinator = _make_coordinator_with_learning(tmp_path)
         for _ in range(5):
-            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 2.0))
+            _inject_thermal_obs(coordinator.learning, _make_thermal_obs("heat", 2.0))
         attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
 
         from custom_components.climate_advisor.const import ATTR_THERMAL_HEATING_RATE
@@ -500,7 +523,7 @@ class TestComplianceSensorThermalAttributes:
         """Inject 5 observations → confidence == 'low'."""
         coordinator = _make_coordinator_with_learning(tmp_path)
         for _ in range(5):
-            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 2.0))
+            _inject_thermal_obs(coordinator.learning, _make_thermal_obs("heat", 2.0))
         attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
 
         from custom_components.climate_advisor.const import ATTR_THERMAL_CONFIDENCE
@@ -512,7 +535,7 @@ class TestComplianceSensorThermalAttributes:
         coordinator = _make_coordinator_with_learning(tmp_path)
         coordinator.config["temp_unit"] = "celsius"
         for _ in range(5):
-            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 9.0))
+            _inject_thermal_obs(coordinator.learning, _make_thermal_obs("heat", 9.0))
         attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
 
         from custom_components.climate_advisor.const import ATTR_THERMAL_HEATING_RATE
@@ -525,7 +548,7 @@ class TestComplianceSensorThermalAttributes:
         coordinator = _make_coordinator_with_learning(tmp_path)
         coordinator.config["temp_unit"] = "fahrenheit"
         for _ in range(5):
-            coordinator.learning._state.thermal_observations.append(_make_thermal_obs("heat", 3.0))
+            _inject_thermal_obs(coordinator.learning, _make_thermal_obs("heat", 3.0))
         attrs = _compliance_sensor_extra_state_attributes_with_thermal(coordinator)
 
         from custom_components.climate_advisor.const import ATTR_THERMAL_HEATING_RATE

@@ -96,10 +96,7 @@ from .const import (
     FAN_MODE_HVAC,
     INVESTIGATION_REPORT_HISTORY_CAP,
     INVESTIGATION_REPORTS_FILE,
-    MAX_THERMAL_RATE_F_PER_HOUR,
     MAX_WEATHER_BIAS_APPLY_F,
-    MIN_THERMAL_RATE_F_PER_HOUR,
-    MIN_THERMAL_SESSION_MINUTES,
     MIN_WEATHER_BIAS_APPLY_F,
     OCCUPANCY_AWAY,
     OCCUPANCY_GUEST,
@@ -110,6 +107,12 @@ from .const import (
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_SENSOR,
     TEMP_SOURCE_WEATHER_SERVICE,
+    THERMAL_MAX_ACTIVE_SAMPLES,
+    THERMAL_MAX_POST_HEAT_SAMPLES,
+    THERMAL_MIN_POST_HEAT_SAMPLES,
+    THERMAL_POST_HEAT_TIMEOUT_MINUTES,
+    THERMAL_STABILIZATION_THRESHOLD_F,
+    THERMAL_STABILIZATION_WINDOW_MINUTES,
     THRESHOLD_HOT,
     THRESHOLD_MILD,
     THRESHOLD_WARM,
@@ -214,10 +217,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         # HVAC runtime tracking
         self._hvac_on_since: datetime | None = None
-        self._hvac_session_start_indoor_temp: float | None = None
-        self._hvac_session_start_outdoor_temp: float | None = None
-        self._hvac_session_mode: str | None = None  # "heat" or "cool"
         self._last_outdoor_temp: float | None = None  # most recent outdoor reading for gate checks
+        # Thermal observation pipeline (Issue #114)
+        self._pending_thermal_event: dict | None = None
+        self._pre_heat_sample_buffer: list[dict] = []  # rolling pre-heat window, max 15
         self._startup_hvac_initialized: bool = False  # Issue #96: prevents repeated late-start init
         self._last_state_contradiction_time: datetime | None = None  # dedup for state_contradiction_warning events
         self._last_violation_check: datetime | None = None
@@ -962,6 +965,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 self._first_run = False
                 climate_state = self.hass.states.get(self.config["climate_entity"])
                 self._check_startup_override(climate_state, self._current_classification)
+                # Recover any pending thermal event that survived restart
+                recovered = await self.hass.async_add_executor_job(self.learning.recover_pending_event_on_startup)
+                if recovered:
+                    _LOGGER.info(
+                        "Startup: recovered thermal observation event_id=%s mode=%s grade=%s",
+                        recovered.get("event_id", "?"),
+                        recovered.get("hvac_mode", "?"),
+                        recovered.get("confidence_grade", "?"),
+                    )
 
             await self.automation_engine.apply_classification(self._current_classification)
 
@@ -1075,7 +1087,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             and not self._startup_hvac_initialized
         ):
             self._startup_hvac_initialized = True
-            self._initialize_hvac_session_from_current_state(_cs)
+            await self._initialize_hvac_session_from_current_state(_cs)
 
         # Emit a structured warning event when the HVAC entity reports an active action
         # (heating/cooling/fan) while hvac_mode is "off".  This surfaces the contradiction
@@ -1104,6 +1116,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         _base_runtime = self._today_record.hvac_runtime_minutes if self._today_record else 0.0
         _session_elapsed = (dt_util.now() - self._hvac_on_since).total_seconds() / 60 if self._hvac_on_since else 0.0
         hvac_runtime_today = round(_base_runtime + _session_elapsed, 1)
+
+        # --- Thermal observation pipeline sampling ---
+        self._update_pre_heat_buffer()
+        self._sample_thermal_event()
+        await self._check_stabilization()
 
         # --- Temperatures for coordinator.data (sensor entities + AI context) ---
         _indoor_temp = self._get_indoor_temp()
@@ -1813,37 +1830,41 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             is_running = new_state.state not in idle_modes
 
         if not was_running and is_running:
-            # HVAC just turned on
+            # HVAC just turned on — determine session_mode from hvac_action or hvac_mode
             self._hvac_on_since = dt_util.now()
-            self._hvac_session_start_indoor_temp = self._get_indoor_temp()
-            weather_entity = self.config.get("weather_entity")
-            weather_attrs = (
-                self.hass.states.get(weather_entity).attributes
-                if weather_entity and self.hass.states.get(weather_entity)
-                else {}
-            )
-            self._hvac_session_start_outdoor_temp = self._get_outdoor_temp(weather_attrs)
-            action = new_state.attributes.get("hvac_action", "").lower()
+            action = new_action
             if action == "heating":
-                self._hvac_session_mode = "heat"
+                session_mode = "heat"
             elif action == "cooling":
-                self._hvac_session_mode = "cool"
+                session_mode = "cool"
             elif new_state.state == "heat":
-                # Fallback: some thermostats report hvac_action="fan" or "idle" briefly at
-                # compressor startup before transitioning to "heating".  Use hvac_mode state
-                # as a reliable alternative so the thermal observation is not lost.
-                self._hvac_session_mode = "heat"
+                # Fallback: some thermostats report hvac_action="fan" or "idle" briefly
+                # at compressor startup before transitioning to "heating".
+                session_mode = "heat"
             elif new_state.state == "cool":
-                self._hvac_session_mode = "cool"
+                session_mode = "cool"
+            elif new_state.state == "fan_only":
+                session_mode = "fan_only"
             else:
-                self._hvac_session_mode = None
+                session_mode = None
+            if session_mode:
+                await self._start_thermal_event(session_mode)
         elif was_running and not is_running:
-            # HVAC just turned off — flush runtime
+            # HVAC just turned off — flush runtime and end active phase
             self._flush_hvac_runtime()
-            self._record_thermal_observation(new_state)
-            await self.hass.async_add_executor_job(self.learning.save_state)
+            await self._end_active_phase()
             self._hvac_on_since = None
-            await self._async_save_state()
+        elif was_running and is_running and old_action != new_action:
+            # heat_cool mode: hvac_action switched heating↔cooling mid-session
+            if old_action in running_actions and new_action in running_actions:
+                _LOGGER.info(
+                    "heat_cool mid-session switch %s → %s: abandoning current event",
+                    old_action,
+                    new_action,
+                )
+                await self._abandon_thermal_event("heat_cool mode switch mid-session")
+                new_session_mode = "heat" if new_action == "heating" else "cool"
+                await self._start_thermal_event(new_session_mode)
 
         # If thermostat is now fully off, clear any stale HVAC-based fan active flag.
         # Only applies to HVAC/Both fan modes — whole-house fans run independently.
@@ -1959,7 +1980,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             )
             self.automation_engine.handle_fan_manual_override()
 
-    def _initialize_hvac_session_from_current_state(self, climate_state: Any) -> None:
+    async def _initialize_hvac_session_from_current_state(self, climate_state: Any) -> None:
         """Late-start HVAC session when HA restarted mid-session (Issue #96).
 
         Sets session start from current time. Thermal observations will cover
@@ -1967,105 +1988,290 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         Called from _async_update_data() on first update if HVAC is already running.
         """
         self._hvac_on_since = dt_util.now()
-        self._hvac_session_start_indoor_temp = self._get_indoor_temp()
+        action = climate_state.attributes.get("hvac_action", "").lower()
+        if action == "heating":
+            session_mode = "heat"
+        elif action == "cooling":
+            session_mode = "cool"
+        elif climate_state.state == "heat":
+            session_mode = "heat"
+        elif climate_state.state == "cool":
+            session_mode = "cool"
+        elif climate_state.state == "fan_only":
+            session_mode = "fan_only"
+        else:
+            session_mode = None
+        _LOGGER.warning(
+            "Late-start HVAC session initialized: mode=%s (HVAC was running at HA startup — "
+            "session duration will be shorter than actual)",
+            session_mode,
+        )
+        if session_mode:
+            await self._start_thermal_event(session_mode)
+
+    # ------------------------------------------------------------------
+    # Thermal observation pipeline (Issue #114)
+    # ------------------------------------------------------------------
+
+    def _get_current_sample(self, elapsed_minutes: float) -> dict:
+        """Build a sample dict from current sensor readings."""
+        indoor = self._get_indoor_temp()
         weather_entity = self.config.get("weather_entity")
         weather_attrs = (
             self.hass.states.get(weather_entity).attributes
             if weather_entity and self.hass.states.get(weather_entity)
             else {}
         )
-        self._hvac_session_start_outdoor_temp = self._get_outdoor_temp(weather_attrs)
-        action = climate_state.attributes.get("hvac_action", "").lower()
-        if action == "heating":
-            self._hvac_session_mode = "heat"
-        elif action == "cooling":
-            self._hvac_session_mode = "cool"
-        elif climate_state.state == "heat":
-            self._hvac_session_mode = "heat"
-        elif climate_state.state == "cool":
-            self._hvac_session_mode = "cool"
-        else:
-            self._hvac_session_mode = None
-        _LOGGER.warning(
-            "Late-start HVAC session initialized: mode=%s (HVAC was running at HA startup — "
-            "session duration will be shorter than actual)",
-            self._hvac_session_mode,
-        )
-
-    def _record_thermal_observation(self, new_state: Any) -> None:
-        """Record a thermal observation when HVAC session ends."""
-        if not self.config.get("learning_enabled", True):
-            _LOGGER.debug("Skipping thermal observation: learning_enabled=False")
-            return
-        if self._hvac_on_since is None:
-            _LOGGER.warning(
-                "Thermal obs skipped: no session start time recorded (HVAC may have been running when HA started)"
-            )
-            return
-        session_minutes = (dt_util.now() - self._hvac_on_since).total_seconds() / 60.0
-        if session_minutes < MIN_THERMAL_SESSION_MINUTES:
-            _LOGGER.info(
-                "Thermal obs skipped: session too short (%.1f min < %.1f min minimum)",
-                session_minutes,
-                MIN_THERMAL_SESSION_MINUTES,
-            )
-            return
-        if self._hvac_session_start_indoor_temp is None:
-            _LOGGER.warning("Thermal obs skipped: no indoor temperature recorded at session start")
-            return
-        if self._hvac_session_mode not in ("heat", "cool"):
-            _LOGGER.warning(
-                "Thermal obs skipped: session mode %r is not 'heat' or 'cool'"
-                " — check that climate entity reports hvac_action as 'heating' or 'cooling'",
-                self._hvac_session_mode,
-            )
-            return
-
-        end_indoor = self._get_indoor_temp()
-        if end_indoor is None:
-            _LOGGER.warning("Thermal obs skipped: indoor temp unavailable at session end")
-            return
-
-        temp_delta = abs(end_indoor - self._hvac_session_start_indoor_temp)
-        rate = temp_delta / (session_minutes / 60.0)
-        if rate < MIN_THERMAL_RATE_F_PER_HOUR or rate > MAX_THERMAL_RATE_F_PER_HOUR:
-            _LOGGER.debug(
-                "Thermal obs skipped: rate=%.2f°F/hr outside [%.1f, %.1f] range",
-                rate,
-                MIN_THERMAL_RATE_F_PER_HOUR,
-                MAX_THERMAL_RATE_F_PER_HOUR,
-            )
-            return
-
-        obs = {
+        outdoor = self._get_outdoor_temp(weather_attrs)
+        return {
             "timestamp": dt_util.now().isoformat(),
-            "date": dt_util.now().date().isoformat(),
-            "hvac_mode": self._hvac_session_mode,
-            "session_minutes": round(session_minutes, 1),
-            "rate_f_per_hour": round(rate, 3),
-            "outdoor_temp_f": round(self._hvac_session_start_outdoor_temp, 1)
-            if self._hvac_session_start_outdoor_temp is not None
-            else 0.0,
-            "start_indoor_f": round(self._hvac_session_start_indoor_temp, 1),
-            "end_indoor_f": round(end_indoor, 1),
+            "indoor_temp_f": indoor if indoor is not None else 0.0,
+            "outdoor_temp_f": outdoor if outdoor is not None else 0.0,
+            "elapsed_minutes": elapsed_minutes,
         }
-        self.learning.record_thermal_observation(obs)
 
-        if self._today_record is not None:
-            self._today_record.thermal_session_count += 1
-            if (
-                self._today_record.peak_hvac_rate_f_per_hour is None
-                or rate > self._today_record.peak_hvac_rate_f_per_hour
-            ):
-                self._today_record.peak_hvac_rate_f_per_hour = round(rate, 3)
+    def _update_pre_heat_buffer(self) -> None:
+        """Append current reading to the rolling pre-heat buffer (max 15 entries).
 
-        _LOGGER.debug(
-            "Thermal obs recorded: mode=%s rate=%.2f°F/hr session=%.0fmin outdoor=%.1f°F",
-            self._hvac_session_mode,
-            rate,
-            session_minutes,
-            obs["outdoor_temp_f"],
+        Called every update cycle when no active thermal event is running.
+        """
+        if self._pending_thermal_event is not None:
+            return
+        from .const import THERMAL_PRE_HEAT_BUFFER_MINUTES
+
+        now = dt_util.now()
+        sample = self._get_current_sample(0.0)
+        sample["timestamp"] = now.isoformat()
+        self._pre_heat_sample_buffer.append(sample)
+        # Keep only entries within the buffer window
+        cutoff = (now - timedelta(minutes=THERMAL_PRE_HEAT_BUFFER_MINUTES)).isoformat()
+        self._pre_heat_sample_buffer = [s for s in self._pre_heat_sample_buffer if s["timestamp"] >= cutoff]
+        # Hard cap at 15
+        if len(self._pre_heat_sample_buffer) > 15:
+            self._pre_heat_sample_buffer = self._pre_heat_sample_buffer[-15:]
+
+    async def _start_thermal_event(self, session_mode: str) -> None:
+        """Begin a new thermal observation event.
+
+        Abandons any existing event first. Snapshots the pre-heat buffer.
+        """
+        if not self.config.get("learning_enabled", True):
+            return
+        if self._pending_thermal_event is not None:
+            await self._abandon_thermal_event("new HVAC session started")
+
+        import uuid
+
+        now = dt_util.now()
+        # Re-stamp pre-heat buffer relative to elapsed_minutes=0 at event start
+        pre_samples = []
+        for s in self._pre_heat_sample_buffer:
+            try:
+                from homeassistant.util import dt as dt_util2
+
+                ts = dt_util2.parse_datetime(s["timestamp"])
+                elapsed = (now - ts).total_seconds() / 60.0 if ts else 0.0
+            except Exception:
+                elapsed = 0.0
+            pre_samples.append(
+                {
+                    "timestamp": s["timestamp"],
+                    "indoor_temp_f": s["indoor_temp_f"],
+                    "outdoor_temp_f": s["outdoor_temp_f"],
+                    "elapsed_minutes": -elapsed,  # negative = before session start
+                }
+            )
+
+        indoor = self._get_indoor_temp()
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "created_at": now.isoformat(),
+            "hvac_mode": session_mode,
+            "session_mode": session_mode,
+            "status": "active",
+            "active_start": now.isoformat(),
+            "active_end": None,
+            "stabilized_at": None,
+            "pre_heat_samples": pre_samples,
+            "active_samples": [],
+            "post_heat_samples": [],
+            "start_indoor_f": indoor,
+            "end_indoor_f": None,
+            "peak_indoor_f": indoor,
+            "start_outdoor_f": None,
+            "session_minutes": None,
+            "schema_version": 1,
+        }
+        # Grab first sample now
+        first_sample = self._get_current_sample(0.0)
+        event["active_samples"].append(first_sample)
+        event["start_outdoor_f"] = first_sample["outdoor_temp_f"]
+
+        self._pending_thermal_event = event
+        self.learning.set_pending_thermal_event(event)
+        await self.hass.async_add_executor_job(self.learning.save_state)
+        _LOGGER.info(
+            "Thermal event started: event_id=%s mode=%s indoor=%.1f°F",
+            event["event_id"],
+            session_mode,
+            indoor if indoor is not None else 0.0,
         )
+
+    def _sample_thermal_event(self) -> None:
+        """Append a sample to the active or post_heat list. Called every update cycle."""
+        if self._pending_thermal_event is None:
+            return
+        status = self._pending_thermal_event.get("status")
+        if status not in ("active", "post_heat"):
+            return
+
+        # Skip sample when indoor temp is unavailable — recording 0.0 would corrupt regression
+        if self._get_indoor_temp() is None:
+            return
+
+        active_start_str = self._pending_thermal_event.get("active_start")
+        try:
+            from homeassistant.util import dt as dt_util2
+
+            active_start = dt_util2.parse_datetime(active_start_str) if active_start_str else dt_util.now()
+        except Exception:
+            active_start = dt_util.now()
+        elapsed = (dt_util.now() - active_start).total_seconds() / 60.0
+
+        sample = self._get_current_sample(elapsed)
+
+        if status == "active":
+            samples = self._pending_thermal_event["active_samples"]
+            if len(samples) < THERMAL_MAX_ACTIVE_SAMPLES:
+                samples.append(sample)
+            # Update peak indoor
+            indoor = sample["indoor_temp_f"]
+            cur_peak = self._pending_thermal_event.get("peak_indoor_f")
+            if indoor and (cur_peak is None or indoor > cur_peak):
+                self._pending_thermal_event["peak_indoor_f"] = indoor
+        else:  # post_heat
+            samples = self._pending_thermal_event["post_heat_samples"]
+            if len(samples) < THERMAL_MAX_POST_HEAT_SAMPLES:
+                samples.append(sample)
+            # Persist every 5th post-heat sample for crash safety
+            if len(samples) % 5 == 0:
+                self.learning.set_pending_thermal_event(self._pending_thermal_event)
+
+    async def _end_active_phase(self) -> None:
+        """Transition active → post_heat when HVAC action stops."""
+        if self._pending_thermal_event is None or self._pending_thermal_event.get("status") != "active":
+            return
+        now = dt_util.now()
+        self._pending_thermal_event["status"] = "post_heat"
+        self._pending_thermal_event["active_end"] = now.isoformat()
+
+        # Compute session_minutes
+        active_start_str = self._pending_thermal_event.get("active_start")
+        try:
+            from homeassistant.util import dt as dt_util2
+
+            active_start = dt_util2.parse_datetime(active_start_str) if active_start_str else now
+        except Exception:
+            active_start = now
+        self._pending_thermal_event["session_minutes"] = (now - active_start).total_seconds() / 60.0
+
+        self.learning.set_pending_thermal_event(self._pending_thermal_event)
+        await self.hass.async_add_executor_job(self.learning.save_state)
+        _LOGGER.info(
+            "Thermal event active → post_heat: event_id=%s session=%.1f min",
+            self._pending_thermal_event.get("event_id", "?"),
+            self._pending_thermal_event["session_minutes"],
+        )
+
+    async def _check_stabilization(self) -> None:
+        """Check if post-heat temperature has stabilized or timed out.
+
+        Called every update cycle during post_heat phase.
+        Commits on stabilization; abandons on timeout.
+        """
+        if self._pending_thermal_event is None or self._pending_thermal_event.get("status") != "post_heat":
+            return
+
+        active_end_str = self._pending_thermal_event.get("active_end")
+        try:
+            from homeassistant.util import dt as dt_util2
+
+            active_end = dt_util2.parse_datetime(active_end_str) if active_end_str else dt_util.now()
+        except Exception:
+            active_end = dt_util.now()
+
+        elapsed_post = (dt_util.now() - active_end).total_seconds() / 60.0
+
+        # Timeout check
+        if elapsed_post > THERMAL_POST_HEAT_TIMEOUT_MINUTES:
+            await self._abandon_thermal_event("post_heat timeout exceeded")
+            return
+
+        # Stabilization check: last THERMAL_STABILIZATION_WINDOW_MINUTES of samples
+        post_samples = self._pending_thermal_event.get("post_heat_samples", [])
+        if len(post_samples) < THERMAL_MIN_POST_HEAT_SAMPLES:
+            return
+
+        # Collect samples from the last THERMAL_STABILIZATION_WINDOW_MINUTES
+        recent = []
+        now_iso = dt_util.now()
+        for s in reversed(post_samples):
+            try:
+                sample_ts = dt_util.parse_datetime(s["timestamp"])
+                if sample_ts and (now_iso - sample_ts).total_seconds() / 60.0 <= THERMAL_STABILIZATION_WINDOW_MINUTES:
+                    recent.append(s)
+            except Exception:
+                pass
+        recent.reverse()
+
+        if len(recent) < 2:
+            return
+
+        indoor_vals = [s["indoor_temp_f"] for s in recent]
+        if max(indoor_vals) - min(indoor_vals) < THERMAL_STABILIZATION_THRESHOLD_F:
+            self._pending_thermal_event["status"] = "stabilized"
+            self._pending_thermal_event["stabilized_at"] = dt_util.now().isoformat()
+            self._pending_thermal_event["end_indoor_f"] = indoor_vals[-1]
+            _LOGGER.info(
+                "Thermal event stabilized: event_id=%s post_samples=%d",
+                self._pending_thermal_event.get("event_id", "?"),
+                len(post_samples),
+            )
+            await self._commit_thermal_event()
+
+    async def _commit_thermal_event(self) -> None:
+        """Compute physics parameters and record the thermal observation."""
+        if self._pending_thermal_event is None:
+            return
+        if not self.config.get("learning_enabled", True):
+            self._pending_thermal_event = None
+            self.learning.set_pending_thermal_event(None)
+            return
+
+        obs = await self.hass.async_add_executor_job(
+            self.learning._commit_event_from_dict,
+            self._pending_thermal_event,
+            None,
+        )
+
+        if obs and self._today_record is not None:
+            self._today_record.thermal_session_count += 1
+
+        self._pending_thermal_event = None
+        self.learning.set_pending_thermal_event(None)
+        await self.hass.async_add_executor_job(self.learning.save_state)
+
+    async def _abandon_thermal_event(self, reason: str) -> None:
+        """Discard the current pending thermal event."""
+        if self._pending_thermal_event is not None:
+            _LOGGER.info(
+                "Thermal event abandoned: event_id=%s reason=%s",
+                self._pending_thermal_event.get("event_id", "?"),
+                reason,
+            )
+        self._pending_thermal_event = None
+        self.learning.set_pending_thermal_event(None)
+        await self.hass.async_add_executor_job(self.learning.save_state)
 
     def _compute_next_action(self, c: DayClassification | None, indoor_temp: float | None = None) -> str:
         """Compute the next recommended human action for display."""
@@ -2366,7 +2572,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         predicted_indoor = [
             {"ts": p["ts"], "temp": _conv(p["temp"])}
-            for p in _build_predicted_indoor_future(self._hourly_forecast_temps, self.config, now)
+            for p in _build_predicted_indoor_future(
+                self._hourly_forecast_temps,
+                self.config,
+                now,
+                current_indoor_temp=self._get_indoor_temp(),
+                thermal_model=self.learning.get_thermal_model(),
+            )
         ]
 
         def _conv_log_entry(e: dict) -> dict:
@@ -2612,14 +2824,65 @@ def _outdoor_conditional_diff(outdoor: float, thermal_factors: dict) -> float:
         return warm
 
 
+def _simulate_indoor_physics(
+    t_start: float,
+    t_outdoor: float,
+    k_passive: float,
+    k_active: float | None,
+    dt_hours: float,
+    setpoint: float | None,
+    *,
+    comfort_heat: float,
+    comfort_cool: float,
+) -> float:
+    """Advance indoor temperature by dt_hours using the two-parameter ODE.
+
+    dT/dt = k_passive * (T - T_outdoor) + Q
+    Q = k_active when HVAC is driving toward setpoint, 0 otherwise.
+
+    Q sign: for heating k_active > 0; for cooling k_active < 0.
+    HVAC is considered active when:
+    - setpoint >= comfort_heat and T < setpoint (heating needed)
+    - setpoint <= comfort_cool and T > setpoint (cooling needed)
+    """
+    import math
+
+    k_p = k_passive
+    q = 0.0
+    if setpoint is not None and k_active is not None:
+        if setpoint >= comfort_heat and t_start < setpoint:
+            q = abs(k_active)  # heating: always positive
+        elif setpoint <= comfort_cool and t_start > setpoint:
+            q = -abs(k_active)  # cooling: always negative
+
+    exp_kp = math.exp(k_p * dt_hours)
+    t_next = (
+        t_outdoor + (t_start - t_outdoor) * exp_kp + (q / k_p) * (exp_kp - 1) if k_p != 0 else t_start + q * dt_hours
+    )
+
+    # Clamp: heating won't overshoot setpoint; cooling won't undershoot
+    if setpoint is not None:
+        if q > 0:
+            t_next = min(t_next, setpoint)
+        elif q < 0:
+            t_next = max(t_next, setpoint)
+    return t_next
+
+
 def _build_predicted_indoor_future(
     hourly_forecast: list[dict] | None,
     config: dict[str, Any],
     now: Any,
+    current_indoor_temp: float | None = None,
+    thermal_model: dict | None = None,
 ) -> list[dict]:
     """Build future predicted indoor temps from the automation plan.
 
-    Mirrors the automation engine's setpoint logic:
+    When thermal_model has "low" confidence or above, uses the physics ODE:
+      T(t+dt) = T_outdoor + (T - T_outdoor)*exp(k_p*dt) + (Q/k_p)*(exp(k_p*dt) - 1)
+    Otherwise falls back to the setpoint-schedule approach (mirrors automation plan).
+
+    Fallback (setpoint-schedule):
     - heat days: sleep_heat (or comfort_heat−4°F default) overnight, comfort_heat waking
     - cool days: sleep_cool (or comfort_cool+3°F default) overnight, comfort_cool waking
     - off days: outdoor + 2°F buffer, floored at setback_heat
@@ -2703,8 +2966,33 @@ def _build_predicted_indoor_future(
         {str(d): m for d, m in sorted(day_modes.items())},
     )
 
+    # Decide whether to use physics simulation or setpoint-schedule fallback.
+    # Physics requires: thermal_model with confidence != "none", k_passive, and a seed temp.
+    _use_physics = False
+    _k_passive: float | None = None
+    _k_active_heat: float | None = None
+    _k_active_cool: float | None = None
+    if thermal_model and current_indoor_temp is not None:
+        _conf = thermal_model.get("confidence", "none")
+        _k_passive = thermal_model.get("k_passive")
+        _k_active_heat = thermal_model.get("k_active_heat")
+        _k_active_cool = thermal_model.get("k_active_cool")
+        if _conf != "none" and _k_passive is not None and _k_passive < 0:
+            _use_physics = True
+            _LOGGER.debug(
+                "_build_predicted_indoor_future: using physics model "
+                "(conf=%s k_passive=%.4f k_active_heat=%s k_active_cool=%s)",
+                _conf,
+                _k_passive,
+                f"{_k_active_heat:.2f}" if _k_active_heat is not None else "None",
+                f"{_k_active_cool:.2f}" if _k_active_cool is not None else "None",
+            )
+
     result = []
     skipped_past = 0
+    _t_current = current_indoor_temp  # running indoor temp for physics simulation
+    _prev_ts = now  # previous timestamp for dt calculation
+
     for entry in hourly_forecast:
         dt_str = entry.get("datetime") or entry.get("time")
         if not dt_str:
@@ -2721,27 +3009,74 @@ def _build_predicted_indoor_future(
         mode = day_modes.get(local_ts.date(), "off")
         h = local_ts.hour + local_ts.minute / 60.0
 
-        if mode == "heat":
-            if h < wake_h:
-                temp = setback_temp_heat
-            elif h < wake_h + ramp_h:
-                temp = setback_temp_heat + (h - wake_h) / ramp_h * (comfort_heat - setback_temp_heat)
-            elif h < sleep_h:
-                temp = comfort_heat
+        if _use_physics and _t_current is not None and outdoor is not None:
+            # Compute setpoint from the automation plan (same schedule logic)
+            if mode == "heat":
+                if h < wake_h:
+                    setpoint = setback_temp_heat
+                elif h < wake_h + ramp_h:
+                    setpoint = setback_temp_heat + (h - wake_h) / ramp_h * (comfort_heat - setback_temp_heat)
+                elif h < sleep_h:
+                    setpoint = comfort_heat
+                else:
+                    setpoint = setback_temp_heat
+                k_active_for_mode = _k_active_heat
+            elif mode == "cool":
+                if h < wake_h:
+                    setpoint = setback_temp_cool
+                elif h < wake_h + ramp_h:
+                    setpoint = setback_temp_cool + (h - wake_h) / ramp_h * (comfort_cool - setback_temp_cool)
+                elif h < sleep_h:
+                    setpoint = comfort_cool
+                else:
+                    setpoint = setback_temp_cool
+                k_active_for_mode = _k_active_cool
             else:
-                temp = setback_temp_heat
-        elif mode == "cool":
-            if h < wake_h:
-                temp = setback_temp_cool
-            elif h < wake_h + ramp_h:
-                temp = setback_temp_cool + (h - wake_h) / ramp_h * (comfort_cool - setback_temp_cool)
-            elif h < sleep_h:
-                temp = comfort_cool
-            else:
-                temp = setback_temp_cool
-        else:
-            temp = max(setback_heat, float(outdoor) + 2.0) if outdoor is not None else comfort_heat
+                setpoint = None  # HVAC off — pure passive decay
+                k_active_for_mode = None
 
+            # Time step in hours between consecutive entries
+            try:
+                dt_hours = (local_ts - _prev_ts).total_seconds() / 3600.0
+            except Exception:
+                dt_hours = 1.0
+            dt_hours = max(dt_hours, 1 / 60.0)  # floor at 1 min
+
+            _t_current = _simulate_indoor_physics(
+                _t_current,
+                float(outdoor),
+                _k_passive,  # type: ignore[arg-type]
+                k_active_for_mode,
+                dt_hours,
+                setpoint,
+                comfort_heat=comfort_heat,
+                comfort_cool=comfort_cool,
+            )
+            temp = _t_current
+        else:
+            # Setpoint-schedule fallback
+            if mode == "heat":
+                if h < wake_h:
+                    temp = setback_temp_heat
+                elif h < wake_h + ramp_h:
+                    temp = setback_temp_heat + (h - wake_h) / ramp_h * (comfort_heat - setback_temp_heat)
+                elif h < sleep_h:
+                    temp = comfort_heat
+                else:
+                    temp = setback_temp_heat
+            elif mode == "cool":
+                if h < wake_h:
+                    temp = setback_temp_cool
+                elif h < wake_h + ramp_h:
+                    temp = setback_temp_cool + (h - wake_h) / ramp_h * (comfort_cool - setback_temp_cool)
+                elif h < sleep_h:
+                    temp = comfort_cool
+                else:
+                    temp = setback_temp_cool
+            else:
+                temp = max(setback_heat, float(outdoor) + 2.0) if outdoor is not None else comfort_heat
+
+        _prev_ts = local_ts
         result.append({"ts": local_ts.isoformat(), "temp": round(temp, 1)})
 
     _LOGGER.debug(

@@ -751,6 +751,7 @@ def _make_chart_coordinator(temp_unit: str = "fahrenheit", thermal_model_return:
     coord._chart_log = chart_log
 
     coord._thermal_factors = None
+    coord._get_indoor_temp = MagicMock(return_value=None)
 
     return coord
 
