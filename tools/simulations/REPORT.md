@@ -8,14 +8,13 @@ Generated: 2026-04-20
 
 | State | Pass | Fail | Skip |
 |-------|------|------|------|
-| pending | 10 | 0 | 0 |
-| golden | 2 | 0 | 0 |
+| golden | 12 | 0 | 0 |
 | synthetic | 7 | 0 | 0 |
 
 
 ---
 
-## PENDING Scenarios
+## GOLDEN Scenarios
 
 ### 2026-03-28-overnight-door-open [#69] ✅ PASS
 
@@ -85,6 +84,27 @@ Generated: 2026-04-20
 |------|----------|--------|--------|--------|
 | 2026-04-20T23:00:00 | `paused` | `paused` | ✅ | indoor 70F == comfort_heat 70F â€” floor guard blocks nat vent activation; pulling in 65F air would immediately violate comfort floor |
 
+### nat-vent-comfort-floor-exit-restores-heat [#99] ✅ PASS
+
+**Description:** Natural ventilation fan shuts off and heat restores when indoor temp drops to comfort_heat floor (Issue #99)
+
+**Verdict:** positive — When _natural_vent_active=True and indoor drops to comfort_heat, fan deactivates and HVAC restores to heat without entering pause
+
+**Decision timeline:**
+
+| Time | Outcome | Temp | Reason |
+|------|---------|------|--------|
+| 2026-04-11T08:00:00 | `classification_applied` | 70.0°F | daily classification — mild day, hvac_mode=heat |
+| 2026-04-11T09:05:00 | `natural_ventilation` | — | outdoor 62.0F <= target 75.0F + delta 3.0F |
+| 2026-04-11T11:00:00 | `nat_vent_comfort_floor_exit` | — | indoor 70.0F ≤ comfort_heat 70.0F — fan stopped, heat restored |
+
+**Assertions:**
+
+| Time | Expected | Actual | Result | Reason |
+|------|----------|--------|--------|--------|
+| 2026-04-11T09:05:00 | `natural_ventilation` | `natural_ventilation` | ✅ | door opened; outdoor 62F <= threshold 78F â€” nat vent activated |
+| 2026-04-11T11:00:00 | `nat_vent_comfort_floor_exit` | `nat_vent_comfort_floor_exit` | ✅ | indoor 70F <= comfort_heat 70F â€” fan stops, heat restores, paused_by_door stays False |
+
 ### nat-vent-evening-activation [#115] ✅ PASS
 
 **Description:** Evening cool-down: outdoor 70F < indoor 76F â€” nat vent activates for free cooling
@@ -102,6 +122,26 @@ Generated: 2026-04-20
 | Time | Expected | Actual | Result | Reason |
 |------|----------|--------|--------|--------|
 | 2026-04-20T18:00:00 | `natural_ventilation` | `natural_ventilation` | ✅ | outdoor 70F < indoor 76F (beneficial direction); outdoor 70F < threshold 75F; indoor 76F > comfort_heat 70F â€” nat vent activates |
+
+### nat-vent-fan-preserved-on-thermostat-event [#95] ✅ PASS
+
+**Description:** Natural ventilation fan stays active when thermostat emits state_changed with hvac_mode=off (Issue #95)
+
+**Verdict:** positive — Verifies the stale-clear guard: fan_active must NOT be cleared when natural_vent_active=True, even when thermostat reports hvac_mode=off
+
+**Decision timeline:**
+
+| Time | Outcome | Temp | Reason |
+|------|---------|------|--------|
+| 2026-04-09T14:00:00 | `natural_ventilation` | — | outdoor 61.0F <= target 75.0F + delta 3.0F |
+| 2026-04-09T14:01:00 | `nat_vent_fan_preserved` | — | hvac_mode=off + fan_active=True + natural_vent_active=True — fan NOT cleared |
+
+**Assertions:**
+
+| Time | Expected | Actual | Result | Reason |
+|------|----------|--------|--------|--------|
+| 2026-04-09T14:00:00 | `natural_ventilation` | `natural_ventilation` | ✅ | sensor opened; outdoor 61F <= comfort_cool 75F + delta 3F = 78F threshold â€” nat vent mode |
+| 2026-04-09T14:01:00 | `nat_vent_fan_preserved` | `nat_vent_fan_preserved` | ✅ | thermostat_state_changed with hvac_mode=off while natural_vent_active=True â€” stale-clear guard must prevent fan_active from being cleared |
 
 ### nat-vent-indoor-hot-outdoor-near-comfort [#115] ✅ PASS
 
@@ -212,52 +252,6 @@ Generated: 2026-04-20
 | Time | Expected | Actual | Result | Reason |
 |------|----------|--------|--------|--------|
 | 2026-04-10T07:30:00 | `setback_applied` | `setback_applied` | ✅ | warm day + thermostat in heat mode â€” setback_heat (60F) applied instead of HVAC off |
-
-
----
-
-## GOLDEN Scenarios
-
-### nat-vent-comfort-floor-exit-restores-heat [#99] ✅ PASS
-
-**Description:** Natural ventilation fan shuts off and heat restores when indoor temp drops to comfort_heat floor (Issue #99)
-
-**Verdict:** positive — When _natural_vent_active=True and indoor drops to comfort_heat, fan deactivates and HVAC restores to heat without entering pause
-
-**Decision timeline:**
-
-| Time | Outcome | Temp | Reason |
-|------|---------|------|--------|
-| 2026-04-11T08:00:00 | `classification_applied` | 70.0°F | daily classification — mild day, hvac_mode=heat |
-| 2026-04-11T09:05:00 | `natural_ventilation` | — | outdoor 62.0F <= target 75.0F + delta 3.0F |
-| 2026-04-11T11:00:00 | `nat_vent_comfort_floor_exit` | — | indoor 70.0F ≤ comfort_heat 70.0F — fan stopped, heat restored |
-
-**Assertions:**
-
-| Time | Expected | Actual | Result | Reason |
-|------|----------|--------|--------|--------|
-| 2026-04-11T09:05:00 | `natural_ventilation` | `natural_ventilation` | ✅ | door opened; outdoor 62F <= threshold 78F â€” nat vent activated |
-| 2026-04-11T11:00:00 | `nat_vent_comfort_floor_exit` | `nat_vent_comfort_floor_exit` | ✅ | indoor 70F <= comfort_heat 70F â€” fan stops, heat restores, paused_by_door stays False |
-
-### nat-vent-fan-preserved-on-thermostat-event [#95] ✅ PASS
-
-**Description:** Natural ventilation fan stays active when thermostat emits state_changed with hvac_mode=off (Issue #95)
-
-**Verdict:** positive — Verifies the stale-clear guard: fan_active must NOT be cleared when natural_vent_active=True, even when thermostat reports hvac_mode=off
-
-**Decision timeline:**
-
-| Time | Outcome | Temp | Reason |
-|------|---------|------|--------|
-| 2026-04-09T14:00:00 | `natural_ventilation` | — | outdoor 61.0F <= target 75.0F + delta 3.0F |
-| 2026-04-09T14:01:00 | `nat_vent_fan_preserved` | — | hvac_mode=off + fan_active=True + natural_vent_active=True — fan NOT cleared |
-
-**Assertions:**
-
-| Time | Expected | Actual | Result | Reason |
-|------|----------|--------|--------|--------|
-| 2026-04-09T14:00:00 | `natural_ventilation` | `natural_ventilation` | ✅ | sensor opened; outdoor 61F <= comfort_cool 75F + delta 3F = 78F threshold â€” nat vent mode |
-| 2026-04-09T14:01:00 | `nat_vent_fan_preserved` | `nat_vent_fan_preserved` | ✅ | thermostat_state_changed with hvac_mode=off while natural_vent_active=True â€” stale-clear guard must prevent fan_active from being cleared |
 
 
 ---

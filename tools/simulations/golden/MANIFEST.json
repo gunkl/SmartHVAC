@@ -4,13 +4,63 @@
     "policy": "Modify only via: python tools/simulate.py --sign <scenario-name>"
   },
   "nat-vent-comfort-floor-exit-restores-heat": {
-    "sha256": "4095cec9bf0a141d63dfdca1f3dd2d498aff40b5e7af2e0ea012ef4860b63c66",
-    "signed": "2026-04-19",
+    "sha256": "a726b6aed94660123275ee3d26ed473765271c61a722d45cae162c1bc7c5d4d6",
+    "signed": "2026-04-20",
     "issue": 99
   },
   "nat-vent-fan-preserved-on-thermostat-event": {
-    "sha256": "268d271fe02989a70c7b406cbc3c242f6282d3e36452d05e860c9a5c0ffca045",
-    "signed": "2026-04-19",
+    "sha256": "8f986a5b5d6e5ffef84af61e009afddbd1d757e348c3f645f12a2062c0e22899",
+    "signed": "2026-04-20",
     "issue": 95
+  },
+  "2026-03-28-overnight": {
+    "sha256": "5c118b69168cb0e69201f3f632d3fbc452baf8dec5df3657b3e6668853749043",
+    "signed": "2026-04-20",
+    "issue": 69
+  },
+  "away-mode-classification-cycle": {
+    "sha256": "da62bbad569c0bb5a7d09507bf990e2027c621d1742f1f16a412f6e9c43925fb",
+    "signed": "2026-04-20",
+    "issue": 85
+  },
+  "nat-vent-at-comfort-floor-no-activate": {
+    "sha256": "06043564718ac2b6fc63a42697a97f4da764e40bd50f2ca84442f0d535948ca8",
+    "signed": "2026-04-20",
+    "issue": 115
+  },
+  "nat-vent-evening-activation": {
+    "sha256": "f8657379ad693be8b37bbb06c6890e53bbc64e1d08fa49e48dd7b05c0f0f9c6b",
+    "signed": "2026-04-20",
+    "issue": 115
+  },
+  "nat-vent-indoor-hot-outdoor-near-comfort": {
+    "sha256": "0a20b5dd79d8953ae42c08ec9ef5f4f5c5b30ef29b76cb860b3f366597619a51",
+    "signed": "2026-04-20",
+    "issue": 115
+  },
+  "nat-vent-outdoor-rises-above-indoor-exit": {
+    "sha256": "f4d16daaba950e01e96f971acf15af41a4f98a04b8025e6a90ed19b6d0fa8375",
+    "signed": "2026-04-20",
+    "issue": 115
+  },
+  "nat-vent-outdoor-warmer-no-activate": {
+    "sha256": "6b99dace9d50281708e558b7947ec91ecb2220858dc17fcfd818c82a9cf82382",
+    "signed": "2026-04-20",
+    "issue": 115
+  },
+  "warm-day-setback-cool-mode": {
+    "sha256": "190202f71da8dd6c6cb924dbf4969ee630e0f2fb0136fef18fd67b264f5f508b",
+    "signed": "2026-04-20",
+    "issue": 96
+  },
+  "warm-day-setback-heat-cool-mode": {
+    "sha256": "08db7f1870c9a5ded2ca99bc3b63d2e15ef46bd6dda50cab6b40b45693e9b05e",
+    "signed": "2026-04-20",
+    "issue": 96
+  },
+  "warm-day-setback-heat-mode": {
+    "sha256": "cc7d7a2bea16482b5874f150b140d7d57429f16eea1c0a92e9a1387798324d6b",
+    "signed": "2026-04-20",
+    "issue": 96
   }
 }
