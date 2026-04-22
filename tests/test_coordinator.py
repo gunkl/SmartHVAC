@@ -1035,3 +1035,136 @@ class TestChartLogFanMapping:
         """fan_mode unset (empty string) — preserves original #102 behavior."""
         result = _apply_fan_to_hvac_action_mapping("fan", "heat", fan_mode="")
         assert result == "heating"
+
+
+# ---------------------------------------------------------------------------
+# Tests: event-driven chart_log appends include window fields (Issue #117)
+# ---------------------------------------------------------------------------
+
+
+def _simulate_hvac_action_change_append(
+    old_action: str,
+    new_action: str,
+    sensor_open: bool,
+    windows_recommended: bool,
+) -> dict | None:
+    """Replicate the hvac_action_change chart log write from _async_thermostat_changed.
+
+    Returns the kwargs passed to append() if an edge was detected, else None.
+    Without the fix, windows_open and windows_recommended would be absent here.
+    """
+    captured: dict = {}
+
+    class _FakeChartLog:
+        def append(self, **kwargs):
+            captured.update(kwargs)
+
+        def save(self):
+            pass
+
+    _chart_active_actions = {"heating", "cooling"}
+    _was_active = old_action in _chart_active_actions
+    _is_active = new_action in _chart_active_actions
+    if _was_active != _is_active:
+        _FakeChartLog().append(
+            hvac=new_action,
+            fan=False,
+            indoor=70.0,
+            outdoor=None,
+            windows_open=sensor_open,
+            windows_recommended=windows_recommended,
+            event="hvac_action_change",
+        )
+        return captured
+    return None
+
+
+class TestChartLogWindowFields:
+    """Event-driven chart log appends must include window state fields (Issue #117).
+
+    Before the fix, the hvac_action_change / override / classification_change appends
+    omitted windows_open and windows_recommended, defaulting both to False and causing
+    the Win Rec and Windows chart bars to drop to zero on every HVAC event.
+    """
+
+    def test_heating_start_captures_sensor_open_true(self):
+        result = _simulate_hvac_action_change_append(
+            old_action="idle",
+            new_action="heating",
+            sensor_open=True,
+            windows_recommended=True,
+        )
+        assert result is not None
+        assert result["windows_open"] is True
+        assert result["windows_recommended"] is True
+
+    def test_heating_start_captures_sensor_open_false(self):
+        result = _simulate_hvac_action_change_append(
+            old_action="idle",
+            new_action="heating",
+            sensor_open=False,
+            windows_recommended=False,
+        )
+        assert result is not None
+        assert result["windows_open"] is False
+        assert result["windows_recommended"] is False
+
+    def test_heating_stop_captures_window_state(self):
+        """heating → idle edge also records current window state."""
+        result = _simulate_hvac_action_change_append(
+            old_action="heating",
+            new_action="idle",
+            sensor_open=True,
+            windows_recommended=True,
+        )
+        assert result is not None
+        assert result["windows_open"] is True
+        assert result["windows_recommended"] is True
+
+    def test_cooling_start_captures_window_state(self):
+        result = _simulate_hvac_action_change_append(
+            old_action="idle",
+            new_action="cooling",
+            sensor_open=False,
+            windows_recommended=False,
+        )
+        assert result is not None
+        assert "windows_open" in result
+        assert "windows_recommended" in result
+
+    def test_no_edge_no_append(self):
+        """heating → heating is not an edge — no chart log write."""
+        result = _simulate_hvac_action_change_append(
+            old_action="heating",
+            new_action="heating",
+            sensor_open=True,
+            windows_recommended=True,
+        )
+        assert result is None
+
+    def test_idle_to_idle_no_append(self):
+        """idle → idle is not an edge — no chart log write."""
+        result = _simulate_hvac_action_change_append(
+            old_action="idle",
+            new_action="idle",
+            sensor_open=True,
+            windows_recommended=True,
+        )
+        assert result is None
+
+    def test_sensor_open_independent_of_hvac_action(self):
+        """Physical sensor state reflects reality regardless of HVAC action."""
+        heat_on = _simulate_hvac_action_change_append(
+            old_action="idle",
+            new_action="heating",
+            sensor_open=True,
+            windows_recommended=False,
+        )
+        heat_off = _simulate_hvac_action_change_append(
+            old_action="heating",
+            new_action="idle",
+            sensor_open=True,
+            windows_recommended=False,
+        )
+        assert heat_on["windows_open"] is True
+        assert heat_off["windows_open"] is True

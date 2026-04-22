@@ -128,6 +128,7 @@ def _make_thermostat_coord(*, hvac_on_since=None):
     coord._abandon_thermal_event = AsyncMock()
     coord._get_indoor_temp = MagicMock(return_value=72.0)
     coord._get_outdoor_temp = MagicMock(return_value=65.0)
+    coord._any_sensor_open = MagicMock(return_value=False)
     coord._cancel_all_debounce_timers = MagicMock()
     coord._chart_log = MagicMock()
 

@@ -956,6 +956,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                         fan=self._fan_is_running() if self.automation_engine else False,
                         indoor=forecast.current_indoor_temp,
                         outdoor=forecast.current_outdoor_temp,
+                        windows_open=self._any_sensor_open(),
+                        windows_recommended=bool(self._current_classification.windows_recommended),
                         event="classification_change",
                     )
 
@@ -1802,6 +1804,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     fan=self._fan_is_running(),
                     indoor=_indoor,
                     outdoor=_outdoor_val,
+                    windows_open=self._any_sensor_open(),
+                    windows_recommended=(
+                        bool(self._current_classification.windows_recommended)
+                        if self._current_classification
+                        else False
+                    ),
                     event="override",
                 )
             self.automation_engine.handle_manual_override(
@@ -1889,6 +1897,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     fan=self._fan_is_running(),
                     indoor=self._get_indoor_temp(),
                     outdoor=None,
+                    windows_open=self._any_sensor_open(),
+                    windows_recommended=(
+                        bool(self._current_classification.windows_recommended)
+                        if self._current_classification
+                        else False
+                    ),
                     event="hvac_action_change",
                 )
                 self._chart_log.save()
