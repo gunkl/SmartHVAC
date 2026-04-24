@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.26"
+VERSION = "0.3.27"
 
 RELEASE_NOTES: dict[str, list[str]] = {
     "0.3.22": [
@@ -762,6 +762,7 @@ MAX_PREHEAT_MINUTES = 240  # clamp ceiling (4 hrs)
 PREHEAT_SAFETY_MARGIN = 1.3  # multiply computed time by this
 DEFAULT_SETBACK_DEPTH_F = 4.0  # preserved fallback (current heat setback)
 DEFAULT_SETBACK_DEPTH_COOL_F = 3.0  # preserved fallback (current cool setback)
+THERMAL_MIN_DECAY_F = 1.0  # min total post-heat decay required to commit (°F)
 
 # Sleep temperature config keys (Issue #101)
 CONF_SLEEP_HEAT = "sleep_heat"

@@ -109,6 +109,7 @@ from .const import (
     TEMP_SOURCE_WEATHER_SERVICE,
     THERMAL_MAX_ACTIVE_SAMPLES,
     THERMAL_MAX_POST_HEAT_SAMPLES,
+    THERMAL_MIN_DECAY_F,
     THERMAL_MIN_POST_HEAT_SAMPLES,
     THERMAL_POST_HEAT_TIMEOUT_MINUTES,
     THERMAL_STABILIZATION_THRESHOLD_F,
@@ -2246,6 +2247,25 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             self._pending_thermal_event["status"] = "stabilized"
             self._pending_thermal_event["stabilized_at"] = dt_util.now().isoformat()
             self._pending_thermal_event["end_indoor_f"] = indoor_vals[-1]
+
+            # Plateau guard: require at least THERMAL_MIN_DECAY_F of post-heat decay
+            # before committing.  If the temp barely moved the HVAC never meaningfully
+            # ran and the observation would pollute the model with a near-zero rate.
+            peak_f = self._pending_thermal_event.get("peak_indoor_f")
+            end_f = indoor_vals[-1]
+            if peak_f is not None and (peak_f - end_f) < THERMAL_MIN_DECAY_F:
+                _LOGGER.info(
+                    "Thermal event plateau guard: event_id=%s peak=%.2f end=%.2f decay=%.2f < %.2f — abandoning",
+                    self._pending_thermal_event.get("event_id", "?"),
+                    peak_f,
+                    end_f,
+                    peak_f - end_f,
+                    THERMAL_MIN_DECAY_F,
+                )
+                await self._abandon_thermal_event("plateau guard: insufficient post-heat decay")
+                await self._async_save_state()
+                return
+
             _LOGGER.info(
                 "Thermal event stabilized: event_id=%s post_samples=%d",
                 self._pending_thermal_event.get("event_id", "?"),

@@ -270,6 +270,7 @@ class DailyRecord:
 
     # Thermal observation tracking
     thermal_session_count: int = 0
+    thermal_plateau_count: int = 0  # events abandoned by plateau guard (future use)
     peak_hvac_rate_f_per_hour: float | None = None
 
     # Weather forecast accuracy tracking

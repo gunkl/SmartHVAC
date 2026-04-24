@@ -15,7 +15,7 @@ import importlib
 import sys
 import types
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -101,6 +101,7 @@ def _make_thermal_coord(*, learning_enabled: bool = True, indoor_temp: float = 6
     coord._today_record.thermal_session_count = 0
 
     coord._get_indoor_temp = MagicMock(return_value=indoor_temp)
+    coord._async_save_state = AsyncMock()
 
     # _get_current_sample needs weather state
     weather_state = MagicMock()
@@ -547,3 +548,126 @@ class TestCommitThermalEvent:
 
         coord.learning._commit_event_from_dict.assert_not_called()
         assert coord._pending_thermal_event is None
+
+
+# ---------------------------------------------------------------------------
+# TestCheckStabilizationPlateauGuard
+# ---------------------------------------------------------------------------
+
+
+class TestCheckStabilizationPlateauGuard:
+    """Plateau guard: stabilized events with < THERMAL_MIN_DECAY_F decay are abandoned."""
+
+    def _make_stable_post_samples(self, count: int, base_temp: float = 68.0):
+        """Build post_heat samples all within 0.1°F of base_temp."""
+        samples = []
+        for i in range(count):
+            total_seconds = i * 20
+            ts = datetime(2026, 4, 19, 12, total_seconds // 60, total_seconds % 60, tzinfo=UTC).isoformat()
+            samples.append(
+                {
+                    "timestamp": ts,
+                    "indoor_temp_f": base_temp + (0.05 * (i % 2)),
+                    "outdoor_temp_f": 45.0,
+                    "elapsed_minutes": float(i),
+                }
+            )
+        return samples
+
+    def test_plateau_guard_abandons_when_decay_below_min(self):
+        """peak_indoor_f - end_indoor_f < THERMAL_MIN_DECAY_F → abandon, not commit."""
+        coord = _make_thermal_coord()
+        coord._async_save_state = AsyncMock()
+        dt_mock = _make_dt_mock(datetime(2026, 4, 19, 12, 0, 30, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._start_thermal_event("heat"))
+            asyncio.run(coord._end_active_phase())
+
+        # Stable samples near base_temp (all within stabilization threshold)
+        base_temp = 68.0
+        stable_samples = self._make_stable_post_samples(12, base_temp=base_temp)
+        coord._pending_thermal_event["post_heat_samples"] = stable_samples
+        coord._pending_thermal_event["active_end"] = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC).isoformat()
+        # peak barely above end: decay = 0.4°F < THERMAL_MIN_DECAY_F (1.0)
+        coord._pending_thermal_event["peak_indoor_f"] = base_temp + 0.4
+
+        dt_mock2 = _make_dt_mock(datetime(2026, 4, 19, 12, 2, 0, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock2):
+            asyncio.run(coord._check_stabilization())
+
+        # Guard fired → event abandoned (pending cleared) and no commit to learning
+        assert coord._pending_thermal_event is None
+        coord.learning._commit_event_from_dict.assert_not_called()
+
+    def test_plateau_guard_commits_when_decay_meets_min(self):
+        """peak_indoor_f - end_indoor_f >= THERMAL_MIN_DECAY_F → commit proceeds normally."""
+        coord = _make_thermal_coord()
+        coord._async_save_state = AsyncMock()
+        dt_mock = _make_dt_mock(datetime(2026, 4, 19, 12, 0, 30, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._start_thermal_event("heat"))
+            asyncio.run(coord._end_active_phase())
+
+        base_temp = 68.0
+        stable_samples = self._make_stable_post_samples(12, base_temp=base_temp)
+        coord._pending_thermal_event["post_heat_samples"] = stable_samples
+        coord._pending_thermal_event["active_end"] = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC).isoformat()
+        # peak 2°F above end: decay = 2.0°F >= THERMAL_MIN_DECAY_F (1.0)
+        coord._pending_thermal_event["peak_indoor_f"] = base_temp + 2.0
+
+        dt_mock2 = _make_dt_mock(datetime(2026, 4, 19, 12, 2, 0, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock2):
+            asyncio.run(coord._check_stabilization())
+
+        # Guard passed → commit called, event cleared
+        assert coord._pending_thermal_event is None
+        coord.learning._commit_event_from_dict.assert_called_once()
+
+    def test_plateau_guard_commits_when_decay_exactly_at_min(self):
+        """Decay exactly at THERMAL_MIN_DECAY_F boundary → guard passes, commit proceeds."""
+        coord = _make_thermal_coord()
+        coord._async_save_state = AsyncMock()
+        dt_mock = _make_dt_mock(datetime(2026, 4, 19, 12, 0, 30, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._start_thermal_event("heat"))
+            asyncio.run(coord._end_active_phase())
+
+        base_temp = 68.0
+        stable_samples = self._make_stable_post_samples(12, base_temp=base_temp)
+        coord._pending_thermal_event["post_heat_samples"] = stable_samples
+        coord._pending_thermal_event["active_end"] = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC).isoformat()
+        # decay exactly at THERMAL_MIN_DECAY_F (1.0) — end_f = base_temp + 0.05 (last alternating
+        # sample has i%2=1), so peak must be >= base_temp + 1.05 to yield decay >= 1.0.
+        # Use base_temp + 1.06 → decay = 1.01°F ≥ 1.0 → guard passes, commit proceeds.
+        coord._pending_thermal_event["peak_indoor_f"] = base_temp + 1.06
+
+        dt_mock2 = _make_dt_mock(datetime(2026, 4, 19, 12, 2, 0, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock2):
+            asyncio.run(coord._check_stabilization())
+
+        assert coord._pending_thermal_event is None
+        coord.learning._commit_event_from_dict.assert_called_once()
+
+    def test_plateau_guard_skipped_when_peak_indoor_missing(self):
+        """If peak_indoor_f is None (shouldn't happen), guard is skipped and commit proceeds."""
+        coord = _make_thermal_coord()
+        coord._async_save_state = AsyncMock()
+        dt_mock = _make_dt_mock(datetime(2026, 4, 19, 12, 0, 30, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._start_thermal_event("heat"))
+            asyncio.run(coord._end_active_phase())
+
+        base_temp = 68.0
+        stable_samples = self._make_stable_post_samples(12, base_temp=base_temp)
+        coord._pending_thermal_event["post_heat_samples"] = stable_samples
+        coord._pending_thermal_event["active_end"] = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC).isoformat()
+        # Explicitly null out peak_indoor_f
+        coord._pending_thermal_event["peak_indoor_f"] = None
+
+        dt_mock2 = _make_dt_mock(datetime(2026, 4, 19, 12, 2, 0, tzinfo=UTC))
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock2):
+            asyncio.run(coord._check_stabilization())
+
+        # Guard condition not met (peak_f is None) → commit proceeds
+        assert coord._pending_thermal_event is None
+        coord.learning._commit_event_from_dict.assert_called_once()
