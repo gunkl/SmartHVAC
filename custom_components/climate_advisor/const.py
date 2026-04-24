@@ -172,6 +172,10 @@ NAT_VENT_REACTIVATION_LOCKOUT_S = 300
 CONF_NAT_VENT_HYSTERESIS_F = "nat_vent_hysteresis_f"
 CONF_NAT_VENT_REACTIVATION_LOCKOUT_S = "nat_vent_reactivation_lockout_s"
 
+# Minimum viable nat vent window — skip activation (or exit proactively) if thermal
+# model predicts indoor will hit comfort_heat floor within this many hours.
+MIN_VIABLE_NAT_VENT_HOURS = 1.0
+
 # State persistence
 STATE_FILE = "climate_advisor_state.json"
 

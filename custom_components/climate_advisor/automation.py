@@ -48,6 +48,7 @@ from .const import (
     FAN_MODE_DISABLED,
     FAN_MODE_HVAC,
     FAN_MODE_WHOLE_HOUSE,
+    MIN_VIABLE_NAT_VENT_HOURS,
     NAT_VENT_HYSTERESIS_F,
     NAT_VENT_REACTIVATION_LOCKOUT_S,
     OCCUPANCY_AWAY,
@@ -63,6 +64,16 @@ from .const import (
 from .temperature import format_temp, format_temp_delta, from_fahrenheit, to_fahrenheit
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _parse_forecast_dt(dt_str: str | None) -> datetime | None:
+    """Parse an ISO 8601 forecast datetime string; return None on failure."""
+    if not dt_str:
+        return None
+    try:
+        return dt_util.parse_datetime(dt_str)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def compute_bedtime_setback(
@@ -262,6 +273,9 @@ class AutomationEngine:
 
         # Thermal model — set by coordinator before apply_classification()
         self._thermal_model: dict = {}
+
+        # Hourly forecast temps — injected by coordinator on each 30-min poll
+        self._hourly_forecast_temps: list[dict] = []
 
         # Occupancy mode — synced by coordinator (Issue #85)
         self._occupancy_mode: str = OCCUPANCY_HOME
@@ -1074,23 +1088,77 @@ class AutomationEngine:
             and indoor > comfort_heat  # indoor must be above comfort floor
             and outdoor < nat_vent_threshold
         ):
-            nat_vent_reason = (
-                f"natural ventilation: outdoor {outdoor:.1f}F < indoor {indoor:.1f}F,"
-                f" outdoor {outdoor:.1f}F <= {nat_vent_threshold:.1f}F"
-            )
-            await self._set_hvac_mode("off", reason=nat_vent_reason + ", HVAC off, fan on")
-            await self._activate_fan(reason=nat_vent_reason)
-            self._natural_vent_active = True
-            _LOGGER.info(
-                "Natural ventilation mode: outdoor %.1f\u00b0F < indoor %.1f\u00b0F,"
-                " outdoor \u2264 target %.1f\u00b0F \u2014 fan on, HVAC off",
-                outdoor,
-                indoor,
-                nat_vent_threshold,
-            )
-            if self._emit_event_callback:
-                self._emit_event_callback("sensor_opened", {"entity": entity_id, "result": "natural_ventilation"})
-            return
+            _skip_nat_vent = False
+
+            # Phase 2 Guard 1: rising outdoor forecast
+            hourly = self._hourly_forecast_temps or []
+            if hourly:
+                now_dt = dt_util.now()
+                # Ensure timezone-aware for comparison with forecast datetimes
+                if now_dt.tzinfo is None:
+                    now_dt = now_dt.replace(tzinfo=UTC)
+                lookahead_temps = [
+                    h["temperature"]
+                    for h in hourly
+                    if h.get("temperature") is not None
+                    and (parsed := _parse_forecast_dt(h.get("datetime"))) is not None
+                    and now_dt < parsed <= now_dt + timedelta(hours=2)
+                ]
+                if lookahead_temps and max(lookahead_temps) > nat_vent_threshold:
+                    _skip_nat_vent = True
+                    _LOGGER.info(
+                        "Nat vent skipped: forecast peak %.1f°F > threshold %.1f°F within 2 hr",
+                        max(lookahead_temps),
+                        nat_vent_threshold,
+                    )
+                    if self._emit_event_callback:
+                        self._emit_event_callback(
+                            "nat_vent_forecast_skip",
+                            {"forecast_peak": max(lookahead_temps), "threshold": nat_vent_threshold},
+                        )
+
+            # Phase 2 Guard 2: thermal model floor imminence
+            if not _skip_nat_vent:
+                thermal = self._thermal_model or {}
+                confidence = thermal.get("confidence", "none")
+                if confidence in ("medium", "high"):
+                    k_passive = thermal.get("k_passive")
+                    if k_passive is not None and k_passive < 0:
+                        passive_rate = k_passive * (indoor - outdoor)  # °F/hr, negative
+                        if passive_rate < 0:
+                            time_to_floor = (indoor - comfort_heat) / abs(passive_rate)
+                            if time_to_floor < MIN_VIABLE_NAT_VENT_HOURS:
+                                _skip_nat_vent = True
+                                _LOGGER.info(
+                                    "Nat vent skipped: floor predicted in %.2f hr < %.1f hr threshold (k_passive=%.3f)",
+                                    time_to_floor,
+                                    MIN_VIABLE_NAT_VENT_HOURS,
+                                    k_passive,
+                                )
+                                if self._emit_event_callback:
+                                    self._emit_event_callback(
+                                        "nat_vent_floor_imminent_skip",
+                                        {"time_to_floor_hr": round(time_to_floor, 2)},
+                                    )
+
+            if not _skip_nat_vent:
+                nat_vent_reason = (
+                    f"natural ventilation: outdoor {outdoor:.1f}F < indoor {indoor:.1f}F,"
+                    f" outdoor {outdoor:.1f}F <= {nat_vent_threshold:.1f}F"
+                )
+                await self._set_hvac_mode("off", reason=nat_vent_reason + ", HVAC off, fan on")
+                await self._activate_fan(reason=nat_vent_reason)
+                self._natural_vent_active = True
+                _LOGGER.info(
+                    "Natural ventilation mode: outdoor %.1f°F < indoor %.1f°F,"
+                    " outdoor ≤ target %.1f°F — fan on, HVAC off",
+                    outdoor,
+                    indoor,
+                    nat_vent_threshold,
+                )
+                if self._emit_event_callback:
+                    self._emit_event_callback("sensor_opened", {"entity": entity_id, "result": "natural_ventilation"})
+                return
 
         # Get current mode before pausing
         state = self.hass.states.get(self.climate_entity)
@@ -1214,6 +1282,53 @@ class AutomationEngine:
                         )
                         self._start_grace_period("automation")
                 return
+
+        # Phase 2: proactive floor exit — predict floor crossing before it happens
+        if self._natural_vent_active:
+            thermal = self._thermal_model or {}
+            if thermal.get("confidence", "none") in ("medium", "high"):
+                k_passive = thermal.get("k_passive")
+                _indoor_now = self._get_indoor_temp_f()
+                if (
+                    k_passive is not None
+                    and k_passive < 0
+                    and _indoor_now is not None
+                    and outdoor is not None
+                    and outdoor < _indoor_now
+                ):
+                    passive_rate = k_passive * (_indoor_now - outdoor)  # °F/hr, negative
+                    if passive_rate < 0:
+                        comfort_heat_now = float(self.config.get("comfort_heat", 70))
+                        time_to_floor = (_indoor_now - comfort_heat_now) / abs(passive_rate)
+                        if time_to_floor < MIN_VIABLE_NAT_VENT_HOURS:
+                            self._natural_vent_active = False
+                            await self._deactivate_fan(
+                                reason=(f"nat vent proactive floor exit: floor in {time_to_floor:.2f} hr")
+                            )
+                            _LOGGER.info(
+                                "Natural vent proactive exit: floor predicted in %.2f hr"
+                                " < %.1f hr threshold — restoring heat",
+                                time_to_floor,
+                                MIN_VIABLE_NAT_VENT_HOURS,
+                            )
+                            if self._emit_event_callback:
+                                self._emit_event_callback(
+                                    "nat_vent_predicted_floor_exit",
+                                    {"time_to_floor_hr": round(time_to_floor, 2)},
+                                )
+                            if self._current_classification:
+                                c = self._current_classification
+                                if c.hvac_mode in ("heat", "cool"):
+                                    await self._set_hvac_mode(
+                                        c.hvac_mode,
+                                        reason="nat vent proactive floor exit — restoring HVAC",
+                                    )
+                                    await self._set_temperature_for_mode(
+                                        c,
+                                        reason="nat vent proactive floor exit — restoring comfort",
+                                    )
+                                    self._start_grace_period("automation")
+                            return
 
         # NEW (Issue #115): exit if outdoor ≥ indoor — airflow now heating not cooling
         indoor = self._get_indoor_temp_f()

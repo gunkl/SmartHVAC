@@ -943,6 +943,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         forecast = await self._get_forecast()
         self._hourly_forecast_temps = await self._get_hourly_forecast_data()
+        self.automation_engine._hourly_forecast_temps = self._hourly_forecast_temps
         if forecast:
             prev_type = self._current_classification.day_type if self._current_classification else None
             self._current_classification = classify_day(forecast, previous_day_type=prev_type)

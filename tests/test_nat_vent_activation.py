@@ -16,17 +16,33 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.climate_advisor.automation import AutomationEngine
 from custom_components.climate_advisor.classifier import DayClassification
 from custom_components.climate_advisor.const import (
+    MIN_VIABLE_NAT_VENT_HOURS,
     NAT_VENT_REACTIVATION_LOCKOUT_S,
 )
 
 # Patch dt_util.now so isoformat() calls inside the engine always work
 sys.modules["homeassistant.util.dt"].now = lambda: datetime(2026, 4, 20, 10, 0, 0)
+
+# Patch automation.dt_util.parse_datetime directly — the automation module's dt_util
+# is a child mock of homeassistant.util (not sys.modules["homeassistant.util.dt"]).
+import custom_components.climate_advisor.automation as _automation_mod  # noqa: E402
+
+
+def _real_parse_datetime(dt_str: str):
+    """Parse ISO 8601 datetime string; mirrors dt_util.parse_datetime."""
+    try:
+        return datetime.fromisoformat(dt_str)
+    except Exception:
+        return None
+
+
+_automation_mod.dt_util.parse_datetime = _real_parse_datetime
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -503,3 +519,227 @@ class TestFullNatVentCycle:
             asyncio.run(engine.check_natural_vent_conditions())
         assert engine._natural_vent_active is True
         assert engine._paused_by_door is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Guard 1 — rising outdoor forecast blocks nat vent activation
+# ---------------------------------------------------------------------------
+
+
+class TestForecastRisingOutdoorSkip:
+    """Phase 2 Guard 1: rising outdoor forecast blocks nat vent activation."""
+
+    def _make_forecast_entry(self, dt_str: str, temp_f: float) -> dict:
+        return {"datetime": dt_str, "temperature": temp_f}
+
+    def test_forecast_peak_above_threshold_skips_nat_vent(self):
+        """Forecast peak > nat_vent_threshold within 2 hr -> falls through to pause, not nat vent."""
+        engine = _make_engine(comfort_heat=70.0, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=73.0)
+        engine._last_outdoor_temp = 68.0
+        engine._natural_vent_active = False
+        engine._fan_override_active = False
+        # Forecast: 1 hour ahead is 76F (above threshold 75F = 72 + 3)
+        engine._hourly_forecast_temps = [
+            self._make_forecast_entry("2026-04-20T11:00:00+00:00", 76.0),
+        ]
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        now_aware = datetime(2026, 4, 20, 10, 0, 0, tzinfo=UTC)
+        with patch(_DT_NOW_PATH, return_value=now_aware):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        # Should NOT activate nat vent
+        assert not engine._natural_vent_active
+        # Should emit forecast_skip event
+        assert any(e[0] == "nat_vent_forecast_skip" for e in events)
+
+    def test_forecast_peak_below_threshold_allows_nat_vent(self):
+        """Forecast peak <= threshold -> Phase 2 guard passes -> nat vent activates."""
+        engine = _make_engine(comfort_heat=70.0, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=73.0)
+        engine._last_outdoor_temp = 68.0
+        engine._natural_vent_active = False
+        engine._fan_override_active = False
+        # Forecast: 1 hour ahead is 74F (below threshold 75F)
+        engine._hourly_forecast_temps = [
+            self._make_forecast_entry("2026-04-20T11:00:00+00:00", 74.0),
+        ]
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        now_aware = datetime(2026, 4, 20, 10, 0, 0, tzinfo=UTC)
+        with patch(_DT_NOW_PATH, return_value=now_aware):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._natural_vent_active
+        assert any(e[0] == "sensor_opened" and e[1].get("result") == "natural_ventilation" for e in events)
+
+    def test_no_hourly_forecast_falls_back_to_phase1(self):
+        """Empty hourly forecast -> forecast guard skipped -> Phase 1 only -> nat vent activates."""
+        engine = _make_engine(comfort_heat=70.0, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=73.0)
+        engine._last_outdoor_temp = 68.0
+        engine._natural_vent_active = False
+        engine._fan_override_active = False
+        engine._hourly_forecast_temps = []
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        now_aware = datetime(2026, 4, 20, 10, 0, 0, tzinfo=UTC)
+        with patch(_DT_NOW_PATH, return_value=now_aware):
+            asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._natural_vent_active
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Guard 2 — thermal model floor imminence blocks nat vent activation
+# ---------------------------------------------------------------------------
+
+
+class TestThermalFloorImminentSkip:
+    """Phase 2 Guard 2: thermal model floor imminence blocks nat vent activation."""
+
+    def test_floor_imminent_skips_activation(self):
+        """Medium confidence, time_to_floor < 1 hr -> skip activation, fall to pause.
+
+        indoor=70.5, comfort_heat=70.0, delta=0.5
+        k_passive=-0.3, outdoor=68.0 -> passive_rate = -0.3 * (70.5 - 68.0) = -0.75 F/hr
+        time_to_floor = 0.5 / 0.75 = 0.67 hr < 1.0 -> skip
+        """
+        engine = _make_engine(comfort_heat=70.0, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=70.5)
+        engine._last_outdoor_temp = 68.0
+        engine._natural_vent_active = False
+        engine._fan_override_active = False
+        engine._hourly_forecast_temps = []
+        engine._thermal_model = {"confidence": "medium", "k_passive": -0.3}
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert not engine._natural_vent_active
+        assert any(e[0] == "nat_vent_floor_imminent_skip" for e in events)
+        skip_event = next(e for e in events if e[0] == "nat_vent_floor_imminent_skip")
+        assert skip_event[1]["time_to_floor_hr"] < MIN_VIABLE_NAT_VENT_HOURS
+
+    def test_floor_not_imminent_allows_activation(self):
+        """Medium confidence, time_to_floor > 1 hr -> thermal guard passes -> nat vent activates.
+
+        indoor=73.0, comfort_heat=70.0, delta=3.0
+        k_passive=-0.1, outdoor=68.0 -> passive_rate = -0.1 * (73 - 68) = -0.5 F/hr
+        time_to_floor = 3.0 / 0.5 = 6.0 hr > 1.0 -> proceed
+        """
+        engine = _make_engine(comfort_heat=70.0, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=73.0)
+        engine._last_outdoor_temp = 68.0
+        engine._natural_vent_active = False
+        engine._fan_override_active = False
+        engine._hourly_forecast_temps = []
+        engine._thermal_model = {"confidence": "medium", "k_passive": -0.1}
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._natural_vent_active
+
+    def test_low_confidence_fallback_to_phase1(self):
+        """Confidence 'low' -> thermal guard skipped -> nat vent activates regardless."""
+        engine = _make_engine(comfort_heat=70.0, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=70.5)
+        engine._last_outdoor_temp = 68.0
+        engine._natural_vent_active = False
+        engine._fan_override_active = False
+        engine._hourly_forecast_temps = []
+        engine._thermal_model = {"confidence": "low", "k_passive": -0.3}
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._natural_vent_active
+        assert not any(e[0] == "nat_vent_floor_imminent_skip" for e in events)
+
+    def test_no_thermal_model_fallback_to_phase1(self):
+        """Empty thermal model -> guard skipped -> nat vent activates."""
+        engine = _make_engine(comfort_heat=70.0, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=73.0)
+        engine._last_outdoor_temp = 68.0
+        engine._natural_vent_active = False
+        engine._fan_override_active = False
+        engine._hourly_forecast_temps = []
+        engine._thermal_model = {}
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        asyncio.run(engine.handle_door_window_open("binary_sensor.front_door"))
+
+        assert engine._natural_vent_active
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 proactive floor exit — thermal model predicts imminent floor crossing
+# ---------------------------------------------------------------------------
+
+
+class TestProactiveFloorExit:
+    """Phase 2 proactive floor exit: thermal model predicts imminent floor crossing."""
+
+    def _make_active_nat_vent_engine(
+        self,
+        indoor_f: float = 71.0,
+        outdoor_f: float = 65.0,
+        k_passive: float = -0.5,
+        confidence: str = "medium",
+        comfort_heat: float = 70.0,
+    ) -> AutomationEngine:
+        engine = _make_engine(comfort_heat=comfort_heat, comfort_cool=72.0, nat_vent_delta=3.0, indoor_f=indoor_f)
+        engine._last_outdoor_temp = outdoor_f
+        engine._natural_vent_active = True
+        engine._paused_by_door = False
+        engine._fan_override_active = False
+        engine._thermal_model = {"confidence": confidence, "k_passive": k_passive}
+        engine._hourly_forecast_temps = []
+        return engine
+
+    def test_proactive_exit_when_floor_imminent(self):
+        """Nat vent active, floor predicted < 1 hr -> deactivate fan, restore HVAC.
+
+        indoor=70.5, outdoor=65, k=-0.5
+        passive_rate = -0.5 * (70.5 - 65) = -2.75 F/hr
+        time_to_floor = (70.5 - 70.0) / 2.75 = 0.18 hr < 1.0 -> proactive exit
+        """
+        engine = self._make_active_nat_vent_engine(indoor_f=70.5, outdoor_f=65.0, k_passive=-0.5)
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        asyncio.run(engine.check_natural_vent_conditions())
+
+        assert not engine._natural_vent_active
+        assert any(e[0] == "nat_vent_predicted_floor_exit" for e in events)
+
+    def test_no_proactive_exit_when_floor_distant(self):
+        """Floor predicted > 1 hr -> stays in nat vent.
+
+        indoor=73, outdoor=65, k=-0.05
+        passive_rate = -0.05 * (73 - 65) = -0.4 F/hr
+        time_to_floor = (73 - 70) / 0.4 = 7.5 hr > 1.0 -> no exit
+        """
+        engine = self._make_active_nat_vent_engine(indoor_f=73.0, outdoor_f=65.0, k_passive=-0.05)
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active
+        assert not any(e[0] == "nat_vent_predicted_floor_exit" for e in events)
+
+    def test_proactive_exit_emits_event_with_payload(self):
+        """Verify nat_vent_predicted_floor_exit event has correct time_to_floor_hr."""
+        engine = self._make_active_nat_vent_engine(indoor_f=70.5, outdoor_f=65.0, k_passive=-0.5)
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda name, payload: events.append((name, payload))
+
+        asyncio.run(engine.check_natural_vent_conditions())
+
+        floor_events = [e for e in events if e[0] == "nat_vent_predicted_floor_exit"]
+        assert len(floor_events) == 1
+        assert "time_to_floor_hr" in floor_events[0][1]
+        assert floor_events[0][1]["time_to_floor_hr"] < MIN_VIABLE_NAT_VENT_HOURS

@@ -87,6 +87,8 @@ def _make_ae_stub(**overrides) -> AutomationEngine:
     }
     ae._current_classification = _make_hot_classification()
     ae._natural_vent_active = False
+    ae._hourly_forecast_temps = []
+    ae._thermal_model = {}
     ae._economizer_active = False
     ae._economizer_phase = "inactive"
     ae._paused_by_door = False
