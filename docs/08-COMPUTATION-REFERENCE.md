@@ -696,4 +696,59 @@ This logic table MUST be kept current for any changes to automation behavior.
 
 ---
 
-_Last Updated: 2026-04-25_
+## 19. Chart Log Write Guards
+
+### Bug A — pred_indoor gated on indoor_temp availability
+
+`pred_indoor` and `pred_outdoor` are only written to the chart log when
+`indoor_temp` (the actual sensor/climate-entity read for that coordinator tick)
+is also available. If the thermostat is in `unknown` or `unavailable` state —
+as occurs during an HA restart — both `indoor` and `pred_indoor` are null for
+that tick. This prevents restart artifacts from permanently corrupting the
+predicted indoor trend line (`histPredIndoorPts` on the dashboard chart).
+
+The guard lives in `_async_update_data()`:
+
+```python
+if _pred_in and _now_h < len(_pred_in) and indoor_temp is not None:
+    _pred_indoor_val = _pred_in[_now_h]["temp"]
+```
+
+A `DEBUG`-level log is emitted when `indoor_temp` is `None` so the skip is
+visible in HA logs without cluttering normal operation.
+
+### Bug B — plausible indoor temperature range filter
+
+Indoor temperatures read from the thermostat or a dedicated sensor entity are
+validated against a physical plausibility range defined by module-level
+constants:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `_MIN_PLAUSIBLE_INDOOR_F` | 40.0 °F | Below this the reading is treated as a sensor glitch |
+| `_MAX_PLAUSIBLE_INDOOR_F` | 110.0 °F | Above this the reading is treated as a sensor glitch |
+
+Values outside this range are logged at `WARNING` level and cause
+`_get_indoor_temp()` to return `None` rather than propagating the bad reading
+into the chart log. The most common trigger is a thermostat that briefly echoes
+its new setpoint into `current_temperature` during a setpoint-only transition;
+if the 30-minute coordinator tick fires at that moment, the out-of-range value
+would otherwise appear as a permanent spike on the actual indoor line.
+
+The range check applies to both the `TEMP_SOURCE_SENSOR` /
+`TEMP_SOURCE_INPUT_NUMBER` branch and the `TEMP_SOURCE_CLIMATE_FALLBACK`
+branch of `_get_indoor_temp()`.
+
+### Test coverage
+
+| Test | File |
+|---|---|
+| `test_pred_indoor_not_written_when_indoor_temp_none` | `tests/test_coordinator_chart.py` |
+| `test_pred_indoor_written_when_indoor_temp_available` | `tests/test_coordinator_chart.py` |
+| `test_indoor_temp_range_check_rejects_extreme_low` | `tests/test_coordinator_chart.py` |
+| `test_indoor_temp_range_check_rejects_extreme_high` | `tests/test_coordinator_chart.py` |
+| `test_indoor_temp_range_check_accepts_normal` | `tests/test_coordinator_chart.py` |
+
+---
+
+_Last Updated: 2026-04-26_

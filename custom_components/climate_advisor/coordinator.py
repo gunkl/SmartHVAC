@@ -130,6 +130,13 @@ _LOGGER = logging.getLogger(__name__)
 # With default comfort_heat=70°F this means outdoor must be ≥ 55°F for windows to be recommended.
 _WINDOWS_EXTREME_COLD_MARGIN = 15.0
 
+# Plausible indoor temperature range in Fahrenheit.  Values outside this band indicate
+# a sensor glitch (e.g. a thermostat echoing its new setpoint into current_temperature
+# during a setpoint-only transition) and are treated as unavailable rather than
+# propagated into the chart log.
+_MIN_PLAUSIBLE_INDOOR_F: float = 40.0
+_MAX_PLAUSIBLE_INDOOR_F: float = 110.0
+
 
 class ClimateAdvisorCoordinator(DataUpdateCoordinator):
     """Coordinate all Climate Advisor activities."""
@@ -1171,6 +1178,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             # Extract current-hour prediction to persist alongside actual reading
             _pred_outdoor_val: float | None = None
             _pred_indoor_val: float | None = None
+            if indoor_temp is None:
+                _LOGGER.debug(
+                    "chart log: indoor_temp unavailable — skipping pred_indoor write"
+                    " (thermostat may be unknown/unavailable)"
+                )
             if self._current_classification:
                 _pred_out, _pred_in = compute_predicted_temps(
                     self._current_classification,
@@ -1180,9 +1192,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     thermal_factors=self._thermal_factors,
                 )
                 _now_h = dt_util.now().hour
-                if _pred_out and _now_h < len(_pred_out):
+                if _pred_out and _now_h < len(_pred_out) and indoor_temp is not None:
                     _pred_outdoor_val = _pred_out[_now_h]["temp"]
-                if _pred_in and _now_h < len(_pred_in):
+                if _pred_in and _now_h < len(_pred_in) and indoor_temp is not None:
                     _pred_indoor_val = _pred_in[_now_h]["temp"]
             _hvac_action_str = str(hvac_action).lower() if hvac_action else ""
             _hvac_mode_str = str(hvac_mode).lower() if hvac_mode else ""
@@ -1248,7 +1260,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 state = self.hass.states.get(entity_id)
                 if state:
                     try:
-                        return to_fahrenheit(float(state.state), unit)
+                        val_f = to_fahrenheit(float(state.state), unit)
+                        if _MIN_PLAUSIBLE_INDOOR_F <= val_f <= _MAX_PLAUSIBLE_INDOOR_F:
+                            return val_f
+                        _LOGGER.warning(
+                            "Indoor temp %.1f°F from %s is outside plausible range"
+                            " [%.0f, %.0f]°F; treating as unavailable",
+                            val_f,
+                            entity_id,
+                            _MIN_PLAUSIBLE_INDOOR_F,
+                            _MAX_PLAUSIBLE_INDOOR_F,
+                        )
                     except (ValueError, TypeError):
                         _LOGGER.warning(
                             "Indoor temp entity %s has non-numeric state %r; treating as unavailable",
@@ -1261,7 +1283,20 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         climate_state = self.hass.states.get(self.config["climate_entity"])
         if climate_state:
             temp = climate_state.attributes.get("current_temperature")
-            return to_fahrenheit(float(temp), unit) if temp is not None else None
+            if temp is not None:
+                try:
+                    val_f = to_fahrenheit(float(temp), unit)
+                    if _MIN_PLAUSIBLE_INDOOR_F <= val_f <= _MAX_PLAUSIBLE_INDOOR_F:
+                        return val_f
+                    _LOGGER.warning(
+                        "Indoor temp %.1f°F from %s is outside plausible range [%.0f, %.0f]°F; treating as unavailable",
+                        val_f,
+                        self.config["climate_entity"],
+                        _MIN_PLAUSIBLE_INDOOR_F,
+                        _MAX_PLAUSIBLE_INDOOR_F,
+                    )
+                except (ValueError, TypeError):
+                    pass
         return None
 
     async def _get_forecast_data(self) -> list:
