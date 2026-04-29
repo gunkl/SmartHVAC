@@ -92,7 +92,7 @@ Suggestions are generated when `generate_suggestions()` is called (typically dur
 
 ## Thermal Model
 
-The thermal model characterises how the house envelope and HVAC system move indoor temperature over time. Observations accumulate across HVAC sessions and are used to compute adaptive bedtime setback depth, pre-heat start time, and the physics-based predicted temperature curve shown in the dashboard.
+The thermal model characterises how the house envelope and HVAC system move indoor temperature over time. Observations accumulate continuously across passive temperature drift, fan operation, solar gain, and HVAC cycles and are used to compute adaptive bedtime setback depth, pre-heat start time, and the physics-based predicted temperature curve shown in the dashboard.
 
 ### Physics Model (Issue #114 — v2 Architecture)
 

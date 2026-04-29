@@ -1404,49 +1404,74 @@
     if (!tm) { panel.style.display = 'none'; return; }
     panel.style.display = '';
     const badgeColors = { none: '#9e9e9e', low: '#ff9800', medium: '#2196f3', high: '#4caf50' };
-    const badgeColor = badgeColors[tm.confidence] || '#9e9e9e';
-    const confLabel = tm.confidence.charAt(0).toUpperCase() + tm.confidence.slice(1);
     const unitLabel = tm.unit === 'celsius' ? '°C/hr' : '°F/hr';
-    const totalObs = (tm.observation_count_heat || 0) + (tm.observation_count_cool || 0);
+    const totalObs = (tm.observation_count_passive || 0) + (tm.observation_count_fan_only || 0) +
+      (tm.observation_count_vent || 0) + (tm.observation_count_solar || 0) +
+      (tm.observation_count_heat || 0) + (tm.observation_count_cool || 0);
     const nextThreshold = totalObs < 5 ? 5 : totalObs < 15 ? 15 : totalObs < 30 ? 30 : 30;
     const progressPct = totalObs >= 30 ? 100 : Math.round((totalObs / nextThreshold) * 100);
-    let rateHtml = '';
-    if (tm.confidence !== 'none') {
-      const hRate = tm.heating_rate != null ? tm.heating_rate.toFixed(2) : '—';
-      const cRate = tm.cooling_rate != null ? tm.cooling_rate.toFixed(2) : '—';
-      rateHtml = `<div style="margin-top:8px;font-size:0.85rem;color:var(--text-secondary,#666)">` +
-        `Heat rate: <strong>${hRate} ${unitLabel}</strong> &nbsp;|&nbsp; ` +
-        `Cool rate: <strong>${cRate} ${unitLabel}</strong></div>`;
-    }
-    let noneHtml = '';
-    if (tm.confidence === 'none') {
-      const infoStyle = 'margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:6px;font-size:0.85em;color:var(--text-secondary);line-height:1.5';
-      if (totalObs === 0) {
-        noneHtml = `<div style="${infoStyle}">` +
-          `<strong>No data yet</strong> — the thermal model learns your home's heating and cooling ` +
-          `rates by measuring temperature change during HVAC sessions.<br><br>` +
-          `An observation is recorded each time a heating or cooling cycle completes ` +
-          `(minimum 10 minutes). Five observations are needed before the model activates.<br><br>` +
-          `<em>This panel will populate automatically once the system has run a few heating or cooling cycles.</em>` +
-          `</div>`;
-      } else {
-        const remaining = 5 - totalObs;
-        noneHtml = `<div style="${infoStyle}">` +
-          `<strong>${totalObs} of 5 observations recorded</strong> — ` +
-          `${remaining} more heating or cooling cycle${remaining !== 1 ? 's' : ''} needed before the model activates.` +
-          `</div>`;
+
+    // Dual confidence badges
+    const envConf = tm.confidence_k_passive || 'none';
+    const hvacConf = tm.confidence || 'none';
+    const envColor = badgeColors[envConf] || '#9e9e9e';
+    const hvacColor = badgeColors[hvacConf] || '#9e9e9e';
+    const envLabel = envConf.charAt(0).toUpperCase() + envConf.slice(1);
+    const hvacLabel = hvacConf.charAt(0).toUpperCase() + hvacConf.slice(1);
+    const badgeHtml =
+      `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">` +
+      `<span style="background:${envColor};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;font-weight:600">Envelope: ${envLabel}</span>` +
+      `<span style="background:${hvacColor};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;font-weight:600">HVAC: ${hvacLabel}</span>` +
+      `</div>`;
+
+    // Observation counts row — always shown
+    const obsHtml =
+      `<div style="font-size:0.8rem;color:var(--text-secondary,#666);margin-bottom:8px">` +
+      `Passive: ${tm.observation_count_passive || 0} &nbsp;&middot;&nbsp; ` +
+      `Fan: ${tm.observation_count_fan_only || 0} &nbsp;&middot;&nbsp; ` +
+      `Vent: ${tm.observation_count_vent || 0} &nbsp;&middot;&nbsp; ` +
+      `Solar: ${tm.observation_count_solar || 0} &nbsp;&middot;&nbsp; ` +
+      `Heat: ${tm.observation_count_heat || 0} &nbsp;&middot;&nbsp; ` +
+      `Cool: ${tm.observation_count_cool || 0}` +
+      `</div>`;
+
+    // Progress bar
+    const progressHtml =
+      `<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden;margin-bottom:10px">` +
+      `<div style="background:${envColor};width:${progressPct}%;height:100%;transition:width 0.3s"></div>` +
+      `</div>`;
+
+    // Learned parameters section
+    const hasKPassive = tm.k_passive != null;
+    const hasHvacRates = tm.heating_rate != null || tm.cooling_rate != null;
+    const hasKVent = tm.k_vent != null;
+    const hasKSolar = tm.k_solar != null;
+    let paramsHtml = '';
+    if (hasKPassive || hasHvacRates || hasKVent || hasKSolar) {
+      paramsHtml = `<div style="margin-top:4px;font-size:0.85rem;color:var(--text-secondary,#666)">`;
+      if (hasKPassive) {
+        paramsHtml += `<div>Envelope: <strong>k_passive = ${tm.k_passive.toFixed(3)} hr⁻¹</strong></div>`;
       }
+      if (hasHvacRates) {
+        const hRate = tm.heating_rate != null ? tm.heating_rate.toFixed(2) : '—';
+        const cRate = tm.cooling_rate != null ? tm.cooling_rate.toFixed(2) : '—';
+        paramsHtml += `<div>HVAC: <strong>Heat +${hRate} ${unitLabel}</strong> &nbsp;|&nbsp; <strong>Cool −${cRate} ${unitLabel}</strong></div>`;
+      }
+      if (hasKVent) {
+        paramsHtml += `<div>Vent: <strong>k_vent = ${tm.k_vent.toFixed(3)} hr⁻¹</strong></div>`;
+      }
+      if (hasKSolar) {
+        paramsHtml += `<div>Solar: <strong>k_solar = ${tm.k_solar.toFixed(2)} ${unitLabel}·frac</strong></div>`;
+      }
+      paramsHtml += `</div>`;
+    } else {
+      paramsHtml =
+        `<div style="margin-top:4px;font-size:0.85rem;color:var(--text-secondary,#666);font-style:italic">` +
+        `Collecting observations — values appear as each type accumulates.` +
+        `</div>`;
     }
-    content.innerHTML =
-      `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">` +
-      `<span style="background:${badgeColor};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;font-weight:600">${confLabel}</span>` +
-      `<span style="font-size:0.85rem">${totalObs} observations</span>` +
-      `</div>` +
-      `<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">` +
-      `<div style="background:${badgeColor};width:${progressPct}%;height:100%;transition:width 0.3s"></div>` +
-      `</div>` +
-      rateHtml +
-      noneHtml;
+
+    content.innerHTML = badgeHtml + obsHtml + progressHtml + paramsHtml;
   }
 
   async function loadChart() {

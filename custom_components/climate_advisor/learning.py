@@ -1171,8 +1171,8 @@ class LearningEngine:
                 (
                     "thermal_model_ready",
                     (
-                        "I've now observed enough HVAC sessions to estimate your home's heating "
-                        "and cooling performance. Pre-heat timing and bedtime setbacks will now "
+                        "I've now collected enough thermal observations to estimate your home's "
+                        "envelope and HVAC performance. Pre-heat timing and bedtime setbacks will "
                         "adjust automatically based on how your home actually behaves — no action needed."
                     ),
                 )
