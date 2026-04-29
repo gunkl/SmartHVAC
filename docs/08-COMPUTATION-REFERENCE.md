@@ -209,6 +209,83 @@ over daylight hours (8–18 local), `Q_hvac = ±k_active` when HVAC is driving t
 Physics prediction activates when either confidence is > "none", enabling prediction on
 homes with passive-only observations (zero HVAC cycles recorded).
 
+#### 5e-i. Sampling Cadence — Per-Type Decimation (Issue #122 H1)
+
+The coordinator polls every 30 seconds. Sampling slow decay phenomena at poll rate yields
+noise — inter-sample temperature change is dominated by sensor quantisation, not the
+signal. A per-type wall-clock gate in `_sample_all_observations()` section A limits how
+often a sample is appended to each observation's `samples` list:
+
+| Type | Sample interval | Constant |
+|------|----------------|----------|
+| `hvac_heat` / `hvac_cool` active phase | Every poll (no gate) | — |
+| `hvac_heat` / `hvac_cool` post-heat phase | 5 min | `THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S` |
+| `passive_decay` | 5 min | `THERMAL_PASSIVE_SAMPLE_INTERVAL_S` |
+| `fan_only_decay` | 2 min | `THERMAL_FAN_SAMPLE_INTERVAL_S` |
+| `ventilated_decay` | 5 min | `THERMAL_PASSIVE_SAMPLE_INTERVAL_S` |
+| `solar_gain` | 5 min | `THERMAL_SOLAR_SAMPLE_INTERVAL_S` |
+
+The gate timestamp is stored as `"last_sample_time"` in the observation dict. HVAC
+active-phase sampling is ungated — fast HVAC dynamics benefit from maximum resolution.
+`fan_only_decay` uses a 2-minute interval because fan-assisted heat transfer is faster
+than pure passive drift.
+
+**Convergence**: A 6-hour overnight passive window at 5-min decimation yields ~72 samples
+— vs. 720 noise-dominated samples at poll rate. The 30-sample minimum for `passive_decay`
+requires roughly 2.5 hours of clean uninterrupted signal to commit.
+
+#### 5e-ii. Rolling-Window Commits (Issue #122 H2)
+
+Long observation windows are accurate but slow to yield a commit. Rolling commits break
+each long passive/vent/solar observation into consecutive 30-minute slices. When
+`THERMAL_ROLLING_WINDOW_MINUTES (30 min)` elapses since the observation started (or
+since the last rolling commit), `_commit_rolling_window_obs()` fires:
+
+1. Requires at least 3 samples in the window.
+2. For `passive_decay` and `solar_gain`: requires total indoor ΔT ≥
+   `THERMAL_ROLLING_MIN_DELTA_T_F (0.2°F)`. This guards against noise-fitting on
+   near-flat data in short windows (< 10 samples).
+3. For `fan_only_decay` and `ventilated_decay`: the ΔT guard is skipped
+   (`skip_delta_guard=True`) because the signal guarantee is the indoor–outdoor
+   differential (already checked by the observation's trigger condition), not the
+   temperature trend.
+4. All rolling commits use `force_grade="low"` (EWMA α = 0.05).
+5. After commit, the observation is popped from `_pending_observations`. Section B of
+   `_sample_all_observations()` restarts it on the next poll if conditions still hold.
+
+**Convergence impact**: Rolling windows yield ~16 `passive_decay` commits per 8-hour
+overnight window (480 min ÷ 30 min) vs. 1 commit per full-night window in v2. The model
+reaches 5% accuracy in ~4 nights (α = 0.05) vs. ~60 nights before.
+
+#### 5e-iii. Wall-Clock Abandon Timeout (Issue #122 H4)
+
+`ventilated_decay` and `fan_only_decay` abandon after `THERMAL_DECAY_MAX_WINDOW_MINUTES
+(60 min)` if rolling commit has not fired and the signal has not met the minimum ΔT
+threshold. Abandon reason logged: `"max_window_elapsed_low_signal"`. This prevents
+stale near-equilibrium observations from persisting when a window is left open or the
+fan is running with indoor and outdoor temps nearly equal.
+
+`passive_decay` and `solar_gain` do not have this timeout — rolling commits bound their
+window length naturally.
+
+#### 5e-iv. `_update_thermal_model_cache()` — E6 Parameter Routing Fix (Issue #122)
+
+Each committed observation updates the EWMA cache via `learning._update_thermal_model_cache()`.
+The `hvac_mode` field in the observation dict determines which cache field is updated:
+
+| `hvac_mode` | Updates cache field | Count field |
+|---|---|---|
+| `"heat"` | `k_active_heat`, `k_passive` | `observation_count_heat` |
+| `"cool"` | `k_active_cool`, `k_passive` | `observation_count_cool` |
+| `"passive"` | `k_passive` only | `observation_count_passive` |
+| `"fan_only"` | `k_vent` (from obs `k_passive` field) | `observation_count_fan_only` |
+| `"ventilated"` | `k_vent_window` (from obs `k_passive` field) | `observation_count_vent` |
+| `"solar"` | `k_solar` (from obs `k_solar` field) | `observation_count_solar` |
+
+**E6 fix**: Before Issue #122, the `elif mode == "passive"` branch incorrectly wrote
+`k_p` to `cache["k_vent"]`. The fix removes that line — passive observations no longer
+contaminate the ventilation parameter. Only `fan_only` observations update `k_vent`.
+
 ---
 
 ## 6. Occupancy Mode Priority
@@ -509,7 +586,7 @@ Complete list of all constants from `const.py` that affect runtime behavior.
 | `THERMAL_POST_HEAT_TIMEOUT_MINUTES` | `45` | minutes | Maximum post-heat observation window before abandoning |
 | `THERMAL_STABILIZATION_THRESHOLD_F` | `0.3` | °F | |ΔT| threshold for stabilization criterion |
 | `THERMAL_STABILIZATION_WINDOW_MINUTES` | `5` | minutes | Duration |ΔT| must remain below threshold to count as stabilized |
-| `THERMAL_SAMPLE_INTERVAL_SECONDS` | `60` | seconds | Active and post-heat sampling cadence |
+| `THERMAL_SAMPLE_INTERVAL_SECONDS` | `60` | seconds | Active-phase HVAC sampling cadence (ungated; all polls recorded) |
 | `THERMAL_PRE_HEAT_BUFFER_MINUTES` | `15` | minutes | Rolling pre-HVAC sample window included in k_passive regression |
 | `THERMAL_MAX_ACTIVE_SAMPLES` | `120` | samples | Cap on active-phase samples (2 hours at 60s cadence) |
 | `THERMAL_MAX_POST_HEAT_SAMPLES` | `45` | samples | Cap on post-heat samples (45 min at 60s cadence) |
@@ -521,6 +598,13 @@ Complete list of all constants from `const.py` that affect runtime behavior.
 | `THERMAL_K_ACTIVE_HEAT_MAX` | `15.0` | °F/hr | Maximum credible HVAC heating contribution |
 | `THERMAL_K_ACTIVE_COOL_MIN` | `-15.0` | °F/hr | Maximum credible HVAC cooling contribution (magnitude) |
 | `THERMAL_K_ACTIVE_COOL_MAX` | `-0.5` | °F/hr | Minimum credible HVAC cooling contribution (magnitude) |
+| `THERMAL_DECAY_MAX_WINDOW_MINUTES` | `60` | minutes | Wall-clock limit before `ventilated_decay` / `fan_only_decay` abandon (H4) |
+| `THERMAL_ROLLING_WINDOW_MINUTES` | `30` | minutes | Rolling commit+restart interval for all four non-HVAC decay types (H2) |
+| `THERMAL_ROLLING_MIN_DELTA_T_F` | `0.2` | °F | Minimum total indoor ΔT to commit a short rolling window (H2 ΔT guard) |
+| `THERMAL_PASSIVE_SAMPLE_INTERVAL_S` | `300` | seconds (5 min) | Sample gate for `passive_decay` and `ventilated_decay` (H1) |
+| `THERMAL_FAN_SAMPLE_INTERVAL_S` | `120` | seconds (2 min) | Sample gate for `fan_only_decay` — faster than passive dynamics (H1) |
+| `THERMAL_SOLAR_SAMPLE_INTERVAL_S` | `300` | seconds (5 min) | Sample gate for `solar_gain` (H1) |
+| `THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S` | `300` | seconds (5 min) | Sample gate for HVAC post-heat phase — passive dynamics (H1) |
 
 **User-facing config keys** (set via config flow, stored in the config entry):
 

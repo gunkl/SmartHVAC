@@ -92,21 +92,24 @@ Suggestions are generated when `generate_suggestions()` is called (typically dur
 
 ## Thermal Model
 
-The thermal model characterises how the house envelope and HVAC system move indoor temperature over time. Observations accumulate continuously across passive temperature drift, fan operation, solar gain, and HVAC cycles and are used to compute adaptive bedtime setback depth, pre-heat start time, and the physics-based predicted temperature curve shown in the dashboard.
+The thermal model characterises how the house envelope and HVAC system move indoor temperature over time. Observations accumulate continuously from six parallel sources — passive temperature drift, fan operation, window ventilation, solar gain, and HVAC heating/cooling cycles — and are used to compute adaptive bedtime setback depth, pre-heat start time, and the physics-based predicted temperature curve shown in the dashboard.
 
-### Physics Model (Issue #114 — v2 Architecture)
+### Physics Model (Issue #114 v2 / Issue #121 v3)
 
-The model is a two-parameter first-order ODE:
+The v3 ODE adds ventilation and solar terms to the v2 two-parameter model:
 
 ```
-dT/dt = k_passive * (T_indoor - T_outdoor) + Q
+dT/dt = (k_passive + k_vent_eff) * (T_out - T_in) + k_solar * solar_factor + Q_hvac
 ```
 
 where:
-- `k_passive` (hr⁻¹, always negative) — envelope decay rate; describes how fast the house drifts toward outdoor temperature without HVAC
-- `Q` = `k_active` when HVAC is running, 0 when HVAC is off
-- `k_active_heat` (°F/hr, positive) — net HVAC heating contribution above envelope exchange
-- `k_active_cool` (°F/hr, negative) — net HVAC cooling contribution
+- `k_passive` (hr⁻¹, always negative) — envelope decay rate; how fast the house drifts toward outdoor temperature with no HVAC, no fan, and no solar gain
+- `k_vent` (hr⁻¹, negative) — additional decay rate from HVAC fan circulation only
+- `k_vent_window` (hr⁻¹, negative) — additional decay rate when windows are open
+- `k_solar` (°F/hr per unit solar factor) — solar gain contribution
+- `k_vent_eff` = `k_vent` when fan is active, `k_vent_window` when windows are open, 0 otherwise
+- `solar_factor` = sinusoidal 0 → 1 → 0 over daylight hours (local 8:00–18:00)
+- `Q_hvac` = `k_active_heat` when heating, `k_active_cool` when cooling, 0 otherwise
 
 **Analytical ODE solution** used for prediction and simulation:
 
@@ -114,77 +117,99 @@ where:
 T(t+dt) = T_outdoor + (T - T_outdoor) * exp(k_p * dt) + (Q/k_p) * (exp(k_p * dt) - 1)
 ```
 
-**Why this replaces the scalar rate model:** The old architecture computed a single `end_temp – start_temp` delta at the moment HVAC stopped. Because most thermostats have a 15–30 second sensor update lag after the heating/cooling action ends, `start_temp == end_temp` in almost every observation, yielding `rate = 0°F/hr` and causing the observation to be dropped. The new architecture never takes a single-point delta — it builds the model from the full post-heat decay curve and the active-phase samples together.
+**Why OLS regression over single-point delta:** The original scalar model computed `end_temp – start_temp` at the moment HVAC stopped. Thermostat sensor lag (15–30 s) means those two temperatures are often equal, yielding `rate = 0°F/hr` and causing the observation to be dropped. The OLS architecture builds the model from the full post-heat decay curve and the active-phase samples together, eliminating the lag problem.
 
-### `PendingThermalEvent` State Machine
+### v3 Parallel Observation Architecture (Issue #121)
 
-The coordinator maintains an in-progress observation window as a state machine stored in `LearningState.pending_thermal_event`. The coordinator methods managing it are all on `ClimateAdvisorCoordinator`.
+The v2 architecture had a single `PendingThermalEvent` state machine — only one observation could accumulate at a time. v3 replaces this with a `_pending_observations: dict[str, PendingObservation]` dict keyed by observation type string. All six types can run concurrently; each type targets a different thermal parameter.
 
-```
-idle
-  │
-  │  hvac_action becomes "heating" or "cooling"
-  ▼
-active
-  │  samples collected every 60s; pre-heat buffer also sampled every 60s (15-min rolling window)
-  │
-  │  hvac_action leaves "heating"/"cooling"
-  ▼
-post_heat
-  │  samples collected every 60s for up to 45 min (THERMAL_POST_HEAT_TIMEOUT_MINUTES)
-  │
-  ├──[stabilized: |ΔT| < 0.3°F over 5 consecutive minutes]──► commit
-  │
-  └──[timeout: 45 min elapsed without stabilization]──► abandon
-```
+#### Observation Types
 
-**State machine methods:**
+| Type | Trigger conditions | Target parameter | Min samples |
+|---|---|---|---|
+| `hvac_heat` | `hvac_action = "heating"` | `k_active_heat`, `k_passive` (via pre-heat buffer) | 10 post-heat |
+| `hvac_cool` | `hvac_action = "cooling"` | `k_active_cool` | 10 post-heat |
+| `passive_decay` | HVAC off, fan off, windows closed, `\|ΔT\|` ≥ 3°F (indoor vs outdoor) | `k_passive` | 30 |
+| `fan_only_decay` | Fan active (`_fan_active` or thermostat `fan_only` mode), HVAC off, windows closed | `k_vent` | 15 |
+| `ventilated_decay` | Any window/door sensor open, HVAC off | `k_vent_window` | 20 |
+| `solar_gain` | HVAC off, fan off, windows closed, `T_in > T_out`, daytime (local 8:00–18:00) | `k_solar` | 20 |
 
-| Method | Role |
-|---|---|
-| `_start_thermal_event(session_mode)` | Enters `active` state; initialises event dict |
-| `_sample_thermal_event()` | Appends a sample during the active phase |
-| `_end_active_phase()` | Transitions from `active` to `post_heat` |
-| `_check_stabilization()` | Evaluates stabilization criterion; triggers commit or continues |
-| `_commit_thermal_event()` | Extracts k_passive/k_active and calls `learning.commit_thermal_event()` |
-| `_abandon_thermal_event(reason)` | Discards event; logs WARNING with reason |
-| `_update_pre_heat_buffer()` | Maintains the 15-min rolling pre-heat sample buffer |
+**HVAC contamination rule:** When HVAC starts, all four non-HVAC observations in progress are committed (if sufficient samples) or abandoned. HVAC operation contaminates passive/vent/solar signals.
 
-**Pre-heat buffer:** Sampled every 60 seconds regardless of HVAC state. Holds at most 15 entries (THERMAL_PRE_HEAT_BUFFER_MINUTES). Pre-heat samples are included in the OLS regression for `k_passive` to provide a richer baseline before the heating/cooling run began.
+**HVAC plateau guard:** After the HVAC active phase ends, the observation is committed only if `peak_indoor_f − end_indoor_f ≥ THERMAL_HVAC_MIN_DECAY_F (0.3°F)`. The guard was reduced from 1.0°F in v3 — the old threshold rejected all observations on short-cycling thermostats.
 
-**HVAC mode classification:** The session mode (`heat`, `cool`, `heat_cool`, `fan_only`) is determined by the first `hvac_action` observed during the active phase. `fan_only` sessions contribute only `k_passive` — no `k_active` is extracted.
+#### Sampling Cadence (Issue #122 H1 — Decimation)
 
-### `ThermalObservation` Dataclass (v2)
+The coordinator polls every 30 seconds. Sampling all slow decay phenomena at poll rate yields noise — the temperature change between two adjacent samples is dominated by sensor quantisation, not the signal. Per-type sample gates enforce a minimum wall-clock interval between recorded samples:
 
-| Field | Type | Purpose |
+| Type | Sample interval | Rationale |
 |---|---|---|
-| `timestamp` | `datetime` | UTC time the observation was committed |
-| `mode` | `str` | `"heat"`, `"cool"`, `"heat_cool"`, or `"fan_only"` |
-| `k_passive` | `float` | Envelope decay rate (hr⁻¹, negative) from OLS regression |
-| `k_active` | `float \| None` | HVAC contribution (°F/hr); `None` for `fan_only` |
-| `confidence_grade` | `str` | `"high"`, `"medium"`, or `"low"` — governs EWMA alpha |
-| `r_squared_passive` | `float` | R² of the post-heat OLS regression |
-| `r_squared_active` | `float \| None` | R² of the active-phase regression |
-| `n_post_samples` | `int` | Post-heat sample count used in regression |
-| `outdoor_temp_f` | `float \| None` | Mean outdoor temperature during the event |
+| `hvac_heat` / `hvac_cool` (active phase) | Every poll (no gate) | Active HVAC is fast; all samples needed |
+| `hvac_heat` / `hvac_cool` (post-heat phase) | 5 min (`THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S`) | Post-heat decay is passive dynamics |
+| `passive_decay` | 5 min (`THERMAL_PASSIVE_SAMPLE_INTERVAL_S`) | Slow drift; 5-min samples give clean signal |
+| `fan_only_decay` | 2 min (`THERMAL_FAN_SAMPLE_INTERVAL_S`) | Fan effect faster than passive; 2-min gives adequate resolution |
+| `ventilated_decay` | 5 min (`THERMAL_PASSIVE_SAMPLE_INTERVAL_S`) | Window-open drift is slow |
+| `solar_gain` | 5 min (`THERMAL_SOLAR_SAMPLE_INTERVAL_S`) | Solar ramp is slow; 5-min gives adequate resolution |
+
+The gate is stored as `"last_sample_time"` in the observation dict. Section A of `_sample_all_observations()` checks `elapsed_since_last >= _interval_s` before appending a sample.
+
+**Convergence improvement:** With 5-min decimation, a 6-hour passive overnight window yields ~72 samples vs. the noise-ridden 720 samples at 30-s poll rate. The 30-sample minimum (`THERMAL_PASSIVE_MIN_SAMPLES`) is calibrated to 5-min intervals, requiring ~2.5 hours of clean signal.
+
+#### Rolling-Window Commits (Issue #122 H2)
+
+Long observation windows are accurate but slow to accumulate. Rolling commits break each long observation into overlapping 30-minute windows. After `THERMAL_ROLLING_WINDOW_MINUTES (30 min)` elapses, the observation is committed and immediately restarted (if conditions still hold on the next poll).
+
+Rolling commit rules (in `_commit_rolling_window_obs()`):
+- Minimum 3 samples in the window (absolute floor)
+- For `passive_decay` and `solar_gain`: total indoor ΔT ≥ `THERMAL_ROLLING_MIN_DELTA_T_F (0.2°F)` — prevents noise-fitting on near-flat data
+- For `fan_only_decay` and `ventilated_decay`: the ΔT guard is skipped (`skip_delta_guard=True`); the signal guarantee for those types is the indoor–outdoor differential (checked by the trigger condition), not the temperature trend
+
+**Convergence impact:** Rolling windows produce ~16 `passive_decay` commits per overnight period (6 hours ÷ 30 min) vs. 1 per full-night commit in v2. The model reaches 5% accuracy in ~4 nights (α = 0.05 EWMA) vs. ~60 nights before.
+
+#### Wall-Clock Abandon Timeout (Issue #122 H4)
+
+`ventilated_decay` and `fan_only_decay` have a 60-minute wall-clock abandon limit (`THERMAL_DECAY_MAX_WINDOW_MINUTES`). If 60 minutes elapse without the rolling-window commit threshold being met and without the signal crossing the minimum ΔT guard, the observation is abandoned with reason `"max_window_elapsed_low_signal"`. This prevents stale, low-signal observations from persisting indefinitely when a window is left open in near-equilibrium conditions.
+
+`passive_decay` and `solar_gain` do not have this wall-clock timeout — they rely on rolling commits to bound window length.
+
+### Observation Lifecycle Methods
+
+| Method | Owner | Role |
+|---|---|---|
+| `_start_hvac_observation(session_mode)` | `coordinator.py` | Begins `hvac_heat` or `hvac_cool`; abandons/commits non-HVAC obs; attaches pre-heat buffer |
+| `_start_decay_observation(obs_type)` | `coordinator.py` | Creates `passive_decay`, `fan_only_decay`, `ventilated_decay`, or `solar_gain` observation dict |
+| `_sample_all_observations()` | `coordinator.py` | Section A: samples all active obs with per-type decimation gate. Section B: checks trigger conditions and starts new non-HVAC obs. Section C: evaluates exit conditions and calls commit/abandon per type |
+| `_end_hvac_active_phase(obs_type)` | `coordinator.py` | Transitions HVAC obs `active → post_heat` when `hvac_action` leaves heating/cooling |
+| `_check_hvac_stabilization(obs_type)` | `coordinator.py` | Evaluates stabilization criterion for HVAC post-heat; applies plateau guard; commits or abandons |
+| `_commit_observation(obs_type)` | `coordinator.py` | Passes observation dict to `learning._commit_event_from_dict()`; pops from `_pending_observations` |
+| `_commit_observation_if_sufficient(obs_type, abandon_reason)` | `coordinator.py` | Commits if `len(samples) >= min_samples` (with short-window ΔT guard), else abandons |
+| `_commit_rolling_window_obs(obs_type, obs)` | `coordinator.py` | Commits a 30-min rolling window slice; pops observation so it can be restarted |
+| `_abandon_observation(obs_type, reason)` | `coordinator.py` | Discards pending observation; logs WARNING with type, reason, sample count, and ΔT |
+| `_update_thermal_model_cache(obs)` | `learning.py` | Applies committed observation to EWMA cache; routes each mode to the correct parameter |
+
+**Pre-heat buffer:** `_pre_heat_sample_buffer` is sampled every coordinator poll regardless of HVAC state. Holds at most `THERMAL_PRE_HEAT_BUFFER_MINUTES (15)` entries. When `_start_hvac_observation()` fires, these samples are included in the HVAC observation's `pre_heat_samples` list and contribute to the OLS regression for `k_passive`.
 
 ### Parameter Extraction
 
-`k_passive` is estimated from the post-heat decay curve (plus pre-heat buffer) using OLS regression:
+`k_passive` is estimated from OLS regression over post-heat decay samples (plus pre-heat buffer for HVAC obs):
 
 ```
 rate_i = k_passive * delta_i
 ```
 
-where `rate_i = ΔT/Δt` (°F/hr) and `delta_i = T_indoor - T_outdoor` for each sample pair. Minimum requirements: 10 post-heat samples, R² ≥ 0.2 (`THERMAL_MIN_R_SQUARED`).
+where `rate_i = ΔT/Δt` (°F/hr) and `delta_i = T_indoor − T_outdoor` for each sample pair. Minimum: 10 post-heat samples, R² ≥ 0.2.
 
-`k_active` is extracted from active-phase samples:
+`k_active` is extracted from active-phase HVAC samples:
 
 ```
 k_active_i = rate_i - k_passive * delta_i
 ```
 
-The mean of all per-sample estimates is taken. Out-of-bounds values are rejected using sanity bounds (see §Constants below).
+Mean of per-sample estimates; out-of-bounds values rejected by sanity bounds.
+
+`k_vent` (fan-only decay) and `k_vent_window` (ventilated decay) use the same OLS formula as `k_passive` on their respective sample sets.
+
+`k_solar` is extracted from solar gain observations as a mean rate adjusted for `solar_factor`.
 
 **Confidence grades and EWMA alpha:**
 
@@ -195,9 +220,26 @@ The mean of all per-sample estimates is taken. Out-of-bounds values are rejected
 | `"low"` | R² ≥ 0.2 (minimum) | any passing sanity bounds | 0.05 |
 | rejected | R² < 0.2 or < 10 post samples | — | observation discarded |
 
+Rolling-window commits are always committed with `force_grade="low"` (α = 0.05), reflecting the shorter sample window.
+
+### `_update_thermal_model_cache()` Routing (Issue #122 E6 fix)
+
+Each committed observation updates the EWMA cache in `learning.py`. The routing by `hvac_mode` field:
+
+| `hvac_mode` value | Updates | Counter incremented |
+|---|---|---|
+| `"heat"` | `k_active_heat` (if `k_active` present), `k_passive` (always if present) | `observation_count_heat` |
+| `"cool"` | `k_active_cool` (if `k_active` present), `k_passive` (always if present) | `observation_count_cool` |
+| `"passive"` | `k_passive` only (no `k_vent` update) | `observation_count_passive` |
+| `"fan_only"` | `k_vent` (from `k_passive` field of the obs) | `observation_count_fan_only` |
+| `"ventilated"` | `k_vent_window` (from `k_passive` field of the obs) | `observation_count_vent` |
+| `"solar"` | `k_solar` (from `k_solar` field of the obs) | `observation_count_solar` |
+
+**E6 fix (Issue #122):** The `passive` branch no longer writes `k_p` to `cache["k_vent"]`. Before this fix, `passive_decay` observations were incorrectly populating the ventilation parameter. Now only `fan_only` observations update `k_vent`.
+
 ### `record_thermal_observation(obs: dict) -> None`
 
-Called by `learning.commit_thermal_event()` after parameter extraction. Appends the observation to the rolling history (capped at 90 entries) and updates `thermal_model_cache` via EWMA using the observation's `confidence_grade`. State is saved to disk immediately after each commit — HA restarts mid-day do not lose accumulated observations.
+Called by `learning._commit_event_from_dict()` after parameter extraction. Appends the observation to the rolling history (capped at 90 entries) and calls `_update_thermal_model_cache()`. State is saved to disk immediately after each commit — HA restarts mid-day do not lose accumulated observations.
 
 ### Predicted Indoor Temperature — Band Schedule Alignment (Issue #119)
 
@@ -213,35 +255,52 @@ When `thermal_model` or `classification` is absent, the band falls back to stati
 
 Returns the current accumulated thermal model from `thermal_model_cache`.
 
-**Output dict structure:**
+**Output dict structure (v3):**
 
 ```python
 {
-    # v2 physics parameters
+    # Core physics parameters
     "k_passive": float | None,              # envelope decay rate (hr⁻¹, negative)
     "k_active_heat": float | None,          # HVAC heating contribution (°F/hr, positive)
     "k_active_cool": float | None,          # HVAC cooling contribution (°F/hr, negative)
-    "confidence": str,                      # "none" | "low" | "medium" | "high"
-    # legacy compatibility fields
-    "heating_rate_f_per_hour": float | None,  # = abs(k_active_heat), rounded to 2dp
-    "cooling_rate_f_per_hour": float | None,  # = abs(k_active_cool), rounded to 2dp
+    "k_vent": float | None,                 # fan-only ventilation decay rate (hr⁻¹, negative)
+    "k_vent_window": float | None,          # window-open ventilation decay rate (hr⁻¹, negative)
+    "k_solar": float | None,               # solar gain coefficient (°F/hr per unit solar factor)
+    # Confidence
+    "confidence": str,                      # HVAC confidence: "none"|"low"|"medium"|"high" (heat+cool obs count)
+    "confidence_k_passive": str,            # passive confidence: "none"|"low"|"medium"|"high" (passive obs count)
+    "confidence_k_hvac": str,              # same as "confidence" — explicit alias
+    # Observation counts
     "observation_count_heat": int,
     "observation_count_cool": int,
+    "observation_count_total": int,
+    "observation_count_passive": int,
+    "observation_count_fan_only": int,
+    "observation_count_vent": int,
+    "observation_count_solar": int,
+    # Legacy compatibility fields
+    "heating_rate_f_per_hour": float | None,  # = abs(k_active_heat), rounded to 2dp
+    "cooling_rate_f_per_hour": float | None,  # = abs(k_active_cool), rounded to 2dp
+    # Diagnostics
+    "avg_r_squared_passive": float | None,
+    "last_observation_date": str | None,
 }
 ```
 
-`confidence` is derived from the count of heat+cool observations: `"none"` (< 3 of either mode), `"low"` (3–9), `"medium"` (10–19), `"high"` (20+).
+`confidence` (HVAC) is graded by `observation_count_heat + observation_count_cool`: `"none"` (< 3), `"low"` (3–9), `"medium"` (10–19), `"high"` (20+).
+
+`confidence_k_passive` is graded independently by `observation_count_passive`: same thresholds. Physics prediction activates when either confidence is > `"none"` — enabling prediction on homes with zero HVAC cycles recorded (passive-only households).
 
 The legacy `heating_rate_f_per_hour` and `cooling_rate_f_per_hour` fields are kept for backward compatibility with `compute_bedtime_setback()` and `_compute_ramp_hours()`.
 
-### `LearningState` New Fields
+### `LearningState` Fields
 
 | Field | Type | Description |
 |---|---|---|
-| `pending_thermal_event` | `dict \| None` | Serialised in-progress event; persisted so a mid-event HA restart can recover the event |
-| `thermal_model_cache` | `dict \| None` | EWMA-accumulated `k_passive`, `k_active_heat`, `k_active_cool` |
+| `pending_thermal_event` | `dict \| None` | Serialised in-progress HVAC event (legacy compat field; v3 also uses `coordinator._pending_observations` dict) |
+| `thermal_model_cache` | `dict \| None` | EWMA-accumulated model parameters for all six observation types |
 
-**Startup recovery:** `recover_pending_event_on_startup()` reads `pending_thermal_event` from state. If the event is in `post_heat` phase, it resumes monitoring. If it is in `active` phase, it is abandoned (cannot resume an active HVAC session across a restart reliably).
+**Startup recovery:** On startup, the coordinator reads `pending_thermal_event` from `LearningState`. If an HVAC observation is in `post_heat` phase, it is restored to `_pending_observations` and monitoring continues. Active-phase HVAC observations are abandoned (cannot reliably resume an active HVAC session across a restart). Non-HVAC observations are not persisted and are simply restarted on the next poll if conditions hold.
 
 ### Sanity Bounds (from `const.py`)
 
