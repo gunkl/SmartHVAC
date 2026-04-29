@@ -4,9 +4,17 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.30"
+VERSION = "0.3.31"
 
 RELEASE_NOTES: dict[str, list[str]] = {
+    "0.3.31": [
+        "Fix #121: Thermal model v3 — parallel multi-type observation collection",
+        "PassiveDecay, FanOnlyDecay, VentilatedDecay, SolarGain observation types added",
+        "k_passive now collectable without HVAC cycles (passive envelope decay)",
+        "Reduced HVAC plateau guard from 1.0°F to 0.3°F (fixes zero-obs on short-cycling thermostats)",
+        "ODE extended with k_vent and k_solar terms for improved mild-day prediction",
+        "Investigator: fixed 6th fan_status state, warm_day event frequency, window compliance scope",
+    ],
     "0.3.29": [
         "Fixed #119: Dynamic Target Band — chart band now tracks actual system targets"
         " (comfort/sleep/setback/vacation) rather than static comfort limits",
@@ -778,6 +786,44 @@ PREHEAT_SAFETY_MARGIN = 1.3  # multiply computed time by this
 DEFAULT_SETBACK_DEPTH_F = 4.0  # preserved fallback (current heat setback)
 DEFAULT_SETBACK_DEPTH_COOL_F = 3.0  # preserved fallback (current cool setback)
 THERMAL_MIN_DECAY_F = 1.0  # min total post-heat decay required to commit (°F)
+
+# --- v3 Observation Type string constants ---
+OBS_TYPE_PASSIVE_DECAY = "passive_decay"
+OBS_TYPE_FAN_ONLY_DECAY = "fan_only_decay"
+OBS_TYPE_VENTILATED_DECAY = "ventilated_decay"
+OBS_TYPE_SOLAR_GAIN = "solar_gain"
+OBS_TYPE_HVAC_HEAT = "hvac_heat"
+OBS_TYPE_HVAC_COOL = "hvac_cool"
+
+# Reduced plateau guard (was THERMAL_MIN_DECAY_F = 1.0)
+THERMAL_HVAC_MIN_DECAY_F = 0.3
+
+# Passive decay observation thresholds
+THERMAL_PASSIVE_MIN_SAMPLES = 30
+THERMAL_PASSIVE_MIN_DELTA_F = 3.0
+THERMAL_PASSIVE_MIN_SIGNAL_F = 0.5
+
+# Fan-only decay observation thresholds
+THERMAL_FAN_MIN_SAMPLES = 15
+THERMAL_FAN_MIN_SIGNAL_F = 0.2
+
+# Ventilated decay observation thresholds
+THERMAL_VENT_MIN_SAMPLES = 20
+THERMAL_VENT_MIN_SIGNAL_F = 0.3
+
+# Solar gain observation thresholds
+THERMAL_SOLAR_MIN_SAMPLES = 20
+THERMAL_SOLAR_MIN_RATE_F_PER_HR = 0.5
+THERMAL_SOLAR_DAYTIME_START_H = 8
+THERMAL_SOLAR_DAYTIME_END_H = 18
+
+# Shared cap across all observation types
+THERMAL_MAX_OBS_SAMPLES = 200
+
+# Per-type passive confidence count thresholds
+THERMAL_PASSIVE_CONF_LOW = 5
+THERMAL_PASSIVE_CONF_MEDIUM = 15
+THERMAL_PASSIVE_CONF_HIGH = 30
 
 # Sleep temperature config keys (Issue #101)
 CONF_SLEEP_HEAT = "sleep_heat"

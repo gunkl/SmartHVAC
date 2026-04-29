@@ -183,6 +183,32 @@ From Issue #119, the chart's "Target Band" overlay is no longer two static scala
 - The chart layer was renamed from "Comfort Band" to "Target Band" in Issue #119 to reflect that the band now varies over time.
 - `_build_predicted_indoor_future()` pre-computes the band schedule once via `_compute_target_band_schedule()` before iterating forecast hours (Issue #119 Phase 2 fix for B3 — eliminates redundant per-hour recomputation).
 
+### 5e. Thermal Model v3 — Observation Types (Issue #121)
+
+The thermal model collects observations from six parallel observation types, not just
+HVAC heat/cool cycles. Multiple observation types can run concurrently in a
+`_pending_observations` dict keyed by obs_type string.
+
+| Type | Trigger | Measures | Min samples |
+|------|---------|----------|-------------|
+| `hvac_heat` | hvac_action=heating | k_active_heat, k_passive (via pre-heat buffer) | 10 post-heat |
+| `hvac_cool` | hvac_action=cooling | k_active_cool | 10 post-heat |
+| `passive_decay` | HVAC off, fan off, windows closed, \|ΔT\| ≥ 3°F | k_passive | 30 |
+| `fan_only_decay` | Fan active, HVAC off, windows closed | k_vent | 15 |
+| `ventilated_decay` | Any window open, HVAC off | k_vent_window | 20 |
+| `solar_gain` | HVAC off, fan off, windows closed, T_in > T_out, daytime | k_solar | 20 |
+
+**HVAC plateau guard**: reduced from 1.0°F to 0.3°F (`THERMAL_HVAC_MIN_DECAY_F`). The 1.0°F
+guard rejected all observations on short-cycling thermostats (avg cycle < 1°F rise).
+
+**ODE (v3)**: `dT/dt = (k_passive + k_vent_eff)*(T_out - T_in) + k_solar*solar_factor + Q_hvac`
+where `k_vent_eff = k_vent` when ventilation is active, `solar_factor` = sinusoidal 0→1→0
+over daylight hours (8–18 local), `Q_hvac = ±k_active` when HVAC is driving toward setpoint.
+
+**Confidence grades**: `confidence_k_passive` is graded independently of `confidence_k_hvac`.
+Physics prediction activates when either confidence is > "none", enabling prediction on
+homes with passive-only observations (zero HVAC cycles recorded).
+
 ---
 
 ## 6. Occupancy Mode Priority
@@ -233,6 +259,8 @@ When `apply_classification()` runs and the day type is `warm` or `hot` with HVAC
 **Interaction with occupancy guards:** The comfort-floor heat command goes through `_set_temperature_for_mode()`, so occupancy-away and vacation redirection (§6a) still applies — the guard will not heat to `comfort_heat` if the occupancy mode is `away` or `vacation`.
 
 **30-minute convergence:** `apply_classification()` is called on every coordinator update (every 30 min). Once indoor temperature reaches `comfort_heat`, the guard condition is no longer met and the next update sets HVAC off normally. No separate timer is needed.
+
+**Event frequency — `warm_day_setback_applied`:** This event fires on every 30-minute coordinator update cycle while the warm-day condition persists — not once per day. Sixty or more firings in 48 hours is expected on a sustained warm day. High event counts for this type are not a loop or a bug.
 
 **Test coverage:** `tests/test_warm_day_comfort_gap.py`
 

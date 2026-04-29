@@ -14,7 +14,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from homeassistant.util import dt as dt_util
 
@@ -24,6 +24,8 @@ from .const import (
     MIN_DATA_POINTS_FOR_SUGGESTION,
     MIN_THERMAL_OBSERVATIONS,
     MIN_WEATHER_BIAS_OBSERVATIONS,
+    OBS_TYPE_HVAC_COOL,
+    OBS_TYPE_HVAC_HEAT,
     THERMAL_K_ACTIVE_COOL_MAX,
     THERMAL_K_ACTIVE_COOL_MIN,
     THERMAL_K_ACTIVE_HEAT_MAX,
@@ -33,10 +35,31 @@ from .const import (
     THERMAL_MIN_POST_HEAT_SAMPLES,
     THERMAL_MIN_R_SQUARED,
     THERMAL_OBS_CAP,
+    THERMAL_PASSIVE_CONF_HIGH,
+    THERMAL_PASSIVE_CONF_LOW,
+    THERMAL_PASSIVE_CONF_MEDIUM,
     WEATHER_BIAS_MAX_OBS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class ObsSample(TypedDict):
+    timestamp: str
+    indoor_temp_f: float
+    outdoor_temp_f: float
+    elapsed_minutes: float
+
+
+class PendingObservation(TypedDict):
+    obs_type: str
+    obs_id: str
+    start_time: str
+    status: str
+    samples: list
+    flags_at_start: dict
+    schema_version: int
+
 
 # Hard cap on daily records — 2 years of data is the absolute maximum.
 # The 90-day rolling trim in record_day() normally keeps the list much shorter;
@@ -74,6 +97,22 @@ class ThermalObservation:
 # ---------------------------------------------------------------------------
 # Module-level physics functions (importable for tests)
 # ---------------------------------------------------------------------------
+
+
+def _grade_passive_confidence(cache: dict) -> str:
+    """Compute confidence tier for k_passive based on combined observation count."""
+    count = (
+        cache.get("observation_count_passive", 0)
+        + cache.get("observation_count_heat", 0)
+        + cache.get("observation_count_cool", 0)
+    )
+    if count < THERMAL_PASSIVE_CONF_LOW:
+        return "none"
+    if count < THERMAL_PASSIVE_CONF_MEDIUM:
+        return "low"
+    if count < THERMAL_PASSIVE_CONF_HIGH:
+        return "medium"
+    return "high"
 
 
 def _smooth_temps(temps: list[float]) -> list[float]:
@@ -293,6 +332,7 @@ class LearningState:
     settings_history: list[dict] = field(default_factory=list)
     thermal_observations: list[dict] = field(default_factory=list)  # cap: THERMAL_OBS_CAP
     pending_thermal_event: dict | None = None  # in-progress observation window
+    pending_observations: dict = field(default_factory=dict)  # v3 multi-type obs windows
     thermal_model_cache: dict | None = None  # EWMA-accumulated k_passive, k_active_heat/cool
 
 
@@ -357,6 +397,55 @@ class LearningEngine:
                             type(val).__name__,
                         )
                         setattr(self._state, field_name, None)
+                # Validate pending_observations is a dict
+                if not isinstance(self._state.pending_observations, dict):
+                    self._state.pending_observations = {}
+                # v3 migration: convert pending_thermal_event → pending_observations
+                old_event = self._state.pending_thermal_event
+                if isinstance(old_event, dict) and old_event.get("status") in ("post_heat", "stabilized"):
+                    session_mode = old_event.get("session_mode") or old_event.get("hvac_mode") or "heat"
+                    obs_type = OBS_TYPE_HVAC_HEAT if session_mode == "heat" else OBS_TYPE_HVAC_COOL
+                    if obs_type not in self._state.pending_observations:
+                        migrated: PendingObservation = {
+                            "obs_type": obs_type,
+                            "obs_id": old_event.get("event_id", str(uuid.uuid4())),
+                            "start_time": old_event.get("active_start") or old_event.get("created_at", ""),
+                            "status": "monitoring",
+                            "samples": old_event.get("active_samples", []),
+                            "flags_at_start": {
+                                "hvac_mode": old_event.get("hvac_mode", "heat"),
+                                "hvac_action": "heating" if session_mode == "heat" else "cooling",
+                                "fan_active": False,
+                                "windows_open": False,
+                                "occupancy_mode": "home",
+                            },
+                            "_legacy_event": old_event,
+                            "schema_version": 1,
+                        }
+                        migrated.update(
+                            {
+                                "_phase": "active" if old_event.get("status") == "active" else "post_heat",
+                                "active_samples": old_event.get("active_samples", []),
+                                "post_heat_samples": old_event.get("post_heat_samples", []),
+                                "peak_indoor_f": old_event.get("peak_indoor_f"),
+                                "start_indoor_f": old_event.get("start_indoor_f"),
+                                "active_start": old_event.get("active_start", ""),
+                                "active_end": old_event.get("active_end"),
+                                "session_mode": session_mode,
+                                "hvac_mode": old_event.get("hvac_mode", session_mode),
+                            }
+                        )
+                        self._state.pending_observations[obs_type] = migrated
+                        _LOGGER.info(
+                            "v3 migration: pending_thermal_event (mode=%s) → pending_observations[%s]",
+                            session_mode,
+                            obs_type,
+                        )
+                    self._state.pending_thermal_event = None
+                elif isinstance(old_event, dict) and old_event.get("status") == "active":
+                    # Active v2 events cannot be recovered without runtime HVAC state — discard
+                    _LOGGER.info("v3 migration: discarding active-status v2 pending_thermal_event (unrecoverable)")
+                    self._state.pending_thermal_event = None
                 return
             except (json.JSONDecodeError, TypeError) as err:
                 _LOGGER.warning("Failed to load learning state, starting fresh: %s", err)
@@ -434,10 +523,19 @@ class LearningEngine:
                 "k_passive": None,
                 "k_active_heat": None,
                 "k_active_cool": None,
+                "k_vent": None,
+                "k_vent_window": None,
+                "k_solar": None,
                 "observation_count_heat": 0,
                 "observation_count_cool": 0,
+                "observation_count_passive": 0,
+                "observation_count_fan_only": 0,
+                "observation_count_vent": 0,
+                "observation_count_solar": 0,
                 "last_observation_date": None,
                 "avg_r_squared_passive": None,
+                "confidence_k_passive": "none",
+                "confidence_k_hvac": "none",
             }
 
         k_p = obs.get("k_passive")
@@ -469,6 +567,35 @@ class LearningEngine:
             else:
                 cache["k_active_cool"] = (1.0 - alpha) * cache["k_active_cool"] + alpha * k_a
             cache["observation_count_cool"] = cache.get("observation_count_cool", 0) + 1
+        elif mode == "passive":
+            if k_p is not None:
+                if cache.get("k_vent") is None:
+                    cache["k_vent"] = k_p
+                else:
+                    cache["k_vent"] = (1.0 - alpha) * cache["k_vent"] + alpha * k_p
+            cache["observation_count_passive"] = cache.get("observation_count_passive", 0) + 1
+        elif mode == "fan_only":
+            if k_p is not None:
+                if cache.get("k_vent") is None:
+                    cache["k_vent"] = k_p
+                else:
+                    cache["k_vent"] = (1.0 - alpha) * cache["k_vent"] + alpha * k_p
+            cache["observation_count_fan_only"] = cache.get("observation_count_fan_only", 0) + 1
+        elif mode == "ventilated":
+            if k_p is not None:
+                if cache.get("k_vent_window") is None:
+                    cache["k_vent_window"] = k_p
+                else:
+                    cache["k_vent_window"] = (1.0 - alpha) * cache["k_vent_window"] + alpha * k_p
+            cache["observation_count_vent"] = cache.get("observation_count_vent", 0) + 1
+        elif mode == "solar":
+            k_solar = obs.get("k_solar")
+            if k_solar is not None:
+                if cache.get("k_solar") is None:
+                    cache["k_solar"] = k_solar
+                else:
+                    cache["k_solar"] = (1.0 - alpha) * cache["k_solar"] + alpha * k_solar
+            cache["observation_count_solar"] = cache.get("observation_count_solar", 0) + 1
 
         cache["last_observation_date"] = obs.get("date")
         self._state.thermal_model_cache = cache
@@ -502,13 +629,22 @@ class LearningEngine:
             "k_active_heat": k_active_heat,
             "k_active_cool": k_active_cool,
             "k_passive": cache.get("k_passive"),
+            "k_vent": cache.get("k_vent"),
+            "k_vent_window": cache.get("k_vent_window"),
+            "k_solar": cache.get("k_solar"),
             # Legacy compat
             "heating_rate_f_per_hour": round(k_active_heat, 2) if k_active_heat is not None else None,
             "cooling_rate_f_per_hour": round(abs(k_active_cool), 2) if k_active_cool is not None else None,
             "observation_count_heat": count_heat,
             "observation_count_cool": count_cool,
             "observation_count_total": total,
+            "observation_count_passive": cache.get("observation_count_passive", 0),
+            "observation_count_fan_only": cache.get("observation_count_fan_only", 0),
+            "observation_count_vent": cache.get("observation_count_vent", 0),
+            "observation_count_solar": cache.get("observation_count_solar", 0),
             "confidence": confidence,
+            "confidence_k_passive": _grade_passive_confidence(cache),
+            "confidence_k_hvac": cache.get("confidence", "none"),
             "avg_r_squared_passive": cache.get("avg_r_squared_passive"),
             "last_observation_date": cache.get("last_observation_date"),
         }
@@ -565,12 +701,96 @@ class LearningEngine:
         self.save_state()
         return result
 
-    def _commit_event_from_dict(self, event: dict, force_grade: str | None) -> dict | None:
+    def _commit_event_from_dict(
+        self, event: dict, force_grade: str | None, obs_type: str = OBS_TYPE_HVAC_HEAT
+    ) -> dict | None:
         """Compute k_passive/k_active from event samples and record the observation.
 
         Returns the observation dict if successful, else None.
         force_grade overrides the computed confidence grade when set.
+        obs_type selects the commit path: passive_decay/fan_only_decay/ventilated_decay
+        use k_passive only; solar_gain computes mean rate; hvac_heat/hvac_cool use
+        the existing two-parameter path.
         """
+        if obs_type in ("passive_decay", "fan_only_decay", "ventilated_decay"):
+            samples = event.get("samples", event.get("active_samples", []))
+            k_p, r2_p = compute_k_passive(samples)
+            if k_p is None:
+                _LOGGER.info(
+                    "Thermal event commit failed (%s): k_passive rejected (R²=%.3f, n=%d)",
+                    obs_type,
+                    r2_p,
+                    len(samples),
+                )
+                return None
+            now_str = dt_util.now().isoformat()
+            date_str = dt_util.now().date().isoformat()
+            _decay_tag_map = {
+                "passive_decay": "passive",
+                "fan_only_decay": "fan_only",
+                "ventilated_decay": "ventilated",
+            }
+            hvac_mode_tag = _decay_tag_map[obs_type]
+            obs = {
+                "event_id": event.get("obs_id", event.get("event_id", str(uuid.uuid4()))),
+                "timestamp": now_str,
+                "date": date_str,
+                "hvac_mode": hvac_mode_tag,
+                "k_passive": round(k_p, 5),
+                "k_active": None,
+                "r_squared_passive": round(r2_p, 3),
+                "r_squared_active": None,
+                "sample_count_post": len(samples),
+                "confidence_grade": force_grade or "low",
+                "schema_version": 2,
+            }
+            _LOGGER.info(
+                "Thermal observation committed: mode=%s grade=%s k_passive=%.4f R²_p=%.3f",
+                hvac_mode_tag,
+                obs["confidence_grade"],
+                k_p,
+                r2_p,
+            )
+            self.record_thermal_observation(obs)
+            return obs
+
+        if obs_type == "solar_gain":
+            samples = event.get("samples", event.get("active_samples", []))
+            if len(samples) < 2:
+                return None
+            indoor_temps = [s["indoor_temp_f"] for s in samples]
+            elapsed = [s["elapsed_minutes"] for s in samples]
+            total_dt_hours = (elapsed[-1] - elapsed[0]) / 60.0
+            if total_dt_hours <= 0:
+                return None
+            mean_rate = (indoor_temps[-1] - indoor_temps[0]) / total_dt_hours
+            if mean_rate < 0:
+                return None
+            now_str = dt_util.now().isoformat()
+            date_str = dt_util.now().date().isoformat()
+            obs = {
+                "event_id": event.get("obs_id", event.get("event_id", str(uuid.uuid4()))),
+                "timestamp": now_str,
+                "date": date_str,
+                "hvac_mode": "solar",
+                "k_passive": None,
+                "k_active": None,
+                "k_solar": round(mean_rate, 3),
+                "r_squared_passive": None,
+                "r_squared_active": None,
+                "sample_count_post": len(samples),
+                "confidence_grade": force_grade or "low",
+                "schema_version": 2,
+            }
+            _LOGGER.info(
+                "Thermal observation committed: mode=solar grade=%s k_solar=%.3f",
+                obs["confidence_grade"],
+                mean_rate,
+            )
+            self.record_thermal_observation(obs)
+            return obs
+
+        # Default: hvac_heat / hvac_cool — original two-parameter path
         post_samples = event.get("post_heat_samples", [])
         pre_samples = event.get("pre_heat_samples", [])
         active_samples = event.get("active_samples", [])

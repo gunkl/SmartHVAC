@@ -98,6 +98,12 @@ from .const import (
     INVESTIGATION_REPORTS_FILE,
     MAX_WEATHER_BIAS_APPLY_F,
     MIN_WEATHER_BIAS_APPLY_F,
+    OBS_TYPE_FAN_ONLY_DECAY,
+    OBS_TYPE_HVAC_COOL,
+    OBS_TYPE_HVAC_HEAT,
+    OBS_TYPE_PASSIVE_DECAY,
+    OBS_TYPE_SOLAR_GAIN,
+    OBS_TYPE_VENTILATED_DECAY,
     OCCUPANCY_AWAY,
     OCCUPANCY_GUEST,
     OCCUPANCY_HOME,
@@ -107,13 +113,26 @@ from .const import (
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_SENSOR,
     TEMP_SOURCE_WEATHER_SERVICE,
+    THERMAL_FAN_MIN_SAMPLES,
+    THERMAL_FAN_MIN_SIGNAL_F,
+    THERMAL_HVAC_MIN_DECAY_F,
     THERMAL_MAX_ACTIVE_SAMPLES,
+    THERMAL_MAX_OBS_SAMPLES,
     THERMAL_MAX_POST_HEAT_SAMPLES,
     THERMAL_MIN_DECAY_F,
     THERMAL_MIN_POST_HEAT_SAMPLES,
+    THERMAL_PASSIVE_MIN_DELTA_F,
+    THERMAL_PASSIVE_MIN_SAMPLES,
+    THERMAL_PASSIVE_MIN_SIGNAL_F,
     THERMAL_POST_HEAT_TIMEOUT_MINUTES,
+    THERMAL_SOLAR_DAYTIME_END_H,
+    THERMAL_SOLAR_DAYTIME_START_H,
+    THERMAL_SOLAR_MIN_RATE_F_PER_HR,
+    THERMAL_SOLAR_MIN_SAMPLES,
     THERMAL_STABILIZATION_THRESHOLD_F,
     THERMAL_STABILIZATION_WINDOW_MINUTES,
+    THERMAL_VENT_MIN_SAMPLES,
+    THERMAL_VENT_MIN_SIGNAL_F,
     THRESHOLD_HOT,
     THRESHOLD_MILD,
     THRESHOLD_WARM,
@@ -229,6 +248,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._last_outdoor_temp: float | None = None  # most recent outdoor reading for gate checks
         # Thermal observation pipeline (Issue #114)
         self._pending_thermal_event: dict | None = None
+        self._pending_observations: dict = {}  # keyed by obs_type string
         self._pre_heat_sample_buffer: list[dict] = []  # rolling pre-heat window, max 15
         self._startup_hvac_initialized: bool = False  # Issue #96: prevents repeated late-start init
         self._last_state_contradiction_time: datetime | None = None  # dedup for state_contradiction_warning events
@@ -986,6 +1006,35 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                         recovered.get("hvac_mode", "?"),
                         recovered.get("confidence_grade", "?"),
                     )
+                # Recover v3 pending_observations that survived restart
+                _pending_obs = self.learning._state.pending_observations
+                if isinstance(_pending_obs, dict):
+                    for _obs_type, _obs in list(_pending_obs.items()):
+                        if not isinstance(_obs, dict):
+                            continue
+                        if _obs.get("_legacy_event"):
+                            # Legacy HVAC event migrated into pending_observations — use HVAC commit path
+                            session_mode = _obs.get("session_mode") or _obs.get("hvac_mode") or "heat"
+                            _obs["session_mode"] = session_mode
+                            self._pending_observations[_obs_type] = _obs
+                        else:
+                            samples = _obs.get("samples", _obs.get("active_samples", []))
+                            min_s = {
+                                OBS_TYPE_PASSIVE_DECAY: THERMAL_PASSIVE_MIN_SAMPLES,
+                                OBS_TYPE_FAN_ONLY_DECAY: THERMAL_FAN_MIN_SAMPLES,
+                                OBS_TYPE_VENTILATED_DECAY: THERMAL_VENT_MIN_SAMPLES,
+                                OBS_TYPE_SOLAR_GAIN: THERMAL_SOLAR_MIN_SAMPLES,
+                                OBS_TYPE_HVAC_HEAT: THERMAL_MIN_POST_HEAT_SAMPLES,
+                                OBS_TYPE_HVAC_COOL: THERMAL_MIN_POST_HEAT_SAMPLES,
+                            }.get(_obs_type, 10)
+                            if len(samples) >= min_s:
+                                self._pending_observations[_obs_type] = _obs
+                                _LOGGER.info(
+                                    "Startup: recovered v3 observation type=%s obs_id=%s samples=%d",
+                                    _obs_type,
+                                    _obs.get("obs_id", "?"),
+                                    len(samples),
+                                )
 
             await self.automation_engine.apply_classification(self._current_classification)
 
@@ -1132,7 +1181,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # --- Thermal observation pipeline sampling ---
         self._update_pre_heat_buffer()
         self._sample_thermal_event()
+        self._sample_all_observations()
         await self._check_stabilization()
+        for _hvac_obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+            await self._check_hvac_stabilization(_hvac_obs_type)
 
         # --- Temperatures for coordinator.data (sensor entities + AI context) ---
         _indoor_temp = self._get_indoor_temp()
@@ -1895,10 +1947,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 session_mode = None
             if session_mode:
                 await self._start_thermal_event(session_mode)
+                await self._start_hvac_observation(session_mode)
         elif was_running and not is_running:
             # HVAC just turned off — flush runtime and end active phase
             self._flush_hvac_runtime()
             await self._end_active_phase()
+            for _hvac_ot in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                self._end_hvac_active_phase(_hvac_ot)
             self._hvac_on_since = None
         elif was_running and is_running and old_action != new_action:
             # heat_cool mode: hvac_action switched heating↔cooling mid-session
@@ -1909,8 +1964,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     new_action,
                 )
                 await self._abandon_thermal_event("heat_cool mode switch mid-session")
+                for _hvac_ot in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                    self._abandon_observation(_hvac_ot, "heat_cool mode switch mid-session")
                 new_session_mode = "heat" if new_action == "heating" else "cool"
                 await self._start_thermal_event(new_session_mode)
+                await self._start_hvac_observation(new_session_mode)
 
         # If thermostat is now fully off, clear any stale HVAC-based fan active flag.
         # Only applies to HVAC/Both fan modes — whole-house fans run independently.
@@ -2060,6 +2118,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         )
         if session_mode:
             await self._start_thermal_event(session_mode)
+            await self._start_hvac_observation(session_mode)
 
     # ------------------------------------------------------------------
     # Thermal observation pipeline (Issue #114)
@@ -2119,9 +2178,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         pre_samples = []
         for s in self._pre_heat_sample_buffer:
             try:
-                from homeassistant.util import dt as dt_util2
-
-                ts = dt_util2.parse_datetime(s["timestamp"])
+                ts = dt_util.parse_datetime(s["timestamp"])
                 elapsed = (now - ts).total_seconds() / 60.0 if ts else 0.0
             except Exception:
                 elapsed = 0.0
@@ -2183,9 +2240,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         active_start_str = self._pending_thermal_event.get("active_start")
         try:
-            from homeassistant.util import dt as dt_util2
-
-            active_start = dt_util2.parse_datetime(active_start_str) if active_start_str else dt_util.now()
+            active_start = dt_util.parse_datetime(active_start_str) if active_start_str else dt_util.now()
         except Exception:
             active_start = dt_util.now()
         elapsed = (dt_util.now() - active_start).total_seconds() / 60.0
@@ -2220,9 +2275,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # Compute session_minutes
         active_start_str = self._pending_thermal_event.get("active_start")
         try:
-            from homeassistant.util import dt as dt_util2
-
-            active_start = dt_util2.parse_datetime(active_start_str) if active_start_str else now
+            active_start = dt_util.parse_datetime(active_start_str) if active_start_str else now
         except Exception:
             active_start = now
         self._pending_thermal_event["session_minutes"] = (now - active_start).total_seconds() / 60.0
@@ -2246,9 +2299,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         active_end_str = self._pending_thermal_event.get("active_end")
         try:
-            from homeassistant.util import dt as dt_util2
-
-            active_end = dt_util2.parse_datetime(active_end_str) if active_end_str else dt_util.now()
+            active_end = dt_util.parse_datetime(active_end_str) if active_end_str else dt_util.now()
         except Exception:
             active_end = dt_util.now()
 
@@ -2343,6 +2394,484 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._pending_thermal_event = None
         self.learning.set_pending_thermal_event(None)
         await self.hass.async_add_executor_job(self.learning.save_state)
+
+    # ------------------------------------------------------------------
+    # Thermal observation pipeline v3 (multi-type obs)
+    # ------------------------------------------------------------------
+
+    def _ensure_pending_observations(self) -> None:
+        """Lazily initialize _pending_observations if missing (e.g. test stubs)."""
+        if not hasattr(self, "_pending_observations"):
+            self._pending_observations = {}
+
+    async def _start_hvac_observation(self, session_mode: str) -> None:
+        """Begin a new HVAC thermal observation (heat or cool)."""
+        self._ensure_pending_observations()
+        if not self.config.get("learning_enabled", True):
+            return
+        if not hasattr(self, "learning"):
+            return
+        obs_type = OBS_TYPE_HVAC_HEAT if session_mode == "heat" else OBS_TYPE_HVAC_COOL
+
+        # Abandon any active non-HVAC observations — HVAC start contaminates them
+        for _contaminated in (
+            OBS_TYPE_PASSIVE_DECAY,
+            OBS_TYPE_FAN_ONLY_DECAY,
+            OBS_TYPE_VENTILATED_DECAY,
+            OBS_TYPE_SOLAR_GAIN,
+        ):
+            if _contaminated in self._pending_observations:
+                self._commit_observation_if_sufficient(_contaminated, "hvac_started")
+
+        if obs_type in self._pending_observations:
+            self._abandon_observation(obs_type, "new HVAC session started")
+
+        now = dt_util.now()
+        pre_samples = []
+        for s in self._pre_heat_sample_buffer:
+            try:
+                ts = dt_util.parse_datetime(s["timestamp"])
+                elapsed = (now - ts).total_seconds() / 60.0 if ts else 0.0
+            except Exception:
+                elapsed = 0.0
+            pre_samples.append(
+                {
+                    "timestamp": s["timestamp"],
+                    "indoor_temp_f": s["indoor_temp_f"],
+                    "outdoor_temp_f": s["outdoor_temp_f"],
+                    "elapsed_minutes": -elapsed,
+                }
+            )
+
+        indoor = self._get_indoor_temp()
+        import uuid as _uuid_mod
+
+        obs: dict = {
+            "obs_type": obs_type,
+            "obs_id": str(_uuid_mod.uuid4()),
+            "start_time": now.isoformat(),
+            "status": "monitoring",
+            "samples": [],
+            "flags_at_start": {},
+            "schema_version": 1,
+            # HVAC-specific fields (compatible with _commit_event_from_dict HVAC path)
+            "event_id": str(_uuid_mod.uuid4()),
+            "created_at": now.isoformat(),
+            "hvac_mode": session_mode,
+            "session_mode": session_mode,
+            "active_start": now.isoformat(),
+            "active_end": None,
+            "stabilized_at": None,
+            "pre_heat_samples": pre_samples,
+            "active_samples": [],
+            "post_heat_samples": [],
+            "start_indoor_f": indoor,
+            "end_indoor_f": None,
+            "peak_indoor_f": indoor,
+            "start_outdoor_f": None,
+            "session_minutes": None,
+            "_phase": "active",
+        }
+        first_sample = self._get_current_sample(0.0)
+        obs["active_samples"].append(first_sample)
+        obs["start_outdoor_f"] = first_sample["outdoor_temp_f"]
+
+        self._pending_observations[obs_type] = obs
+        # Keep legacy field in sync for startup recovery compat
+        self.learning.set_pending_thermal_event(obs)
+        await self.hass.async_add_executor_job(self.learning.save_state)
+        _LOGGER.info(
+            "Thermal HVAC observation started: obs_id=%s mode=%s indoor=%.1f°F",
+            obs["obs_id"],
+            session_mode,
+            indoor if indoor is not None else 0.0,
+        )
+
+    def _sample_all_observations(self) -> None:
+        """Sample all active observations and check trigger conditions for new ones."""
+        self._ensure_pending_observations()
+        if not self.config.get("learning_enabled", True):
+            return
+        if not hasattr(self, "learning"):
+            return
+
+        indoor = self._get_indoor_temp()
+        outdoor = getattr(self, "_last_outdoor_temp", None)
+        ae = self.automation_engine
+
+        now = dt_util.now()
+
+        # A. Sample all active observations
+        for obs_type, obs in list(self._pending_observations.items()):
+            if obs.get("status") != "monitoring":
+                continue
+
+            if indoor is None:
+                continue
+
+            if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                phase = obs.get("_phase", "active")
+                active_start_str = obs.get("active_start")
+                try:
+                    active_start = dt_util.parse_datetime(active_start_str) if active_start_str else now
+                except Exception:
+                    active_start = now
+                elapsed = (now - active_start).total_seconds() / 60.0
+
+                sample = self._get_current_sample(elapsed)
+                if phase == "active":
+                    samples = obs["active_samples"]
+                    if len(samples) < THERMAL_MAX_ACTIVE_SAMPLES:
+                        samples.append(sample)
+                    cur_peak = obs.get("peak_indoor_f")
+                    if indoor and (cur_peak is None or indoor > cur_peak):
+                        obs["peak_indoor_f"] = indoor
+                else:  # post_heat
+                    samples = obs["post_heat_samples"]
+                    if len(samples) < THERMAL_MAX_POST_HEAT_SAMPLES:
+                        samples.append(sample)
+                    if len(samples) % 5 == 0:
+                        self.learning.set_pending_thermal_event(obs)
+            else:
+                # passive/fan/vent/solar: append to samples list
+                elapsed = 0.0
+                start_str = obs.get("start_time")
+                if start_str:
+                    try:
+                        start_ts = dt_util.parse_datetime(start_str)
+                        if start_ts:
+                            elapsed = (now - start_ts).total_seconds() / 60.0
+                    except Exception:
+                        pass
+                sample = self._get_current_sample(elapsed)
+                samples_list = obs.setdefault("samples", [])
+                if len(samples_list) < THERMAL_MAX_OBS_SAMPLES:
+                    samples_list.append(sample)
+                elif len(samples_list) >= THERMAL_MAX_OBS_SAMPLES:
+                    self._commit_observation_if_sufficient(obs_type, "max_samples_reached")
+
+        # B. Check trigger conditions for new non-HVAC observations
+        _hvac_active = (
+            OBS_TYPE_HVAC_HEAT in self._pending_observations
+            and self._pending_observations[OBS_TYPE_HVAC_HEAT].get("_phase") == "active"
+        ) or (
+            OBS_TYPE_HVAC_COOL in self._pending_observations
+            and self._pending_observations[OBS_TYPE_HVAC_COOL].get("_phase") == "active"
+        )
+        # Also check live HVAC action from thermostat
+        _cs = self.hass.states.get(self.config["climate_entity"])
+        _hvac_action_str = _cs.attributes.get("hvac_action", "").lower() if _cs else ""
+        _is_heating_cooling = _hvac_action_str in ("heating", "cooling")
+        _fan_active = ae._fan_active or ae._natural_vent_active
+        _sensor_open = self._any_sensor_open()
+
+        if indoor is not None and outdoor is not None:
+            _delta = abs(indoor - outdoor)
+
+            if (
+                OBS_TYPE_PASSIVE_DECAY not in self._pending_observations
+                and not _is_heating_cooling
+                and not _hvac_active
+                and not _fan_active
+                and not _sensor_open
+                and _delta >= THERMAL_PASSIVE_MIN_DELTA_F
+            ):
+                self._start_decay_observation(OBS_TYPE_PASSIVE_DECAY)
+
+            _fan_only_mode = _cs.state == "fan_only" if _cs else False
+            if (
+                OBS_TYPE_FAN_ONLY_DECAY not in self._pending_observations
+                and (_fan_only_mode or ae._fan_active)
+                and not _is_heating_cooling
+                and not _sensor_open
+            ):
+                self._start_decay_observation(OBS_TYPE_FAN_ONLY_DECAY)
+
+            if (
+                OBS_TYPE_VENTILATED_DECAY not in self._pending_observations
+                and _sensor_open
+                and not _is_heating_cooling
+                and _delta >= THERMAL_PASSIVE_MIN_DELTA_F
+            ):
+                self._start_decay_observation(OBS_TYPE_VENTILATED_DECAY)
+
+            _hour = now.hour
+            if (
+                OBS_TYPE_SOLAR_GAIN not in self._pending_observations
+                and not _is_heating_cooling
+                and not _fan_active
+                and not _sensor_open
+                and indoor > outdoor
+                and THERMAL_SOLAR_DAYTIME_START_H <= _hour < THERMAL_SOLAR_DAYTIME_END_H
+            ):
+                self._start_decay_observation(OBS_TYPE_SOLAR_GAIN)
+
+        # C. Check commit/abandon conditions for each monitoring observation
+        for obs_type in list(self._pending_observations.keys()):
+            obs = self._pending_observations.get(obs_type)
+            if obs is None or obs.get("status") != "monitoring":
+                continue
+
+            if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                # HVAC stabilization is handled by _check_hvac_stabilization
+                continue
+
+            samples_list = obs.get("samples", [])
+
+            if obs_type == OBS_TYPE_PASSIVE_DECAY:
+                if _is_heating_cooling or _hvac_active:
+                    self._commit_observation_if_sufficient(obs_type, "hvac_started")
+                elif _sensor_open:
+                    self._abandon_observation(obs_type, "sensor_opened")
+                elif _fan_active:
+                    self._abandon_observation(obs_type, "fan_activated")
+                elif indoor is not None and outdoor is not None and abs(indoor - outdoor) < THERMAL_PASSIVE_MIN_DELTA_F:
+                    recent_temps = [s["indoor_temp_f"] for s in samples_list[-5:]] if len(samples_list) >= 5 else []
+                    if recent_temps and (max(recent_temps) - min(recent_temps)) < 0.1:
+                        self._abandon_observation(obs_type, "equilibrium_reached")
+                elif (
+                    len(samples_list) >= THERMAL_PASSIVE_MIN_SAMPLES
+                    and indoor is not None
+                    and outdoor is not None
+                    and abs(indoor - outdoor) >= THERMAL_PASSIVE_MIN_SIGNAL_F
+                ):
+                    self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
+
+            elif obs_type == OBS_TYPE_FAN_ONLY_DECAY:
+                _fan_only_mode = _cs.state == "fan_only" if _cs else False
+                _fan_still_on = _fan_only_mode or ae._fan_active
+                if not _fan_still_on and not (_cs and _cs.state == "fan_only"):
+                    self._commit_observation_if_sufficient(obs_type, "fan_stopped")
+                elif _sensor_open:
+                    self._abandon_observation(obs_type, "sensor_opened")
+                elif _is_heating_cooling or _hvac_active:
+                    self._abandon_observation(obs_type, "hvac_started")
+                elif (
+                    len(samples_list) >= THERMAL_FAN_MIN_SAMPLES
+                    and indoor is not None
+                    and outdoor is not None
+                    and abs(indoor - outdoor) >= THERMAL_FAN_MIN_SIGNAL_F
+                ):
+                    self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
+
+            elif obs_type == OBS_TYPE_VENTILATED_DECAY:
+                if not _sensor_open:
+                    self._commit_observation_if_sufficient(obs_type, "sensors_closed")
+                elif _is_heating_cooling or _hvac_active:
+                    self._abandon_observation(obs_type, "hvac_started")
+                elif (
+                    len(samples_list) >= THERMAL_VENT_MIN_SAMPLES
+                    and indoor is not None
+                    and outdoor is not None
+                    and abs(indoor - outdoor) >= THERMAL_VENT_MIN_SIGNAL_F
+                ):
+                    self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
+
+            elif obs_type == OBS_TYPE_SOLAR_GAIN:
+                if _is_heating_cooling or _hvac_active:
+                    self._abandon_observation(obs_type, "hvac_started")
+                elif _sensor_open:
+                    self._abandon_observation(obs_type, "sensor_opened")
+                elif _fan_active:
+                    self._abandon_observation(obs_type, "fan_activated")
+                elif not (THERMAL_SOLAR_DAYTIME_START_H <= now.hour < THERMAL_SOLAR_DAYTIME_END_H):
+                    self._abandon_observation(obs_type, "outside_daytime")
+                elif len(samples_list) >= 5:
+                    recent_indoor = [s["indoor_temp_f"] for s in samples_list[-5:]]
+                    if len(recent_indoor) >= 2 and (recent_indoor[-1] - recent_indoor[0]) < 0:
+                        self._commit_observation_if_sufficient(obs_type, "temperature_falling")
+                    elif len(samples_list) >= THERMAL_SOLAR_MIN_SAMPLES and indoor is not None:
+                        _first_ts = dt_util.parse_datetime(samples_list[0]["timestamp"])
+                        elapsed_h = (now - _first_ts).total_seconds() / 3600.0 if _first_ts else 0.0
+                        if elapsed_h > 0:
+                            mean_rate = (
+                                samples_list[-1]["indoor_temp_f"] - samples_list[0]["indoor_temp_f"]
+                            ) / elapsed_h
+                            if mean_rate >= THERMAL_SOLAR_MIN_RATE_F_PER_HR:
+                                self._commit_observation_if_sufficient(obs_type, "insufficient_rate")
+
+    def _start_decay_observation(self, obs_type: str) -> None:
+        """Create a new monitoring observation for a passive/fan/vent/solar type."""
+        import uuid as _uuid_mod
+
+        now = dt_util.now()
+        obs: dict = {
+            "obs_type": obs_type,
+            "obs_id": str(_uuid_mod.uuid4()),
+            "start_time": now.isoformat(),
+            "status": "monitoring",
+            "samples": [],
+            "flags_at_start": {
+                "sensor_open": self._any_sensor_open(),
+                "fan_active": self.automation_engine._fan_active,
+                "nat_vent_active": self.automation_engine._natural_vent_active,
+            },
+            "schema_version": 1,
+        }
+        self._pending_observations[obs_type] = obs
+        _LOGGER.debug("Thermal decay observation started: obs_id=%s type=%s", obs["obs_id"], obs_type)
+
+    def _end_hvac_active_phase(self, obs_type: str) -> None:
+        """Transition HVAC observation active → post_heat when HVAC action stops."""
+        self._ensure_pending_observations()
+        obs = self._pending_observations.get(obs_type)
+        if obs is None or obs.get("_phase") != "active":
+            return
+        now = dt_util.now()
+        obs["_phase"] = "post_heat"
+        obs["active_end"] = now.isoformat()
+
+        active_start_str = obs.get("active_start")
+        try:
+            active_start = dt_util.parse_datetime(active_start_str) if active_start_str else now
+        except Exception:
+            active_start = now
+        obs["session_minutes"] = (now - active_start).total_seconds() / 60.0
+
+        self.learning.set_pending_thermal_event(obs)
+        _LOGGER.info(
+            "Thermal HVAC observation active → post_heat: obs_id=%s session=%.1f min",
+            obs.get("obs_id", "?"),
+            obs["session_minutes"],
+        )
+
+    async def _check_hvac_stabilization(self, obs_type: str) -> None:
+        """Check if post-HVAC temperature has stabilized or timed out."""
+        self._ensure_pending_observations()
+        obs = self._pending_observations.get(obs_type)
+        if obs is None or obs.get("_phase") != "post_heat":
+            return
+
+        active_end_str = obs.get("active_end")
+        try:
+            active_end = dt_util.parse_datetime(active_end_str) if active_end_str else dt_util.now()
+        except Exception:
+            active_end = dt_util.now()
+
+        elapsed_post = (dt_util.now() - active_end).total_seconds() / 60.0
+
+        if elapsed_post > THERMAL_POST_HEAT_TIMEOUT_MINUTES:
+            self._abandon_observation(obs_type, "post_heat timeout exceeded")
+            await self.hass.async_add_executor_job(self.learning.save_state)
+            return
+
+        post_samples = obs.get("post_heat_samples", [])
+        if len(post_samples) < THERMAL_MIN_POST_HEAT_SAMPLES:
+            return
+
+        recent = []
+        now_iso = dt_util.now()
+        for s in reversed(post_samples):
+            try:
+                sample_ts = dt_util.parse_datetime(s["timestamp"])
+                if sample_ts and (now_iso - sample_ts).total_seconds() / 60.0 <= THERMAL_STABILIZATION_WINDOW_MINUTES:
+                    recent.append(s)
+            except Exception:
+                pass
+        recent.reverse()
+
+        if len(recent) < 2:
+            return
+
+        indoor_vals = [s["indoor_temp_f"] for s in recent]
+        if max(indoor_vals) - min(indoor_vals) < THERMAL_STABILIZATION_THRESHOLD_F:
+            obs["status"] = "stabilized"
+            obs["stabilized_at"] = dt_util.now().isoformat()
+            obs["end_indoor_f"] = indoor_vals[-1]
+
+            peak_f = obs.get("peak_indoor_f")
+            end_f = indoor_vals[-1]
+            if peak_f is not None and (peak_f - end_f) < THERMAL_HVAC_MIN_DECAY_F:
+                _LOGGER.info(
+                    "Thermal HVAC plateau guard: obs_id=%s peak=%.2f end=%.2f decay=%.2f < %.2f — abandoning",
+                    obs.get("obs_id", "?"),
+                    peak_f,
+                    end_f,
+                    peak_f - end_f,
+                    THERMAL_HVAC_MIN_DECAY_F,
+                )
+                self._abandon_observation(obs_type, "plateau guard: insufficient post-heat decay")
+                await self._async_save_state()
+                return
+
+            _LOGGER.info(
+                "Thermal HVAC observation stabilized: obs_id=%s post_samples=%d",
+                obs.get("obs_id", "?"),
+                len(post_samples),
+            )
+            await self._commit_observation(obs_type)
+
+    async def _commit_observation(self, obs_type: str, force_grade: str | None = None) -> None:
+        """Commit a pending observation to the learning engine."""
+        self._ensure_pending_observations()
+        obs = self._pending_observations.get(obs_type)
+        if obs is None:
+            return
+        if not self.config.get("learning_enabled", True):
+            self._pending_observations.pop(obs_type, None)
+            if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                self.learning.set_pending_thermal_event(None)
+            await self.hass.async_add_executor_job(self.learning.save_state)
+            return
+
+        committed = await self.hass.async_add_executor_job(
+            self.learning._commit_event_from_dict,
+            obs,
+            force_grade,
+            obs_type,
+        )
+
+        if committed and self._today_record is not None and obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+            self._today_record.thermal_session_count += 1
+
+        self._pending_observations.pop(obs_type, None)
+        if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+            self.learning.set_pending_thermal_event(None)
+        await self.hass.async_add_executor_job(self.learning.save_state)
+
+    def _abandon_observation(self, obs_type: str, reason: str) -> None:
+        """Discard a pending observation and log the abandonment."""
+        self._ensure_pending_observations()
+        obs = self._pending_observations.pop(obs_type, None)
+        if obs is None:
+            return
+        samples = obs.get("samples", obs.get("active_samples", []))
+        delta_f = 0.0
+        if len(samples) >= 2:
+            first = samples[0].get("indoor_temp_f", samples[0].get("indoor_f", 0))
+            last = samples[-1].get("indoor_temp_f", samples[-1].get("indoor_f", 0))
+            delta_f = round(abs(last - first), 2)
+        _LOGGER.warning(
+            "Thermal observation abandoned [type=%s, reason=%s, samples=%d, delta_f=%.2f]",
+            obs_type,
+            reason,
+            len(samples),
+            delta_f,
+        )
+        if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+            self.learning.set_pending_thermal_event(None)
+        self.hass.async_create_task(self.hass.async_add_executor_job(self.learning.save_state))
+
+    def _commit_observation_if_sufficient(self, obs_type: str, abandon_reason: str) -> None:
+        """Commit if enough samples exist, else abandon."""
+        self._ensure_pending_observations()
+        obs = self._pending_observations.get(obs_type)
+        if obs is None:
+            return
+        samples = obs.get("samples", obs.get("active_samples", []))
+        min_samples = {
+            OBS_TYPE_PASSIVE_DECAY: THERMAL_PASSIVE_MIN_SAMPLES,
+            OBS_TYPE_FAN_ONLY_DECAY: THERMAL_FAN_MIN_SAMPLES,
+            OBS_TYPE_VENTILATED_DECAY: THERMAL_VENT_MIN_SAMPLES,
+            OBS_TYPE_SOLAR_GAIN: THERMAL_SOLAR_MIN_SAMPLES,
+            OBS_TYPE_HVAC_HEAT: THERMAL_MIN_POST_HEAT_SAMPLES,
+            OBS_TYPE_HVAC_COOL: THERMAL_MIN_POST_HEAT_SAMPLES,
+        }.get(obs_type, 10)
+        if len(samples) >= min_samples:
+            obs["status"] = "committing"  # prevent duplicate commit on next poll
+            self.hass.async_create_task(self._commit_observation(obs_type, force_grade="low"))
+        else:
+            self._abandon_observation(obs_type, abandon_reason)
 
     def _compute_next_action(self, c: DayClassification | None, indoor_temp: float | None = None) -> str:
         """Compute the next recommended human action for display."""
@@ -2969,6 +3498,56 @@ def _simulate_indoor_physics(
     return t_next
 
 
+def _solar_factor(local_hour: int) -> float:
+    """Return a 0–1 solar intensity factor for the given local hour."""
+    if local_hour < THERMAL_SOLAR_DAYTIME_START_H or local_hour >= THERMAL_SOLAR_DAYTIME_END_H:
+        return 0.0
+    span = (THERMAL_SOLAR_DAYTIME_END_H - THERMAL_SOLAR_DAYTIME_START_H) / 2.0
+    return math.sin(math.pi * (local_hour - THERMAL_SOLAR_DAYTIME_START_H) / (span * 2))
+
+
+def _simulate_indoor_physics_v3(
+    t_start: float,
+    t_outdoor: float,
+    k_passive: float,
+    k_active: float | None,
+    dt_hours: float,
+    setpoint: float | None,
+    *,
+    comfort_heat: float,
+    comfort_cool: float,
+    k_vent: float | None = None,
+    k_solar: float | None = None,
+    solar_factor: float = 0.0,
+    ventilation_active: bool = False,
+) -> float:
+    """Advance indoor temperature using the v3 ODE with ventilation and solar terms."""
+    k_eff = k_passive + (k_vent if (ventilation_active and k_vent is not None) else 0.0)
+
+    q_hvac = 0.0
+    if setpoint is not None and k_active is not None:
+        if setpoint >= comfort_heat and t_start < setpoint:
+            q_hvac = abs(k_active)
+        elif setpoint <= comfort_cool and t_start > setpoint:
+            q_hvac = -abs(k_active)
+
+    q_solar = (k_solar * solar_factor) if (k_solar is not None) else 0.0
+    q_total = q_hvac + q_solar
+
+    exp_keff = math.exp(k_eff * dt_hours)
+    if k_eff != 0:
+        t_next = t_outdoor + (t_start - t_outdoor) * exp_keff + (q_total / k_eff) * (exp_keff - 1)
+    else:
+        t_next = t_start + q_total * dt_hours
+
+    if setpoint is not None:
+        if q_hvac > 0:
+            t_next = min(t_next, setpoint)
+        elif q_hvac < 0:
+            t_next = max(t_next, setpoint)
+    return t_next
+
+
 def _compute_target_band_schedule(
     hourly_timestamps: list,
     config: dict,
@@ -3172,22 +3751,33 @@ def _build_predicted_indoor_future(
     )
 
     # Decide whether to use physics simulation or setpoint-schedule fallback.
-    # Physics requires: thermal_model with confidence != "none", k_passive, and a seed temp.
+    # Physics requires: k_passive from any confident source, and a seed temp.
     _use_physics = False
     _k_passive: float | None = None
     _k_active_heat: float | None = None
     _k_active_cool: float | None = None
+    _k_vent: float | None = None
+    _k_solar: float | None = None
     if thermal_model and current_indoor_temp is not None:
         _conf = thermal_model.get("confidence", "none")
+        _conf_k_passive = thermal_model.get("confidence_k_passive")
         _k_passive = thermal_model.get("k_passive")
         _k_active_heat = thermal_model.get("k_active_heat")
         _k_active_cool = thermal_model.get("k_active_cool")
-        if _conf != "none" and _k_passive is not None and _k_passive < 0:
+        _k_vent = thermal_model.get("k_vent")
+        _k_solar = thermal_model.get("k_solar")
+        _physics_eligible = (
+            (_conf != "none" or (_conf_k_passive is not None and _conf_k_passive not in (None, "none")))
+            and _k_passive is not None
+            and _k_passive < 0
+        )
+        if _physics_eligible:
             _use_physics = True
             _LOGGER.debug(
                 "_build_predicted_indoor_future: using physics model "
-                "(conf=%s k_passive=%.4f k_active_heat=%s k_active_cool=%s)",
+                "(conf=%s conf_k_passive=%s k_passive=%.4f k_active_heat=%s k_active_cool=%s)",
                 _conf,
+                _conf_k_passive,
                 _k_passive,
                 f"{_k_active_heat:.2f}" if _k_active_heat is not None else "None",
                 f"{_k_active_cool:.2f}" if _k_active_cool is not None else "None",
@@ -3270,16 +3860,32 @@ def _build_predicted_indoor_future(
                 dt_hours = 1.0
             dt_hours = max(dt_hours, 1 / 60.0)  # floor at 1 min
 
-            _t_current = _simulate_indoor_physics(
-                _t_current,
-                float(outdoor),
-                _k_passive,  # type: ignore[arg-type]
-                k_active_for_mode,
-                dt_hours,
-                setpoint,
-                comfort_heat=comfort_heat,
-                comfort_cool=comfort_cool,
-            )
+            if _k_solar is not None or _k_vent is not None:
+                _t_current = _simulate_indoor_physics_v3(
+                    _t_current,
+                    float(outdoor),
+                    _k_passive,  # type: ignore[arg-type]
+                    k_active_for_mode,
+                    dt_hours,
+                    setpoint,
+                    comfort_heat=comfort_heat,
+                    comfort_cool=comfort_cool,
+                    k_vent=_k_vent,
+                    k_solar=_k_solar,
+                    solar_factor=_solar_factor(local_ts.hour),
+                    ventilation_active=False,
+                )
+            else:
+                _t_current = _simulate_indoor_physics(
+                    _t_current,
+                    float(outdoor),
+                    _k_passive,  # type: ignore[arg-type]
+                    k_active_for_mode,
+                    dt_hours,
+                    setpoint,
+                    comfort_heat=comfort_heat,
+                    comfort_cool=comfort_cool,
+                )
             temp = _t_current
         else:
             # Setpoint-schedule fallback

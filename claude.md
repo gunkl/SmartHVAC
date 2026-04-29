@@ -289,7 +289,7 @@ calls to `_set_temperature()` bypass it. See §6a in `docs/08-COMPUTATION-REFERE
 
 ### Fan Status Values
 
-`_compute_fan_status()` returns one of four string values. All four must be accounted for in cross-validation suppression logic in `ai_skills_activity.py`:
+`_compute_fan_status()` returns one of six string values. All non-inactive values must be accounted for in cross-validation suppression logic in `ai_skills_activity.py`:
 
 | Value | Meaning |
 |---|---|
@@ -297,14 +297,18 @@ calls to `_set_temperature()` bypass it. See §6a in `docs/08-COMPUTATION-REFERE
 | `"running (manual override)"` | Fan is running; CA's `_fan_override_active` flag is set |
 | `"running (untracked)"` | Thermostat reports fan running (`fan_mode=on` or `hvac_action=fan`) but CA's `_fan_active=False` — typical after HA restart or when user ran fan from thermostat app |
 | `"inactive"` | Fan is off and CA has no record of activating it |
+| `"off (manual override)"` | User turned fan on at the thermostat (setting `_fan_override_active=True`), then turned fan off before the grace period expired. Override still in effect, physical fan is off. Condition: `_fan_override_active=True AND _fan_active=False`. |
+| `"disabled"` | Fan control feature is turned off in configuration |
 
-`"running (untracked)"` was added in Issue #91. Any code that checks `ca_fan_running` for suppression purposes must include all three non-inactive values.
+`"running (untracked)"` was added in Issue #91. Any code that checks `ca_fan_running` for suppression purposes must include all three non-inactive, non-disabled values (`"active"`, `"running (manual override)"`, `"running (untracked)"`).
 
 ### Project Memory
 
 Claude Code's built-in memory system stores project context, tooling locations, and hard-won facts so they don't have to be re-discovered every session. Claude reads memory automatically at session start.
 
 **Thermal learning — v2 physics model (Issue #114)**: The thermal model uses two parameters: `k_passive` (hr⁻¹, always negative — envelope decay rate) and `k_active_heat`/`k_active_cool` (°F/hr — HVAC contribution). Parameters are extracted from the full post-heat decay curve via OLS regression, not from a single start/end delta. This fixes the root cause of the old model's zero-rate observations (thermostat sensor lag). The coordinator runs a `PendingThermalEvent` state machine (`active → post_heat → stabilized/abandoned`) tracked by 7 methods (`_start_thermal_event`, `_sample_thermal_event`, `_end_active_phase`, `_check_stabilization`, `_commit_thermal_event`, `_abandon_thermal_event`, `_update_pre_heat_buffer`). The pending event is persisted in `LearningState.pending_thermal_event` so post-heat observation windows survive HA restarts. If an observation is abandoned, a WARNING is logged with the reason. `get_thermal_model()` returns the v2 fields (`k_passive`, `k_active_heat`, `k_active_cool`) plus legacy aliases (`heating_rate_f_per_hour`, `cooling_rate_f_per_hour`) for backward compatibility with `compute_bedtime_setback()`. Physics-based prediction activates when `confidence != "none"` and `k_passive < 0`; falls back to ramp interpolation otherwise.
+
+**Thermal learning — v3 parallel observations (Issue #121)**: v3 replaces the single `PendingThermalEvent` state machine with a `_pending_observations: dict[str, PendingObservation]` dict, enabling six observation types to run concurrently: `hvac_heat`, `hvac_cool`, `passive_decay` (HVAC off, fan off, windows closed, |ΔT| ≥ 3°F), `fan_only_decay` (fan active, HVAC off), `ventilated_decay` (window open, HVAC off), and `solar_gain` (HVAC off, fan off, T_in > T_out, daytime). Each type targets a different thermal parameter: `k_passive`, `k_vent`, `k_vent_window`, or `k_solar`. The HVAC plateau guard was reduced from 1.0°F to 0.3°F via `THERMAL_HVAC_MIN_DECAY_F` — the prior 1.0°F threshold rejected all observations on short-cycling thermostats. `get_thermal_model()` adds `k_vent`, `k_vent_window`, `k_solar`, `confidence_k_passive`, `confidence_k_hvac`, and per-type observation counts. `confidence_k_passive` is graded independently of `confidence_k_hvac`; physics prediction activates when either is > "none", so homes with zero HVAC cycles still get physics-based prediction from passive decay observations. The v3 ODE adds `k_vent` and `k_solar` terms: `dT/dt = (k_passive + k_vent_eff)*(T_out - T_in) + k_solar*solar_factor + Q_hvac`.
 
 ---
 
