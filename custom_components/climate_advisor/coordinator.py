@@ -140,6 +140,7 @@ from .const import (
     THERMAL_STABILIZATION_WINDOW_MINUTES,
     THERMAL_VENT_MIN_SAMPLES,
     THERMAL_VENT_MIN_SIGNAL_F,
+    THERMAL_VENTILATED_MIN_DELTA_F,
     THRESHOLD_HOT,
     THRESHOLD_MILD,
     THRESHOLD_WARM,
@@ -2598,6 +2599,19 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if indoor is not None and outdoor is not None:
             _delta = abs(indoor - outdoor)
 
+            _LOGGER.debug(
+                "Thermal trigger eval: indoor=%.1f outdoor=%.1f delta=%.1f "
+                "fan=%s nat_vent=%s sensor_open=%s hvac_action=%s pending=%s",
+                indoor,
+                outdoor,
+                _delta,
+                ae._fan_active,
+                ae._natural_vent_active,
+                _sensor_open,
+                _hvac_action_str,
+                list(self._pending_observations.keys()),
+            )
+
             if (
                 OBS_TYPE_PASSIVE_DECAY not in self._pending_observations
                 and not _is_heating_cooling
@@ -2621,7 +2635,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 OBS_TYPE_VENTILATED_DECAY not in self._pending_observations
                 and _sensor_open
                 and not _is_heating_cooling
-                and _delta >= THERMAL_PASSIVE_MIN_DELTA_F
+                and _delta >= THERMAL_VENTILATED_MIN_DELTA_F
             ):
                 self._start_decay_observation(OBS_TYPE_VENTILATED_DECAY)
 

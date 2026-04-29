@@ -810,6 +810,10 @@ THERMAL_FAN_MIN_SIGNAL_F = 0.2
 # Ventilated decay observation thresholds
 THERMAL_VENT_MIN_SAMPLES = 20
 THERMAL_VENT_MIN_SIGNAL_F = 0.3
+# Lower trigger delta for ventilated_decay: k_vent_window is measurable at 1°F differential.
+# passive_decay needs 3°F for sufficient envelope-decay SNR; vent obs measures a different
+# phenomenon (air exchange rate) where smaller differentials still carry useful signal.
+THERMAL_VENTILATED_MIN_DELTA_F: float = 1.0
 
 # Solar gain observation thresholds
 THERMAL_SOLAR_MIN_SAMPLES = 20
