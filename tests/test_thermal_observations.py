@@ -37,6 +37,7 @@ if _ha_util is not None:
 # ---------------------------------------------------------------------------
 
 from custom_components.climate_advisor.const import (  # noqa: E402
+    MIN_THERMAL_OBSERVATIONS,
     OBS_TYPE_FAN_ONLY_DECAY,
     OBS_TYPE_HVAC_COOL,
     OBS_TYPE_HVAC_HEAT,
@@ -47,6 +48,7 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     THERMAL_FAN_SAMPLE_INTERVAL_S,
     THERMAL_HVAC_MIN_DECAY_F,
     THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S,
+    THERMAL_PASSIVE_CONF_LOW,
     THERMAL_PASSIVE_MIN_SAMPLES,
     THERMAL_PASSIVE_MIN_SIGNAL_F,
     THERMAL_PASSIVE_SAMPLE_INTERVAL_S,
@@ -1500,4 +1502,123 @@ class TestNatVentAndVentilatedDecay:
         """Confirm THERMAL_VENTILATED_MIN_DELTA_F is exactly 1.0."""
         assert pytest.approx(1.0) == THERMAL_VENTILATED_MIN_DELTA_F, (
             f"Expected THERMAL_VENTILATED_MIN_DELTA_F=1.0, got {THERMAL_VENTILATED_MIN_DELTA_F}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# C1 / C2 confidence grading regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceGrading:
+    """Regression tests for the C1 and C2 confidence-bug fixes in learning.py.
+
+    C1 (get_thermal_model): confidence_k_hvac was always "none" because the
+        cache["confidence"] write happened after the key was already read back.
+    C2 (_grade_passive_confidence): confidence_k_passive was always "none" because
+        ventilated/fan_only/passive observations were not included in the count
+        used by _grade_passive_confidence (only heat+cool were counted).
+    """
+
+    def _make_engine(self, tmp_path: Path) -> LearningEngine:
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        return engine
+
+    def _ventilated_obs(self, k_passive: float = -0.07) -> dict:
+        """Minimal ventilated_decay observation dict accepted by _update_thermal_model_cache.
+
+        Mode "ventilated" bumps observation_count_vent, which _grade_passive_confidence
+        includes in its count (C2 fix).
+        """
+        return {
+            "date": "2026-04-28",
+            "hvac_mode": "ventilated",
+            "k_passive": k_passive,
+            "confidence_grade": "high",
+        }
+
+    def _heat_obs(self, k_active: float = 3.5) -> dict:
+        """Minimal heat observation dict accepted by _update_thermal_model_cache.
+
+        Mode "heat" + k_active key bumps observation_count_heat and updates
+        k_active_heat (C1 fix path).
+        """
+        return {
+            "date": "2026-04-28",
+            "hvac_mode": "heat",
+            "k_passive": -0.07,
+            "k_active": k_active,
+            "confidence_grade": "high",
+        }
+
+    def test_confidence_k_passive_grades_from_vent_only_observations(self, tmp_path: Path):
+        """C2 round-trip: ventilated-only observations must lift confidence_k_passive above 'none'.
+
+        Before the C2 fix, _grade_passive_confidence() only counted heat+cool, so a
+        warm-day-home scenario (zero HVAC cycles, only ventilated_decay observations)
+        always returned "none" for confidence_k_passive regardless of how many
+        ventilated observations were committed.
+
+        Boundary guard: THERMAL_PASSIVE_CONF_LOW - 1 observations must still return "none";
+        exactly THERMAL_PASSIVE_CONF_LOW observations must return "low".
+        """
+        # --- boundary: one below threshold must remain "none" ---
+        engine_below = self._make_engine(tmp_path / "below")
+        for _ in range(THERMAL_PASSIVE_CONF_LOW - 1):
+            engine_below._update_thermal_model_cache(self._ventilated_obs())
+        model_below = engine_below.get_thermal_model()
+        assert model_below["confidence_k_passive"] == "none", (
+            f"Expected 'none' with {THERMAL_PASSIVE_CONF_LOW - 1} ventilated obs "
+            f"(below threshold), got '{model_below['confidence_k_passive']}'"
+        )
+
+        # --- at threshold: must grade to "low" ---
+        engine_at = self._make_engine(tmp_path / "at")
+        for _ in range(THERMAL_PASSIVE_CONF_LOW):
+            engine_at._update_thermal_model_cache(self._ventilated_obs())
+        model_at = engine_at.get_thermal_model()
+        assert model_at["confidence_k_passive"] == "low", (
+            f"Expected 'low' with {THERMAL_PASSIVE_CONF_LOW} ventilated obs "
+            f"(at threshold), got '{model_at['confidence_k_passive']}'"
+        )
+        assert model_at["confidence_k_passive"] != "none", (
+            "confidence_k_passive must not be 'none' when ventilated obs reach threshold (C2 regression)"
+        )
+
+    def test_confidence_k_hvac_grades_from_heat_observations(self, tmp_path: Path):
+        """C1 round-trip: heat observations must lift confidence_k_hvac above 'none'.
+
+        Before the C1 fix, get_thermal_model() wrote cache["confidence"] and then
+        immediately read it back via cache.get("confidence", "none") for the
+        confidence_k_hvac return value — but the key it read had just been set
+        to the correct value, so this actually worked. The real C1 bug was that
+        confidence_k_hvac returned cache.get("confidence", "none") which was the
+        *legacy* confidence field, not a dedicated hvac-confidence computation.
+        After MIN_THERMAL_OBSERVATIONS heat cycles the legacy field should be "low".
+
+        Boundary guard: MIN_THERMAL_OBSERVATIONS - 1 observations must return "none";
+        exactly MIN_THERMAL_OBSERVATIONS must return "low".
+        """
+        # --- boundary: one below threshold must remain "none" ---
+        engine_below = self._make_engine(tmp_path / "below")
+        for _ in range(MIN_THERMAL_OBSERVATIONS - 1):
+            engine_below._update_thermal_model_cache(self._heat_obs())
+        model_below = engine_below.get_thermal_model()
+        assert model_below["confidence_k_hvac"] == "none", (
+            f"Expected 'none' with {MIN_THERMAL_OBSERVATIONS - 1} heat obs "
+            f"(below threshold), got '{model_below['confidence_k_hvac']}'"
+        )
+
+        # --- at threshold: must grade to "low" ---
+        engine_at = self._make_engine(tmp_path / "at")
+        for _ in range(MIN_THERMAL_OBSERVATIONS):
+            engine_at._update_thermal_model_cache(self._heat_obs())
+        model_at = engine_at.get_thermal_model()
+        assert model_at["confidence_k_hvac"] == "low", (
+            f"Expected 'low' with {MIN_THERMAL_OBSERVATIONS} heat obs "
+            f"(at threshold), got '{model_at['confidence_k_hvac']}'"
+        )
+        assert model_at["confidence_k_hvac"] != "none", (
+            "confidence_k_hvac must not be 'none' when heat obs reach threshold (C1 regression)"
         )
