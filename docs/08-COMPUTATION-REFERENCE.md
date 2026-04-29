@@ -863,4 +863,149 @@ branch of `_get_indoor_temp()`.
 
 ---
 
-_Last Updated: 2026-04-26_
+## 20. Thermal Learning Health
+
+### 20.1 Overview
+
+The thermal learning engine uses OLS regression and quality gates to ensure only reliable observations update the model. Prior to Issue #124, rejections were logged as warnings with no persistent audit trail, making it impossible to distinguish "correctly rejecting noise" from "not learning anything" without SSH access. Issue #124 adds structured rejection events and a `learning_health` surface so the model's decision process is auditable without log access.
+
+No OLS math, automation behavior, or thermal thresholds changed in Issue #124. The only behavioral difference is that `_abandon_observation()` now logs at `INFO` level (downgraded from `WARNING`) because rejections are expected steady-state behavior, not anomalies.
+
+### 20.2 Rejection Reason Codes
+
+Six `REJECT_*` constants in `const.py` identify every point where an observation can be discarded. Each constant is also stored as the `reason_code` field in the `ThermalRejectionEvent` emitted at that point.
+
+| Constant | Value | When fired |
+|---|---|---|
+| `REJECT_TOO_FEW_SAMPLES` | `"too_few_samples"` | Sample count < required minimum before OLS runs |
+| `REJECT_SMALL_DELTA` | `"small_delta"` | Total indoor ΔT below `THERMAL_ROLLING_MIN_DELTA_T_F` (0.2°F) |
+| `REJECT_OLS_BAD_FIT` | `"ols_bad_fit"` | OLS R² < `THERMAL_MIN_R_SQUARED` (0.2) |
+| `REJECT_OLS_WRONG_SIGN` | `"ols_wrong_sign"` | OLS produced a positive k_passive (physics violation) |
+| `REJECT_OLS_BOUNDS` | `"ols_bounds"` | k_passive outside `[THERMAL_K_PASSIVE_MIN, THERMAL_K_PASSIVE_MAX]` = `[-0.5, -0.001]` hr⁻¹ |
+| `REJECT_ABANDONED` | `"abandoned"` | Observation abandoned before OLS could run (e.g., HVAC mode change, wall-clock timeout) |
+
+### 20.3 `ThermalRejectionEvent` Fields
+
+`ThermalRejectionEvent` is a `TypedDict` defined in `learning.py`. An instance is emitted at every rejection point and appended to the per-obs-type rejection log.
+
+| Field | Type | Description |
+|---|---|---|
+| `obs_type` | `str` | Observation type that was rejected (e.g., `"passive_decay"`) |
+| `reason_code` | `str` | One of the `REJECT_*` constants |
+| `n_samples` | `int` | Sample count at rejection time |
+| `n_required` | `int` | Minimum required for this observation type |
+| `r_squared` | `float \| None` | R² achieved; `None` when OLS never ran (e.g., `too_few_samples`, `abandoned`) |
+| `r_squared_required` | `float \| None` | R² floor (`THERMAL_MIN_R_SQUARED = 0.2`); `None` when OLS never ran |
+| `delta_t_f` | `float \| None` | Observed indoor ΔT in °F at rejection time |
+| `delta_t_required` | `float \| None` | Required ΔT floor (`THERMAL_ROLLING_MIN_DELTA_T_F = 0.2°F`) |
+| `elapsed_minutes` | `int \| None` | Wall-clock duration of the observation in minutes |
+| `timestamp` | `str` | ISO 8601 datetime of the rejection |
+
+### 20.4 `compute_k_passive()` 3-Tuple Return
+
+`compute_k_passive()` in `learning.py` previously returned a 2-tuple `(k_passive, r_squared)` — returning `(None, 0.0)` for five distinct failure modes with no way for the caller to distinguish them. Issue #124 extends the return to a 3-tuple `(k_passive, r_squared, reason_code)`:
+
+| Failure path | k_passive | r_squared | reason_code |
+|---|---|---|---|
+| Too few samples (< min + 1) | `None` | `0.0` | `REJECT_TOO_FEW_SAMPLES` |
+| Too few valid rate/delta pairs | `None` | `0.0` | `REJECT_TOO_FEW_SAMPLES` |
+| No variation (sum_d2 == 0) | `None` | `0.0` | `REJECT_SMALL_DELTA` |
+| k_passive outside bounds | `None` | `0.0` | `REJECT_OLS_BOUNDS` |
+| R² < minimum | `None` | r_squared | `REJECT_OLS_BAD_FIT` |
+| Success | k_passive | r_squared | `None` |
+
+All callers in `coordinator.py` unpack the 3-tuple and use the `reason_code` to populate the `ThermalRejectionEvent` before calling `_abandon_observation()`.
+
+### 20.5 `THERMAL_MIN_DECAY_SAMPLES` Alignment Contract
+
+`THERMAL_MIN_DECAY_SAMPLES = 4` is the single source of truth for OLS sample-pair floors on rolling decay observations.
+
+The coordinator pre-gates on `THERMAL_MIN_DECAY_SAMPLES + 1 = 5` pairs before calling OLS. This guarantees that at least 4 pairs are available for rate-pair construction inside `compute_k_passive()`. The inner function's own floor check (`_min_s = THERMAL_MIN_DECAY_SAMPLES`) is therefore never reached unless the outer gate logic is bypassed.
+
+`THERMAL_MIN_POST_HEAT_SAMPLES = 10` governs HVAC post-heat events and is a separate, independent constant. Do not change either constant independently — the `+1` offset between the outer gate and the inner floor is intentional and must be preserved.
+
+### 20.6 `learning_health` Dict in `get_thermal_model()`
+
+`get_thermal_model()` returns a `learning_health` key containing per-obs-type health summaries aggregated from the coordinator's `_rejection_log`:
+
+```
+learning_health: {
+    obs_type: {
+        "attempts":   int,          # total observation starts (committed + all rejections)
+        "committed":  int,          # successful commits to LearningState
+        "rejections": {
+            "too_few_samples": int,
+            "small_delta":     int,
+            "ols_bad_fit":     int,
+            "ols_wrong_sign":  int,
+            "ols_bounds":      int,
+            "abandoned":       int,
+        },
+        "last_rejection": ThermalRejectionEvent | None,
+    }
+    for obs_type in [
+        "hvac_heat", "hvac_cool", "passive_decay",
+        "fan_only_decay", "ventilated_decay", "solar_gain"
+    ]
+}
+```
+
+The coordinator builds this dict from `self._rejection_log` and passes it to `get_thermal_model()`, which includes it verbatim in the returned dict.
+
+### 20.7 Persistence
+
+- `self._rejection_log: dict[str, list[dict]]` is stored on the coordinator instance, keyed by obs_type.
+- Each per-obs-type list is capped at **100 entries** (oldest evicted first when the cap is reached).
+- Maximum total stored: **600 entries** across 6 obs types.
+- Persisted across HA restarts via `LearningState.rejection_log`. The cap is enforced on load to guard against file corruption.
+
+### 20.8 Sensor Attribute Exposure
+
+`ClimateAdvisorComplianceSensor.extra_state_attributes` exposes a `thermal_learning_health` key. In compliance with the security rule against exposing raw behavior data in attributes, only summary counts and the last rejection reason code are exposed — not the full `ThermalRejectionEvent` dicts:
+
+```
+thermal_learning_health: {
+    obs_type: {
+        "attempts":              int,
+        "committed":             int,
+        "rejections":            {reason_code: int, ...},
+        "last_rejection_reason": str | None,
+    }
+}
+```
+
+### 20.9 `tools/thermal_health.py` Usage
+
+Standalone CLI tool. Reads the `thermal_learning_health` attribute from the compliance sensor via HA REST API (`HA_URL` and `HA_TOKEN` environment variables, following the pattern in `tools/validate.py`). Prints a per-obs-type report:
+
+```
+Thermal Learning Health Report
+═══════════════════════════════
+obs_type            attempts  committed  rejections  last rejection
+─────────────────────────────────────────────────────────────────
+passive_decay       12        3          9           too_few_samples (n=3/5)
+hvac_heat           8         5          3           ols_bad_fit (R²=0.08/0.20)
+hvac_cool           6         4          2           abandoned
+fan_only_decay      2         0          2           too_few_samples (n=2/5)
+ventilated_decay    0         0          0           —
+solar_gain          1         0          1           small_delta (ΔT=0.1°F/0.2°F)
+```
+
+No new secrets or external dependencies. Run from the project root after setting env vars.
+
+### 20.10 Test Coverage
+
+| Test | File |
+|---|---|
+| `compute_k_passive()` 3-tuple reason codes (all 5 failure paths + success) | `tests/test_thermal_rejection.py` |
+| Rejection log accumulation on abandon | `tests/test_thermal_rejection.py` |
+| Rejection log per-type cap at 100 entries | `tests/test_thermal_rejection.py` |
+| Rejection log persisted in `LearningState` and reloaded on startup | `tests/test_thermal_rejection.py` |
+| `learning_health` present in `get_thermal_model()` with correct counts | `tests/test_thermal_rejection.py` |
+| `last_rejection` populated after a rejection event | `tests/test_thermal_rejection.py` |
+| `thermal_learning_health` in compliance sensor attributes | `tests/test_thermal_rejection.py` |
+| Sensor attribute exposes counts/summary only (not raw events) | `tests/test_thermal_rejection.py` |
+
+---
+
+_Last Updated: 2026-04-29_

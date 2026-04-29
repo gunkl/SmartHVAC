@@ -100,6 +100,29 @@
     font-size: 1.2rem;
     font-weight: 600;
   }
+  .section-subtitle {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary, #666);
+    margin-top: 10px;
+    margin-bottom: 4px;
+  }
+  .health-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .health-row .label {
+    font-size: 0.75rem;
+    color: var(--secondary-text-color, var(--text-secondary, #666));
+    margin-bottom: 1px;
+  }
+  .health-row .value {
+    font-size: 0.85rem;
+  }
   .badge {
     display: inline-block;
     padding: 4px 12px;
@@ -1471,7 +1494,26 @@
         `</div>`;
     }
 
-    content.innerHTML = badgeHtml + obsHtml + progressHtml + paramsHtml;
+    // Learning Health section — per-obs-type rejection diagnostics
+    const health = (tm && tm.learning_health) || {};
+    const obsTypes = [
+      'passive_decay', 'fan_only_decay', 'ventilated_decay',
+      'solar_gain', 'hvac_heat', 'hvac_cool'
+    ];
+    const healthRows = obsTypes.map(obsType => {
+      const h = health[obsType] || { attempts: 0, committed: 0, rejections: {}, last_rejection: null };
+      const totalRejections = Object.values(h.rejections || {}).reduce((a, b) => a + b, 0);
+      const lastReason = (h.last_rejection && h.last_rejection.reason_code) ? escapeHtml(h.last_rejection.reason_code) : '—';
+      return `<div class="health-row">` +
+        `<div class="label">${escapeHtml(obsType)}</div>` +
+        `<div class="value">${h.attempts || 0} attempts · ${h.committed || 0} committed · ${totalRejections} rejected · last: ${lastReason}</div>` +
+        `</div>`;
+    }).join('');
+    const healthHtml =
+      `<div class="section-subtitle">Learning Health</div>` +
+      `<div class="health-rows">${healthRows}</div>`;
+
+    content.innerHTML = badgeHtml + obsHtml + progressHtml + paramsHtml + healthHtml;
   }
 
   async function loadChart() {

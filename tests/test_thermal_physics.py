@@ -127,7 +127,7 @@ def test_k_passive_from_clean_decay():
     """Synthetic exponential decay with known k_p → recovered within ±0.01."""
     true_k_p = -0.05
     samples = _make_decay_samples(t_start=75.0, t_outdoor=40.0, k_passive=true_k_p, n=25)
-    k_p, r2 = compute_k_passive(samples)
+    k_p, r2, _code = compute_k_passive(samples)
     assert k_p is not None, "k_passive should not be None for clean data"
     assert abs(k_p - true_k_p) < 0.01, f"Expected k_passive≈{true_k_p}, got {k_p}"
     assert r2 >= 0.9, f"Expected R²≥0.9 for clean data, got {r2}"
@@ -143,7 +143,7 @@ def test_k_passive_with_integer_noise():
     samples = _make_decay_samples(
         t_start=80.0, t_outdoor=45.0, k_passive=true_k_p, n=25, dt_minutes=5.0, round_to_int=True
     )
-    k_p, r2 = compute_k_passive(samples)
+    k_p, r2, _code = compute_k_passive(samples)
     assert k_p is not None, f"k_passive should survive integer rounding noise (R²={r2})"
     assert r2 >= 0.3, f"Expected R²≥0.3 with integer noise, got {r2}"
 
@@ -151,7 +151,7 @@ def test_k_passive_with_integer_noise():
 def test_k_passive_too_few_samples():
     """Fewer than THERMAL_MIN_POST_HEAT_SAMPLES → returns None."""
     samples = _make_decay_samples(t_start=75.0, t_outdoor=40.0, k_passive=-0.05, n=5)
-    k_p, r2 = compute_k_passive(samples)
+    k_p, r2, _code = compute_k_passive(samples)
     assert k_p is None
 
 
@@ -169,7 +169,7 @@ def test_observation_rejected_low_r_squared():
         }
         for i in range(20)
     ]
-    k_p, r2 = compute_k_passive(samples)
+    k_p, r2, _code = compute_k_passive(samples)
     assert k_p is None, f"Expected k_passive=None for noisy data, but got {k_p} (R²={r2})"
 
 
@@ -185,7 +185,7 @@ def test_k_passive_must_be_negative():
         }
         for i in range(20)
     ]
-    k_p, r2 = compute_k_passive(samples)
+    k_p, r2, _code = compute_k_passive(samples)
     assert k_p is None, f"Rising indoor temp should yield k_passive>0, which must be rejected; got {k_p}"
 
 
@@ -194,8 +194,8 @@ def test_pre_heat_samples_included_in_regression():
     true_k_p = -0.04
     post_samples = _make_decay_samples(t_start=75.0, t_outdoor=40.0, k_passive=true_k_p, n=12)
     pre_samples = _make_decay_samples(t_start=73.0, t_outdoor=40.0, k_passive=true_k_p, n=5, elapsed_offset=-5.0)
-    k_p_post_only, r2_post_only = compute_k_passive(post_samples)
-    k_p_with_pre, r2_with_pre = compute_k_passive(post_samples, pre_samples)
+    k_p_post_only, r2_post_only, _code1 = compute_k_passive(post_samples)
+    k_p_with_pre, r2_with_pre, _code2 = compute_k_passive(post_samples, pre_samples)
 
     # Both should succeed; with pre-heat R² should be at least as good
     assert k_p_post_only is not None

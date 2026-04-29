@@ -23,6 +23,7 @@ from homeassistant.helpers.event import (
     async_call_later,
     async_track_state_change_event,
     async_track_time_change,
+    async_track_time_interval,
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -109,6 +110,12 @@ from .const import (
     OCCUPANCY_HOME,
     OCCUPANCY_SETBACK_MINUTES,
     OCCUPANCY_VACATION,
+    REJECT_ABANDONED,
+    REJECT_OLS_BAD_FIT,
+    REJECT_OLS_BOUNDS,
+    REJECT_OLS_WRONG_SIGN,
+    REJECT_SMALL_DELTA,
+    REJECT_TOO_FEW_SAMPLES,
     TEMP_SOURCE_CLIMATE_FALLBACK,
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_SENSOR,
@@ -123,7 +130,9 @@ from .const import (
     THERMAL_MAX_OBS_SAMPLES,
     THERMAL_MAX_POST_HEAT_SAMPLES,
     THERMAL_MIN_DECAY_F,
+    THERMAL_MIN_DECAY_SAMPLES,
     THERMAL_MIN_POST_HEAT_SAMPLES,
+    THERMAL_MIN_R_SQUARED,
     THERMAL_PASSIVE_MIN_DELTA_F,
     THERMAL_PASSIVE_MIN_SAMPLES,
     THERMAL_PASSIVE_MIN_SIGNAL_F,
@@ -156,6 +165,10 @@ _LOGGER = logging.getLogger(__name__)
 # Degrees below comfort_heat at which outdoor temp is too cold to recommend opening windows.
 # With default comfort_heat=70°F this means outdoor must be ≥ 55°F for windows to be recommended.
 _WINDOWS_EXTREME_COLD_MARGIN = 15.0
+
+# Maximum rejection events retained per obs_type in the in-memory rejection log.
+# Matches the per-obs-type cap enforced by LearningState.rejection_log on load.
+_REJECTION_LOG_CAP: int = 100
 
 # Plausible indoor temperature range in Fahrenheit.  Values outside this band indicate
 # a sensor glitch (e.g. a thermostat echoing its new setpoint into current_temperature
@@ -257,6 +270,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # Thermal observation pipeline (Issue #114)
         self._pending_thermal_event: dict | None = None
         self._pending_observations: dict = {}  # keyed by obs_type string
+        self._rejection_log: dict[str, list[dict]] = {}  # keyed by obs_type; capped at _REJECTION_LOG_CAP
         self._pre_heat_sample_buffer: list[dict] = []  # rolling pre-heat window, max 15
         self._startup_hvac_initialized: bool = False  # Issue #96: prevents repeated late-start init
         self._last_state_contradiction_time: datetime | None = None  # dedup for state_contradiction_warning events
@@ -335,6 +349,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             )
         )
 
+        # Schedule: thermal observation sampler (5-min independent of 30-min update cycle)
+        # Decay obs need ~6 samples per 30-min rolling window; the coordinator cycle alone
+        # yields only 1 sample per window, which is below the OLS floor.
+        self._unsub_listeners.append(
+            async_track_time_interval(
+                self.hass,
+                self._async_thermal_sample_tick,
+                timedelta(minutes=5),
+            )
+        )
+
         # Listeners: door/window sensors (resolve groups into individual sensors)
         self._resolved_sensors = self._resolve_monitored_sensors()
         self._subscribe_door_window_listeners()
@@ -368,9 +393,22 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info("Climate Advisor v%s coordinator setup complete", VERSION)
 
+    @callback
+    def _async_thermal_sample_tick(self, now: datetime) -> None:
+        """Sample active thermal observations on the 5-min tick."""
+        self._sample_all_observations()
+
     async def async_restore_state(self) -> None:
         """Restore operational state from disk after startup."""
         await self.hass.async_add_executor_job(self.learning.load_state)
+        # Restore rejection_log from LearningState (load_state() already validated and capped it)
+        loaded_rl = self.learning._state.rejection_log
+        if isinstance(loaded_rl, dict):
+            self._rejection_log = {
+                k: v[-_REJECTION_LOG_CAP:] if isinstance(v, list) else [] for k, v in loaded_rl.items()
+            }
+        else:
+            self._rejection_log = {}
         state = await self.hass.async_add_executor_job(self._state_persistence.load)
         if not state:
             _LOGGER.debug("No persisted state found — starting fresh")
@@ -1559,7 +1597,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         thermal_model = {}
         if self.config.get("learning_enabled", True):
-            thermal_model = self.learning.get_thermal_model()
+            thermal_model = self.learning.get_thermal_model(learning_health=self._build_learning_health())
         adaptive_thermal_active = thermal_model.get("confidence", "none") != "none"
 
         bedtime_setback_heat: float | None = None
@@ -1617,7 +1655,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         # Inject thermal model into automation engine for adaptive scheduling
         if self.config.get("learning_enabled", True):
-            thermal_model = self.learning.get_thermal_model()
+            thermal_model = self.learning.get_thermal_model(learning_health=self._build_learning_health())
             self.automation_engine._thermal_model = thermal_model
         else:
             thermal_model = {}
@@ -2936,8 +2974,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             self.learning.set_pending_thermal_event(None)
         await self.hass.async_add_executor_job(self.learning.save_state)
 
-    def _abandon_observation(self, obs_type: str, reason: str) -> None:
-        """Discard a pending observation and log the abandonment."""
+    def _abandon_observation(
+        self,
+        obs_type: str,
+        reason: str,
+        *,
+        reason_code: str | None = None,
+        n_required: int | None = None,
+        delta_t_required: float | None = None,
+        elapsed_minutes: int | None = None,
+    ) -> None:
+        """Discard a pending observation and emit a structured rejection event."""
         self._ensure_pending_observations()
         obs = self._pending_observations.pop(obs_type, None)
         if obs is None:
@@ -2948,16 +2995,88 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             first = samples[0].get("indoor_temp_f", samples[0].get("indoor_f", 0))
             last = samples[-1].get("indoor_temp_f", samples[-1].get("indoor_f", 0))
             delta_f = round(abs(last - first), 2)
-        _LOGGER.warning(
-            "Thermal observation abandoned [type=%s, reason=%s, samples=%d, delta_f=%.2f]",
+        _LOGGER.info(
+            "Thermal obs abandoned [type=%s reason=%s n=%d/%s dt=%.2f°F/%s elapsed=%sm]",
             obs_type,
-            reason,
+            reason_code or reason,
             len(samples),
+            str(n_required) if n_required is not None else "?",
             delta_f,
+            f"{delta_t_required:.2f}" if delta_t_required is not None else "?",
+            str(elapsed_minutes) if elapsed_minutes is not None else "?",
         )
+        event = {
+            "obs_type": obs_type,
+            "reason_code": reason_code or REJECT_ABANDONED,
+            "n_samples": len(samples),
+            "n_required": n_required,
+            "r_squared": None,
+            "r_squared_required": THERMAL_MIN_R_SQUARED,
+            "delta_t_f": delta_f,
+            "delta_t_required": delta_t_required,
+            "elapsed_minutes": elapsed_minutes,
+            "timestamp": dt_util.now().isoformat(),
+        }
+        if not hasattr(self, "_rejection_log"):
+            self._rejection_log = {}
+        bucket = self._rejection_log.setdefault(obs_type, [])
+        bucket.append(event)
+        if len(bucket) > _REJECTION_LOG_CAP:
+            bucket.pop(0)
+        # Sync to LearningState so rejection_log is persisted by save_state()
+        self.learning._state.rejection_log = self._rejection_log
         if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
             self.learning.set_pending_thermal_event(None)
         self.hass.async_create_task(self.hass.async_add_executor_job(self.learning.save_state))
+
+    def _build_learning_health(self) -> dict:
+        """Aggregate _rejection_log into a per-obs-type health dict for get_thermal_model().
+
+        Returns a dict keyed by obs_type, each value containing:
+          - attempts: committed + total rejections
+          - committed: number of successfully committed observations
+          - rejections: per-reason-code counts
+          - last_rejection: the most recent rejection event dict, or None
+        """
+        all_obs_types = [
+            OBS_TYPE_PASSIVE_DECAY,
+            OBS_TYPE_FAN_ONLY_DECAY,
+            OBS_TYPE_VENTILATED_DECAY,
+            OBS_TYPE_SOLAR_GAIN,
+            OBS_TYPE_HVAC_HEAT,
+            OBS_TYPE_HVAC_COOL,
+        ]
+        all_reason_codes = [
+            REJECT_TOO_FEW_SAMPLES,
+            REJECT_SMALL_DELTA,
+            REJECT_OLS_BAD_FIT,
+            REJECT_OLS_WRONG_SIGN,
+            REJECT_OLS_BOUNDS,
+            REJECT_ABANDONED,
+        ]
+        health = {}
+        thermal_observations = getattr(self.learning._state, "thermal_observations", [])
+        rejection_log = getattr(self, "_rejection_log", {})
+        for obs_type in all_obs_types:
+            events = rejection_log.get(obs_type, [])
+            rejection_counts: dict[str, int] = {rc: 0 for rc in all_reason_codes}
+            for ev in events:
+                rc = ev.get("reason_code", REJECT_ABANDONED)
+                if rc in rejection_counts:
+                    rejection_counts[rc] += 1
+            last = events[-1] if events else None
+            committed = (
+                sum(1 for o in thermal_observations if isinstance(o, dict) and o.get("obs_type") == obs_type)
+                if isinstance(thermal_observations, list)
+                else 0
+            )
+            health[obs_type] = {
+                "attempts": committed + sum(rejection_counts.values()),
+                "committed": committed,
+                "rejections": rejection_counts,
+                "last_rejection": last,
+            }
+        return health
 
     def _commit_observation_if_sufficient(self, obs_type: str, abandon_reason: str) -> None:
         """Commit if enough samples exist, else abandon."""
@@ -2998,8 +3117,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         Rolling windows are short by design (THERMAL_ROLLING_WINDOW_MINUTES = 30 min,
         THERMAL_PASSIVE_SAMPLE_INTERVAL_S = 300 s → ~6 samples). The normal min_samples
         threshold (e.g. THERMAL_PASSIVE_MIN_SAMPLES = 30) is calibrated for long overnight
-        obs. For rolling windows we require only ≥ 3 samples and a ΔT ≥
-        THERMAL_ROLLING_MIN_DELTA_T_F to ensure the OLS regression has signal.
+        obs. For rolling windows we require ≥ THERMAL_MIN_DECAY_SAMPLES + 1 (= 5) samples
+        and a ΔT ≥ THERMAL_ROLLING_MIN_DELTA_T_F to ensure the OLS regression has signal.
 
         ``skip_delta_guard`` should be set for vent/fan obs types where the signal
         guarantee is the indoor-outdoor differential (already checked by caller) rather
@@ -3007,8 +3126,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         """
         self._ensure_pending_observations()
         samples = obs.get("samples", [])
-        _ROLLING_MIN_SAMPLES = 3
-        if len(samples) < _ROLLING_MIN_SAMPLES:
+        if len(samples) < THERMAL_MIN_DECAY_SAMPLES + 1:
             self._abandon_observation(obs_type, "window_elapsed_too_few_samples")
             return
         if not skip_delta_guard:
@@ -3293,7 +3411,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         now = dt_util.now()
         current_hour = now.hour + now.minute / 60.0
 
-        thermal_model = self.learning.get_thermal_model() if self.learning else {}
+        thermal_model = (
+            self.learning.get_thermal_model(learning_health=self._build_learning_health()) if self.learning else {}
+        )
         unit = self.config.get("temp_unit", "fahrenheit")
         _LOGGER.debug(
             "Chart data: thermal_model conf_passive=%s conf_hvac=%s passive=%d fan=%d vent=%d solar=%d heat=%d cool=%d",
@@ -3334,7 +3454,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 self.config,
                 now,
                 current_indoor_temp=self._get_indoor_temp(),
-                thermal_model=self.learning.get_thermal_model(),
+                thermal_model=thermal_model,
                 occupancy_mode=self._occupancy_mode,
                 classification=self._current_classification,
             )
@@ -3388,6 +3508,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     else None
                 ),
                 "unit": unit,
+                "learning_health": thermal_model.get("learning_health", {}),
             },
             "state_log": log_entries,
             "target_band": [
@@ -3402,7 +3523,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                         if self._current_classification is not None
                         else 0.0
                     ),
-                    thermal_model=self.learning.get_thermal_model(),
+                    thermal_model=thermal_model,
                     classification=self._current_classification,
                 )
             ],

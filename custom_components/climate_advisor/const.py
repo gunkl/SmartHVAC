@@ -795,6 +795,14 @@ OBS_TYPE_SOLAR_GAIN = "solar_gain"
 OBS_TYPE_HVAC_HEAT = "hvac_heat"
 OBS_TYPE_HVAC_COOL = "hvac_cool"
 
+# Thermal rejection reason codes (emitted in ThermalRejectionEvent)
+REJECT_TOO_FEW_SAMPLES = "too_few_samples"
+REJECT_SMALL_DELTA = "small_delta"
+REJECT_OLS_BAD_FIT = "ols_bad_fit"
+REJECT_OLS_WRONG_SIGN = "ols_wrong_sign"
+REJECT_OLS_BOUNDS = "ols_bounds"
+REJECT_ABANDONED = "abandoned"
+
 # Reduced plateau guard (was THERMAL_MIN_DECAY_F = 1.0)
 THERMAL_HVAC_MIN_DECAY_F = 0.3
 
@@ -828,6 +836,11 @@ THERMAL_MAX_OBS_SAMPLES = 200
 THERMAL_DECAY_MAX_WINDOW_MINUTES: int = 60  # wall-clock limit before vent/fan obs abandon
 THERMAL_ROLLING_WINDOW_MINUTES: int = 30  # rolling commit+restart interval for decay obs
 THERMAL_ROLLING_MIN_DELTA_T_F: float = 0.2  # min total indoor ΔT to commit a short window
+# THERMAL_MIN_DECAY_SAMPLES is the single source of truth for OLS sample-pair floors.
+# coordinator.py pre-gates on (THERMAL_MIN_DECAY_SAMPLES + 1) to guarantee at least
+# THERMAL_MIN_DECAY_SAMPLES pairs are available for OLS.  Do not change either constant
+# independently — the +1 offset is intentional and must be preserved.
+THERMAL_MIN_DECAY_SAMPLES: int = 4  # min OLS pairs for rolling-window decay types (vs HVAC's 10)
 THERMAL_PASSIVE_SAMPLE_INTERVAL_S: int = 300  # 5 min — passive/vent slow decay
 THERMAL_FAN_SAMPLE_INTERVAL_S: int = 120  # 2 min — fan-only (faster signal)
 THERMAL_SOLAR_SAMPLE_INTERVAL_S: int = 300  # 5 min — solar gain slow trend

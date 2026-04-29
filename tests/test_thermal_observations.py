@@ -592,9 +592,9 @@ class TestHvacObservationReducedPlateauGuard:
 
 
 class TestAbandonmentLogging:
-    """_abandon_observation() logs at WARNING level with type and reason."""
+    """_abandon_observation() logs at INFO level with type and reason."""
 
-    def test_abandon_logs_at_warning_level(self):
+    def test_abandon_logs_at_info_level(self):
         coord = _make_obs_coord()
         coord._pending_observations[OBS_TYPE_PASSIVE_DECAY] = {
             "obs_type": OBS_TYPE_PASSIVE_DECAY,
@@ -617,8 +617,8 @@ class TestAbandonmentLogging:
         with patch("custom_components.climate_advisor.coordinator._LOGGER") as mock_logger:
             coord._abandon_observation(OBS_TYPE_PASSIVE_DECAY, "hvac_started")
 
-        assert mock_logger.warning.called, "Expected _LOGGER.warning() to be called on abandonment"
-        call_args = mock_logger.warning.call_args
+        assert mock_logger.info.called, "Expected _LOGGER.info() to be called on abandonment"
+        call_args = mock_logger.info.call_args
         # First positional arg is the format string; subsequent args are substituted values
         format_str = call_args[0][0]
         all_args = call_args[0]
@@ -964,7 +964,7 @@ class TestWallClockTimeout:
 
         with (
             patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock),
-            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+            caplog.at_level(logging.INFO, logger="custom_components.climate_advisor.coordinator"),
         ):
             coord._sample_all_observations()
 
@@ -972,7 +972,7 @@ class TestWallClockTimeout:
             "ventilated_decay observation should be abandoned after wall-clock timeout with low signal"
         )
         assert any("max_window_elapsed_low_signal" in r.message for r in caplog.records), (
-            "Expected WARNING log with reason 'max_window_elapsed_low_signal'"
+            "Expected INFO log with reason 'max_window_elapsed_low_signal'"
         )
 
     def test_ventilated_decay_commits_at_max_window_sufficient_signal(self):
@@ -1037,7 +1037,7 @@ class TestWallClockTimeout:
 
         with (
             patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock),
-            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+            caplog.at_level(logging.INFO, logger="custom_components.climate_advisor.coordinator"),
         ):
             coord._sample_all_observations()
 
@@ -1045,7 +1045,7 @@ class TestWallClockTimeout:
             "fan_only_decay observation should be abandoned after wall-clock timeout with low signal"
         )
         assert any("max_window_elapsed_low_signal" in r.message for r in caplog.records), (
-            "Expected WARNING log with reason 'max_window_elapsed_low_signal'"
+            "Expected INFO log with reason 'max_window_elapsed_low_signal'"
         )
 
 

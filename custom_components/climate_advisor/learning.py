@@ -26,12 +26,18 @@ from .const import (
     MIN_WEATHER_BIAS_OBSERVATIONS,
     OBS_TYPE_HVAC_COOL,
     OBS_TYPE_HVAC_HEAT,
+    REJECT_OLS_BAD_FIT,
+    REJECT_OLS_BOUNDS,
+    REJECT_OLS_WRONG_SIGN,
+    REJECT_SMALL_DELTA,
+    REJECT_TOO_FEW_SAMPLES,
     THERMAL_K_ACTIVE_COOL_MAX,
     THERMAL_K_ACTIVE_COOL_MIN,
     THERMAL_K_ACTIVE_HEAT_MAX,
     THERMAL_K_ACTIVE_HEAT_MIN,
     THERMAL_K_PASSIVE_MAX,
     THERMAL_K_PASSIVE_MIN,
+    THERMAL_MIN_DECAY_SAMPLES,
     THERMAL_MIN_POST_HEAT_SAMPLES,
     THERMAL_MIN_R_SQUARED,
     THERMAL_OBS_CAP,
@@ -59,6 +65,19 @@ class PendingObservation(TypedDict):
     samples: list
     flags_at_start: dict
     schema_version: int
+
+
+class ThermalRejectionEvent(TypedDict):
+    obs_type: str
+    reason_code: str
+    n_samples: int
+    n_required: int
+    r_squared: float | None
+    r_squared_required: float | None
+    delta_t_f: float | None
+    delta_t_required: float | None
+    elapsed_minutes: int | None
+    timestamp: str
 
 
 # Hard cap on daily records — 2 years of data is the absolute maximum.
@@ -134,7 +153,8 @@ def _smooth_temps(temps: list[float]) -> list[float]:
 def compute_k_passive(
     post_samples: list[dict],
     pre_samples: list[dict] | None = None,
-) -> tuple[float | None, float]:
+    min_samples: int | None = None,
+) -> tuple[float | None, float, str | None]:
     """Estimate envelope decay rate (k_passive, hr⁻¹) from HVAC-off sample windows.
 
     Uses OLS regression forced through origin:
@@ -148,23 +168,27 @@ def compute_k_passive(
             timestamp, indoor_temp_f, outdoor_temp_f, elapsed_minutes).
         pre_samples: Optional pre-heat samples (also HVAC-off), used to
             increase regression data density.
+        min_samples: Override OLS floor (default: THERMAL_MIN_POST_HEAT_SAMPLES).
+            Set to THERMAL_MIN_DECAY_SAMPLES for short rolling-window decay obs.
 
     Returns:
-        Tuple of (k_passive, r_squared). k_passive is None if regression
-        fails validation (too few points, wrong sign, or bad R²).
+        Tuple of (k_passive, r_squared, reason_code). k_passive is None if regression
+        fails validation (too few points, wrong sign, or bad R²). reason_code is one of
+        the REJECT_* constants when k_passive is None, else None on success.
     """
     # Process each window independently to avoid spurious rates at the pre→post boundary.
     # The boundary between pre-heat and post-heat spans the active heating phase where
     # indoor temp rises — computing a rate across that gap yields a large positive spike
     # that corrupts the OLS estimate.
+    _min_s = min_samples if min_samples is not None else THERMAL_MIN_POST_HEAT_SAMPLES
     windows: list[list[dict]] = []
     if pre_samples:
         windows.append(list(pre_samples))
     windows.append(list(post_samples))
 
     total_samples = sum(len(w) for w in windows)
-    if total_samples < THERMAL_MIN_POST_HEAT_SAMPLES + 1:
-        return None, 0.0
+    if total_samples < _min_s + 1:
+        return None, 0.0, REJECT_TOO_FEW_SAMPLES
 
     rates: list[float] = []
     deltas: list[float] = []
@@ -184,19 +208,21 @@ def compute_k_passive(
             rates.append(rate)
             deltas.append(delta)
 
-    if len(rates) < THERMAL_MIN_POST_HEAT_SAMPLES:
-        return None, 0.0
+    if len(rates) < _min_s:
+        return None, 0.0, REJECT_TOO_FEW_SAMPLES
 
     sum_rd = sum(r * d for r, d in zip(rates, deltas, strict=False))
     sum_d2 = sum(d * d for d in deltas)
     if sum_d2 == 0:
-        return None, 0.0
+        return None, 0.0, REJECT_SMALL_DELTA
 
     k_p = sum_rd / sum_d2
 
     # Validate sign and bounds
+    if k_p > 0:
+        return None, 0.0, REJECT_OLS_WRONG_SIGN
     if not (THERMAL_K_PASSIVE_MIN <= k_p <= THERMAL_K_PASSIVE_MAX):
-        return None, 0.0
+        return None, 0.0, REJECT_OLS_BOUNDS
 
     # R² (vs forced-through-origin model)
     ss_res = sum((r - k_p * d) ** 2 for r, d in zip(rates, deltas, strict=False))
@@ -205,9 +231,9 @@ def compute_k_passive(
     r_squared = max(0.0, r_squared)
 
     if r_squared < THERMAL_MIN_R_SQUARED:
-        return None, r_squared
+        return None, r_squared, REJECT_OLS_BAD_FIT
 
-    return k_p, r_squared
+    return k_p, r_squared, None
 
 
 def compute_k_active(
@@ -336,6 +362,7 @@ class LearningState:
     pending_thermal_event: dict | None = None  # in-progress observation window
     pending_observations: dict = field(default_factory=dict)  # v3 multi-type obs windows
     thermal_model_cache: dict | None = None  # EWMA-accumulated k_passive, k_active_heat/cool
+    rejection_log: dict = field(default_factory=dict)  # keyed by obs_type; each list capped at 100 entries
 
 
 class LearningEngine:
@@ -402,6 +429,15 @@ class LearningEngine:
                 # Validate pending_observations is a dict
                 if not isinstance(self._state.pending_observations, dict):
                     self._state.pending_observations = {}
+                # Validate rejection_log is a dict; apply per-obs-type cap on load
+                if not isinstance(self._state.rejection_log, dict):
+                    self._state.rejection_log = {}
+                else:
+                    for _obs_type, _entries in list(self._state.rejection_log.items()):
+                        if not isinstance(_entries, list):
+                            self._state.rejection_log[_obs_type] = []
+                        elif len(_entries) > 100:
+                            self._state.rejection_log[_obs_type] = _entries[-100:]
                 # v3 migration: convert pending_thermal_event → pending_observations
                 old_event = self._state.pending_thermal_event
                 if isinstance(old_event, dict) and old_event.get("status") in ("post_heat", "stabilized"):
@@ -597,13 +633,18 @@ class LearningEngine:
         cache["last_observation_date"] = obs.get("date")
         self._state.thermal_model_cache = cache
 
-    def get_thermal_model(self) -> dict:
+    def get_thermal_model(self, learning_health: dict | None = None) -> dict:
         """Return the current thermal model from the EWMA cache.
 
         Returns v2 model fields (k_active_heat, k_active_cool, k_passive) plus
         legacy compat fields (heating_rate_f_per_hour, cooling_rate_f_per_hour).
         Returns "none" confidence when insufficient data.
         Pure computation — no I/O.
+
+        Args:
+            learning_health: Optional pre-aggregated health dict (built by the coordinator
+                from its _rejection_log). Included verbatim in the returned dict under the
+                "learning_health" key. Pass None or omit to get an empty dict.
         """
         cache = self._state.thermal_model_cache or {}
         count_heat = cache.get("observation_count_heat", 0)
@@ -646,6 +687,7 @@ class LearningEngine:
             "confidence_k_hvac": cache.get("confidence", "none"),
             "avg_r_squared_passive": cache.get("avg_r_squared_passive"),
             "last_observation_date": cache.get("last_observation_date"),
+            "learning_health": learning_health or {},
         }
 
     def get_pending_thermal_event(self) -> dict | None:
@@ -713,7 +755,7 @@ class LearningEngine:
         """
         if obs_type in ("passive_decay", "fan_only_decay", "ventilated_decay"):
             samples = event.get("samples", event.get("active_samples", []))
-            k_p, r2_p = compute_k_passive(samples)
+            k_p, r2_p, _reject_code = compute_k_passive(samples, min_samples=THERMAL_MIN_DECAY_SAMPLES)
             if k_p is None:
                 _LOGGER.info(
                     "Thermal event commit failed (%s): k_passive rejected (R²=%.3f, n=%d)",
@@ -795,7 +837,7 @@ class LearningEngine:
         active_samples = event.get("active_samples", [])
         session_mode = event.get("session_mode") or event.get("hvac_mode") or "heat"
 
-        k_p, r2_p = compute_k_passive(post_samples, pre_samples)
+        k_p, r2_p, _reject_code = compute_k_passive(post_samples, pre_samples)
         if k_p is None:
             _LOGGER.info(
                 "Thermal event commit failed: k_passive rejected (R²=%.3f, post_n=%d)",

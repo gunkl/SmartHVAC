@@ -254,6 +254,20 @@ class ClimateAdvisorComplianceSensor(ClimateAdvisorBaseSensor):
         attrs["thermal_observation_count"] = thermal.get("observation_count_heat", 0) + thermal.get(
             "observation_count_cool", 0
         )
+        health = thermal.get("learning_health", {})
+        attrs["thermal_learning_health"] = (
+            {
+                obs_type: {
+                    "attempts": h.get("attempts", 0),
+                    "committed": h.get("committed", 0),
+                    "rejections": h.get("rejections", {}),
+                    "last_rejection_reason": (h["last_rejection"]["reason_code"] if h.get("last_rejection") else None),
+                }
+                for obs_type, h in health.items()
+            }
+            if health
+            else {}
+        )
         weather_bias = self.coordinator.learning.get_weather_bias()
         attrs[ATTR_FORECAST_HIGH_BIAS] = convert_delta(weather_bias.get("high_bias", 0.0), unit)
         attrs[ATTR_FORECAST_LOW_BIAS] = convert_delta(weather_bias.get("low_bias", 0.0), unit)
