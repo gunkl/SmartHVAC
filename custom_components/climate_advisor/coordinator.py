@@ -113,9 +113,12 @@ from .const import (
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_SENSOR,
     TEMP_SOURCE_WEATHER_SERVICE,
+    THERMAL_DECAY_MAX_WINDOW_MINUTES,
     THERMAL_FAN_MIN_SAMPLES,
     THERMAL_FAN_MIN_SIGNAL_F,
+    THERMAL_FAN_SAMPLE_INTERVAL_S,
     THERMAL_HVAC_MIN_DECAY_F,
+    THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S,
     THERMAL_MAX_ACTIVE_SAMPLES,
     THERMAL_MAX_OBS_SAMPLES,
     THERMAL_MAX_POST_HEAT_SAMPLES,
@@ -124,11 +127,15 @@ from .const import (
     THERMAL_PASSIVE_MIN_DELTA_F,
     THERMAL_PASSIVE_MIN_SAMPLES,
     THERMAL_PASSIVE_MIN_SIGNAL_F,
+    THERMAL_PASSIVE_SAMPLE_INTERVAL_S,
     THERMAL_POST_HEAT_TIMEOUT_MINUTES,
+    THERMAL_ROLLING_MIN_DELTA_T_F,
+    THERMAL_ROLLING_WINDOW_MINUTES,
     THERMAL_SOLAR_DAYTIME_END_H,
     THERMAL_SOLAR_DAYTIME_START_H,
     THERMAL_SOLAR_MIN_RATE_F_PER_HR,
     THERMAL_SOLAR_MIN_SAMPLES,
+    THERMAL_SOLAR_SAMPLE_INTERVAL_S,
     THERMAL_STABILIZATION_THRESHOLD_F,
     THERMAL_STABILIZATION_WINDOW_MINUTES,
     THERMAL_VENT_MIN_SAMPLES,
@@ -2259,7 +2266,16 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         else:  # post_heat
             samples = self._pending_thermal_event["post_heat_samples"]
             if len(samples) < THERMAL_MAX_POST_HEAT_SAMPLES:
-                samples.append(sample)
+                # H1/H3: post-heat is passive dynamics — gate at 5-min intervals
+                _last_ph_s = self._pending_thermal_event.get("last_post_heat_sample_time")
+                _ph_elapsed = (
+                    (dt_util.now() - dt_util.parse_datetime(_last_ph_s)).total_seconds()
+                    if _last_ph_s
+                    else THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S + 1
+                )
+                if _ph_elapsed >= THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S:
+                    samples.append(sample)
+                    self._pending_thermal_event["last_post_heat_sample_time"] = dt_util.now().isoformat()
             # Persist every 5th post-heat sample for crash safety
             if len(samples) % 5 == 0:
                 self.learning.set_pending_thermal_event(self._pending_thermal_event)
@@ -2545,10 +2561,24 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                         pass
                 sample = self._get_current_sample(elapsed)
                 samples_list = obs.setdefault("samples", [])
-                if len(samples_list) < THERMAL_MAX_OBS_SAMPLES:
-                    samples_list.append(sample)
-                elif len(samples_list) >= THERMAL_MAX_OBS_SAMPLES:
+                if len(samples_list) >= THERMAL_MAX_OBS_SAMPLES:
                     self._commit_observation_if_sufficient(obs_type, "max_samples_reached")
+                else:
+                    # H1: per-type decimation gate — slow phenomena at full poll rate yield noise
+                    _interval_map = {
+                        OBS_TYPE_PASSIVE_DECAY: THERMAL_PASSIVE_SAMPLE_INTERVAL_S,
+                        OBS_TYPE_FAN_ONLY_DECAY: THERMAL_FAN_SAMPLE_INTERVAL_S,
+                        OBS_TYPE_VENTILATED_DECAY: THERMAL_PASSIVE_SAMPLE_INTERVAL_S,
+                        OBS_TYPE_SOLAR_GAIN: THERMAL_SOLAR_SAMPLE_INTERVAL_S,
+                    }
+                    _interval_s = _interval_map.get(obs_type, 0)
+                    _last_s = obs.get("last_sample_time")
+                    _elapsed_since_last = (
+                        (now - dt_util.parse_datetime(_last_s)).total_seconds() if _last_s else _interval_s + 1
+                    )
+                    if _elapsed_since_last >= _interval_s:
+                        samples_list.append(sample)
+                        obs["last_sample_time"] = now.isoformat()
 
         # B. Check trigger conditions for new non-HVAC observations
         _hvac_active = (
@@ -2619,6 +2649,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             samples_list = obs.get("samples", [])
 
             if obs_type == OBS_TYPE_PASSIVE_DECAY:
+                # H2: rolling-window commit — commit+restart every THERMAL_ROLLING_WINDOW_MINUTES
+                _start_ts = dt_util.parse_datetime(obs.get("start_time", "")) if obs.get("start_time") else None
+                _window_elapsed = (now - _start_ts).total_seconds() / 60.0 if _start_ts else 0
+                if _window_elapsed >= THERMAL_ROLLING_WINDOW_MINUTES:
+                    self._commit_rolling_window_obs(obs_type, obs)
+                    continue
                 if _is_heating_cooling or _hvac_active:
                     self._commit_observation_if_sufficient(obs_type, "hvac_started")
                 elif _sensor_open:
@@ -2638,6 +2674,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
 
             elif obs_type == OBS_TYPE_FAN_ONLY_DECAY:
+                # H2: rolling-window commit (only when signal is sufficient — H4 handles low-signal abandon)
+                _start_ts = dt_util.parse_datetime(obs.get("start_time", "")) if obs.get("start_time") else None
+                _window_elapsed = (now - _start_ts).total_seconds() / 60.0 if _start_ts else 0
+                _fan_sig = abs((indoor or 0) - (outdoor or 0)) if indoor is not None and outdoor is not None else 0
+                if _window_elapsed >= THERMAL_ROLLING_WINDOW_MINUTES and _fan_sig >= THERMAL_FAN_MIN_SIGNAL_F:
+                    # Signal already verified above; skip indoor-ΔT guard (signal is in I-O differential)
+                    self._commit_rolling_window_obs(obs_type, obs, skip_delta_guard=True)
+                    continue
                 _fan_only_mode = _cs.state == "fan_only" if _cs else False
                 _fan_still_on = _fan_only_mode or ae._fan_active
                 if not _fan_still_on and not (_cs and _cs.state == "fan_only"):
@@ -2653,8 +2697,33 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     and abs(indoor - outdoor) >= THERMAL_FAN_MIN_SIGNAL_F
                 ):
                     self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
+                else:
+                    # Wall-clock abandon — prevents indefinite collection when delta collapses
+                    _start_str = obs.get("start_time")
+                    _elapsed_min = 0.0
+                    if _start_str:
+                        try:
+                            _start_ts = dt_util.parse_datetime(_start_str)
+                            if _start_ts:
+                                _elapsed_min = (now - _start_ts).total_seconds() / 60.0
+                        except Exception:
+                            pass
+                    if _elapsed_min >= THERMAL_DECAY_MAX_WINDOW_MINUTES:
+                        _sig = abs((indoor or 0) - (outdoor or 0))
+                        if _sig >= THERMAL_FAN_MIN_SIGNAL_F and len(samples_list) >= THERMAL_FAN_MIN_SAMPLES:
+                            self._commit_observation_if_sufficient(obs_type, "max_window_commit")
+                        else:
+                            self._abandon_observation(obs_type, "max_window_elapsed_low_signal")
 
             elif obs_type == OBS_TYPE_VENTILATED_DECAY:
+                # H2: rolling-window commit (only when signal is sufficient — H4 handles low-signal abandon)
+                _start_ts = dt_util.parse_datetime(obs.get("start_time", "")) if obs.get("start_time") else None
+                _window_elapsed = (now - _start_ts).total_seconds() / 60.0 if _start_ts else 0
+                _vent_sig = abs((indoor or 0) - (outdoor or 0)) if indoor is not None and outdoor is not None else 0
+                if _window_elapsed >= THERMAL_ROLLING_WINDOW_MINUTES and _vent_sig >= THERMAL_VENT_MIN_SIGNAL_F:
+                    # Signal already verified above; skip indoor-ΔT guard (signal is in I-O differential)
+                    self._commit_rolling_window_obs(obs_type, obs, skip_delta_guard=True)
+                    continue
                 if not _sensor_open:
                     self._commit_observation_if_sufficient(obs_type, "sensors_closed")
                 elif _is_heating_cooling or _hvac_active:
@@ -2666,8 +2735,31 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     and abs(indoor - outdoor) >= THERMAL_VENT_MIN_SIGNAL_F
                 ):
                     self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
+                else:
+                    # Wall-clock abandon — prevents indefinite collection when delta collapses
+                    _start_str = obs.get("start_time")
+                    _elapsed_min = 0.0
+                    if _start_str:
+                        try:
+                            _start_ts = dt_util.parse_datetime(_start_str)
+                            if _start_ts:
+                                _elapsed_min = (now - _start_ts).total_seconds() / 60.0
+                        except Exception:
+                            pass
+                    if _elapsed_min >= THERMAL_DECAY_MAX_WINDOW_MINUTES:
+                        _sig = abs((indoor or 0) - (outdoor or 0))
+                        if _sig >= THERMAL_VENT_MIN_SIGNAL_F and len(samples_list) >= THERMAL_VENT_MIN_SAMPLES:
+                            self._commit_observation_if_sufficient(obs_type, "max_window_commit")
+                        else:
+                            self._abandon_observation(obs_type, "max_window_elapsed_low_signal")
 
             elif obs_type == OBS_TYPE_SOLAR_GAIN:
+                # H2: rolling-window commit
+                _start_ts = dt_util.parse_datetime(obs.get("start_time", "")) if obs.get("start_time") else None
+                _window_elapsed = (now - _start_ts).total_seconds() / 60.0 if _start_ts else 0
+                if _window_elapsed >= THERMAL_ROLLING_WINDOW_MINUTES:
+                    self._commit_rolling_window_obs(obs_type, obs)
+                    continue
                 if _is_heating_cooling or _hvac_active:
                     self._abandon_observation(obs_type, "hvac_started")
                 elif _sensor_open:
@@ -2701,6 +2793,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "start_time": now.isoformat(),
             "status": "monitoring",
             "samples": [],
+            "last_sample_time": None,
             "flags_at_start": {
                 "sensor_open": self._any_sensor_open(),
                 "fan_active": self.automation_engine._fan_active,
@@ -2868,10 +2961,55 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             OBS_TYPE_HVAC_COOL: THERMAL_MIN_POST_HEAT_SAMPLES,
         }.get(obs_type, 10)
         if len(samples) >= min_samples:
+            # H2: total-ΔT guard for short windows — prevent noise-fitting on near-flat data
+            if len(samples) < 10:
+                temps = [s["indoor_temp_f"] for s in samples]
+                if temps and (max(temps) - min(temps)) < THERMAL_ROLLING_MIN_DELTA_T_F:
+                    _LOGGER.debug(
+                        "Abandoning %s: insufficient total delta in short window (%.3f°F < %.3f°F)",
+                        obs_type,
+                        max(temps) - min(temps),
+                        THERMAL_ROLLING_MIN_DELTA_T_F,
+                    )
+                    self._pending_observations.pop(obs_type, None)
+                    return
             obs["status"] = "committing"  # prevent duplicate commit on next poll
             self.hass.async_create_task(self._commit_observation(obs_type, force_grade="low"))
         else:
             self._abandon_observation(obs_type, abandon_reason)
+
+    def _commit_rolling_window_obs(self, obs_type: str, obs: dict, *, skip_delta_guard: bool = False) -> None:
+        """Commit a rolling-window observation, bypassing the full min_samples threshold.
+
+        Rolling windows are short by design (THERMAL_ROLLING_WINDOW_MINUTES = 30 min,
+        THERMAL_PASSIVE_SAMPLE_INTERVAL_S = 300 s → ~6 samples). The normal min_samples
+        threshold (e.g. THERMAL_PASSIVE_MIN_SAMPLES = 30) is calibrated for long overnight
+        obs. For rolling windows we require only ≥ 3 samples and a ΔT ≥
+        THERMAL_ROLLING_MIN_DELTA_T_F to ensure the OLS regression has signal.
+
+        ``skip_delta_guard`` should be set for vent/fan obs types where the signal
+        guarantee is the indoor-outdoor differential (already checked by caller) rather
+        than the indoor temperature trend.
+        """
+        self._ensure_pending_observations()
+        samples = obs.get("samples", [])
+        _ROLLING_MIN_SAMPLES = 3
+        if len(samples) < _ROLLING_MIN_SAMPLES:
+            self._abandon_observation(obs_type, "window_elapsed_too_few_samples")
+            return
+        if not skip_delta_guard:
+            temps = [s["indoor_temp_f"] for s in samples]
+            if max(temps) - min(temps) < THERMAL_ROLLING_MIN_DELTA_T_F:
+                _LOGGER.debug(
+                    "Abandoning rolling window %s: insufficient total ΔT (%.3f°F < %.3f°F)",
+                    obs_type,
+                    max(temps) - min(temps),
+                    THERMAL_ROLLING_MIN_DELTA_T_F,
+                )
+                self._pending_observations.pop(obs_type, None)
+                return
+        obs["status"] = "committing"
+        self.hass.async_create_task(self._commit_observation(obs_type, force_grade="low"))
 
     def _compute_next_action(self, c: DayClassification | None, indoor_temp: float | None = None) -> str:
         """Compute the next recommended human action for display."""

@@ -820,6 +820,15 @@ THERMAL_SOLAR_DAYTIME_END_H = 18
 # Shared cap across all observation types
 THERMAL_MAX_OBS_SAMPLES = 200
 
+# v3 sampling redesign (Issue #122)
+THERMAL_DECAY_MAX_WINDOW_MINUTES: int = 60  # wall-clock limit before vent/fan obs abandon
+THERMAL_ROLLING_WINDOW_MINUTES: int = 30  # rolling commit+restart interval for decay obs
+THERMAL_ROLLING_MIN_DELTA_T_F: float = 0.2  # min total indoor ΔT to commit a short window
+THERMAL_PASSIVE_SAMPLE_INTERVAL_S: int = 300  # 5 min — passive/vent slow decay
+THERMAL_FAN_SAMPLE_INTERVAL_S: int = 120  # 2 min — fan-only (faster signal)
+THERMAL_SOLAR_SAMPLE_INTERVAL_S: int = 300  # 5 min — solar gain slow trend
+THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S: int = 300  # 5 min — post-heat is passive dynamics
+
 # Per-type passive confidence count thresholds
 THERMAL_PASSIVE_CONF_LOW = 5
 THERMAL_PASSIVE_CONF_MEDIUM = 15

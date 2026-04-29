@@ -568,11 +568,6 @@ class LearningEngine:
                 cache["k_active_cool"] = (1.0 - alpha) * cache["k_active_cool"] + alpha * k_a
             cache["observation_count_cool"] = cache.get("observation_count_cool", 0) + 1
         elif mode == "passive":
-            if k_p is not None:
-                if cache.get("k_vent") is None:
-                    cache["k_vent"] = k_p
-                else:
-                    cache["k_vent"] = (1.0 - alpha) * cache["k_vent"] + alpha * k_p
             cache["observation_count_passive"] = cache.get("observation_count_passive", 0) + 1
         elif mode == "fan_only":
             if k_p is not None:

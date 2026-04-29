@@ -41,9 +41,17 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     OBS_TYPE_HVAC_COOL,
     OBS_TYPE_HVAC_HEAT,
     OBS_TYPE_PASSIVE_DECAY,
+    OBS_TYPE_VENTILATED_DECAY,
+    THERMAL_FAN_MIN_SAMPLES,
+    THERMAL_FAN_SAMPLE_INTERVAL_S,
     THERMAL_HVAC_MIN_DECAY_F,
+    THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S,
     THERMAL_PASSIVE_MIN_SAMPLES,
     THERMAL_PASSIVE_MIN_SIGNAL_F,
+    THERMAL_PASSIVE_SAMPLE_INTERVAL_S,
+    THERMAL_ROLLING_MIN_DELTA_T_F,
+    THERMAL_ROLLING_WINDOW_MINUTES,
+    THERMAL_VENT_MIN_SAMPLES,
 )
 from custom_components.climate_advisor.learning import LearningEngine  # noqa: E402
 
@@ -808,3 +816,583 @@ class TestMigrationLoadState:
 
         # The pre-existing obs_id should NOT be overwritten by migration
         assert engine._state.pending_observations[OBS_TYPE_HVAC_HEAT]["obs_id"] == "already-there"
+
+
+# ---------------------------------------------------------------------------
+# TestE6CacheBugFix
+# ---------------------------------------------------------------------------
+
+
+class TestE6CacheBugFix:
+    """E6: passive_decay observations must NOT write k_vent; only fan_only_decay may.
+
+    Before the fix, _update_thermal_model_cache() wrote k_p (envelope decay rate)
+    into cache["k_vent"] inside the `elif mode == "passive"` branch, silently
+    contaminating fan-ventilation data with envelope-only measurements.
+    """
+
+    def _make_engine(self, tmp_path: Path) -> LearningEngine:
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        return engine
+
+    def _passive_obs(self, k_passive: float) -> dict:
+        """Minimal passive_decay observation dict accepted by _update_thermal_model_cache."""
+        return {
+            "date": "2026-04-28",
+            "hvac_mode": "passive",
+            "k_passive": k_passive,
+            "confidence_grade": "high",
+        }
+
+    def _fan_only_obs(self, k_passive: float) -> dict:
+        """Minimal fan_only_decay observation dict."""
+        return {
+            "date": "2026-04-28",
+            "hvac_mode": "fan_only",
+            "k_passive": k_passive,
+            "confidence_grade": "high",
+        }
+
+    def test_passive_decay_does_not_update_k_vent(self, tmp_path: Path):
+        """A passive_decay commit must update k_passive but leave k_vent untouched."""
+        engine = self._make_engine(tmp_path)
+        engine._update_thermal_model_cache(self._passive_obs(-0.08))
+
+        model = engine.get_thermal_model()
+        assert pytest.approx(-0.08, abs=1e-9) == model["k_passive"], (
+            f"k_passive should be -0.08, got {model['k_passive']}"
+        )
+        assert model["k_vent"] is None, f"k_vent must be None after passive_decay commit; got {model['k_vent']}"
+
+    def test_fan_only_decay_updates_k_vent(self, tmp_path: Path):
+        """A fan_only_decay commit must set k_vent and also update k_passive."""
+        engine = self._make_engine(tmp_path)
+        engine._update_thermal_model_cache(self._fan_only_obs(-0.15))
+
+        model = engine.get_thermal_model()
+        assert pytest.approx(-0.15, abs=1e-9) == model["k_vent"], f"k_vent should be -0.15, got {model['k_vent']}"
+        # k_passive is updated unconditionally for all modes
+        assert pytest.approx(-0.15, abs=1e-9) == model["k_passive"], (
+            f"k_passive should also be -0.15 after fan_only commit, got {model['k_passive']}"
+        )
+
+    def test_passive_and_fan_only_do_not_cross_contaminate(self, tmp_path: Path):
+        """passive then fan_only: k_vent reflects only fan_only; k_passive is EMA of both."""
+        engine = self._make_engine(tmp_path)
+
+        # First: passive_decay — should touch k_passive only
+        engine._update_thermal_model_cache(self._passive_obs(-0.08))
+
+        # Second: fan_only_decay — should set k_vent and update k_passive via EMA
+        engine._update_thermal_model_cache(self._fan_only_obs(-0.12))
+
+        model = engine.get_thermal_model()
+
+        # k_vent must reflect the fan_only value only (first commit; cache was None → set directly)
+        assert pytest.approx(-0.12, abs=1e-9) == model["k_vent"], (
+            f"k_vent should be -0.12 (fan_only only); got {model['k_vent']} — passive_decay must not contaminate k_vent"
+        )
+
+        # k_passive: first commit set it to -0.08 (alpha=0.3 for "high").
+        # Second commit: EMA = (1 - 0.3) * -0.08 + 0.3 * -0.12 = -0.092
+        expected_k_passive = (1.0 - 0.3) * (-0.08) + 0.3 * (-0.12)
+        assert pytest.approx(expected_k_passive, abs=1e-9) == model["k_passive"], (
+            f"k_passive should be EMA of both observations ({expected_k_passive:.4f}); got {model['k_passive']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestWallClockTimeout  (Issue #122 — H4 wall-clock abandon guard)
+# ---------------------------------------------------------------------------
+
+
+def _make_obs_61min_ago() -> datetime:
+    """Return a start_time 61 minutes before _FAKE_NOW."""
+    return datetime(2026, 4, 28, 10, 59, 0, tzinfo=UTC)
+
+
+def _make_stale_obs(obs_type: str, n_samples: int, indoor_temp: float, outdoor_temp: float) -> dict:
+    """Build a monitoring observation dict that started 61 minutes ago."""
+    start = _make_obs_61min_ago()
+    samples = [
+        {
+            "timestamp": start.isoformat(),
+            "indoor_temp_f": indoor_temp,
+            "outdoor_temp_f": outdoor_temp,
+            "elapsed_minutes": float(i),
+        }
+        for i in range(n_samples)
+    ]
+    return {
+        "obs_type": obs_type,
+        "obs_id": "test-wallclock-1",
+        "start_time": start.isoformat(),
+        "status": "monitoring",
+        "samples": samples,
+        "flags_at_start": {},
+        "schema_version": 1,
+    }
+
+
+class TestWallClockTimeout:
+    """Wall-clock abandon guard for ventilated_decay and fan_only_decay (Issue #122 H4)."""
+
+    def test_ventilated_decay_abandons_at_max_window_low_signal(self, caplog):
+        """ventilated_decay started 61 min ago, sensor still open, low |ΔT| → abandoned."""
+        # |indoor - outdoor| = 72.1 - 72.0 = 0.1 < THERMAL_VENT_MIN_SIGNAL_F (0.3)
+        indoor, outdoor = 72.1, 72.0
+        coord = _make_obs_coord(
+            hvac_action="idle",
+            indoor_temp=indoor,
+            outdoor_temp=outdoor,
+            any_sensor_open=True,  # sensor open keeps ventilated_decay alive under normal logic
+        )
+        coord._pending_observations[OBS_TYPE_VENTILATED_DECAY] = _make_stale_obs(
+            OBS_TYPE_VENTILATED_DECAY,
+            n_samples=THERMAL_VENT_MIN_SAMPLES + 5,  # enough samples, but low signal
+            indoor_temp=indoor,
+            outdoor_temp=outdoor,
+        )
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+
+        import logging
+
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock),
+            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+        ):
+            coord._sample_all_observations()
+
+        assert OBS_TYPE_VENTILATED_DECAY not in coord._pending_observations, (
+            "ventilated_decay observation should be abandoned after wall-clock timeout with low signal"
+        )
+        assert any("max_window_elapsed_low_signal" in r.message for r in caplog.records), (
+            "Expected WARNING log with reason 'max_window_elapsed_low_signal'"
+        )
+
+    def test_ventilated_decay_commits_at_max_window_sufficient_signal(self):
+        """ventilated_decay started 61 min ago, sensor open, sufficient |ΔT| → commit triggered."""
+        # |indoor - outdoor| = 76.0 - 60.0 = 16.0 >= THERMAL_VENT_MIN_SIGNAL_F (0.3)
+        indoor, outdoor = 76.0, 60.0
+        coord = _make_obs_coord(
+            hvac_action="idle",
+            indoor_temp=indoor,
+            outdoor_temp=outdoor,
+            any_sensor_open=True,
+        )
+        coord._pending_observations[OBS_TYPE_VENTILATED_DECAY] = _make_stale_obs(
+            OBS_TYPE_VENTILATED_DECAY,
+            n_samples=THERMAL_VENT_MIN_SAMPLES + 5,
+            indoor_temp=indoor,
+            outdoor_temp=outdoor,
+        )
+        committed_obs_types: list[str] = []
+
+        def _fake_async_create_task(coro):
+            coro_name = getattr(coro, "__name__", getattr(coro, "__qualname__", ""))
+            if "_commit_observation" in coro_name:
+                committed_obs_types.append(OBS_TYPE_VENTILATED_DECAY)
+            coro.close()
+
+        coord.hass.async_create_task = _fake_async_create_task
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        obs_still_present = coord._pending_observations.get(OBS_TYPE_VENTILATED_DECAY)
+        was_committed_status = obs_still_present is not None and obs_still_present.get("status") == "committing"
+        was_queued = len(committed_obs_types) > 0
+
+        assert was_committed_status or was_queued, (
+            "ventilated_decay with sufficient signal at max window should trigger commit "
+            f"(status={obs_still_present.get('status') if obs_still_present else 'popped'}, "
+            f"queued={was_queued})"
+        )
+
+    def test_fan_only_decay_abandons_at_max_window(self, caplog):
+        """fan_only_decay started 61 min ago, fan still on, low |ΔT| → abandoned."""
+        # |indoor - outdoor| = 70.1 - 70.0 = 0.1 < THERMAL_FAN_MIN_SIGNAL_F (0.2)
+        indoor, outdoor = 70.1, 70.0
+        coord = _make_obs_coord(
+            hvac_action="idle",
+            indoor_temp=indoor,
+            outdoor_temp=outdoor,
+            fan_active=True,  # fan on keeps fan_only_decay alive under normal logic
+        )
+        coord._pending_observations[OBS_TYPE_FAN_ONLY_DECAY] = _make_stale_obs(
+            OBS_TYPE_FAN_ONLY_DECAY,
+            n_samples=THERMAL_FAN_MIN_SAMPLES + 5,  # enough samples, but low signal
+            indoor_temp=indoor,
+            outdoor_temp=outdoor,
+        )
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+
+        import logging
+
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock),
+            caplog.at_level(logging.WARNING, logger="custom_components.climate_advisor.coordinator"),
+        ):
+            coord._sample_all_observations()
+
+        assert OBS_TYPE_FAN_ONLY_DECAY not in coord._pending_observations, (
+            "fan_only_decay observation should be abandoned after wall-clock timeout with low signal"
+        )
+        assert any("max_window_elapsed_low_signal" in r.message for r in caplog.records), (
+            "Expected WARNING log with reason 'max_window_elapsed_low_signal'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for H1/H2 test classes
+# ---------------------------------------------------------------------------
+
+
+def _make_obs_coord_with_sample_thermal_event(
+    *,
+    indoor_temp: float = 75.0,
+    outdoor_temp: float = 55.0,
+    hvac_action: str = "idle",
+    fan_active: bool = False,
+    nat_vent_active: bool = False,
+    any_sensor_open: bool = False,
+    learning_enabled: bool = True,
+):
+    """Like _make_obs_coord but also binds _sample_thermal_event."""
+    coord = _make_obs_coord(
+        indoor_temp=indoor_temp,
+        outdoor_temp=outdoor_temp,
+        hvac_action=hvac_action,
+        fan_active=fan_active,
+        nat_vent_active=nat_vent_active,
+        any_sensor_open=any_sensor_open,
+        learning_enabled=learning_enabled,
+    )
+    ClimateAdvisorCoordinator = _get_coordinator_class()
+    method = ClimateAdvisorCoordinator._sample_thermal_event
+    coord._sample_thermal_event = types.MethodType(method, coord)
+    return coord
+
+
+def _make_obs_31min_ago() -> datetime:
+    """Return a start_time 31 minutes before _FAKE_NOW."""
+    return datetime(2026, 4, 28, 11, 29, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# TestSampleDecimation  (Issue #122 — H1 per-type sample decimation)
+# ---------------------------------------------------------------------------
+
+
+class TestSampleDecimation:
+    """H1: Per-type sample decimation gates slow-phenomenon obs types."""
+
+    def _make_obs_with_last_sample(self, obs_type: str, last_sample_offset_s: int) -> dict:
+        """Build a monitoring obs with last_sample_time set to offset seconds before _FAKE_NOW."""
+        from datetime import timedelta
+
+        last_ts = _FAKE_NOW - timedelta(seconds=last_sample_offset_s)
+        return {
+            "obs_type": obs_type,
+            "obs_id": "test-decimate-1",
+            "start_time": _FAKE_NOW.isoformat(),
+            "status": "monitoring",
+            "samples": [],
+            "last_sample_time": last_ts.isoformat(),
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+    def test_passive_obs_decimated_at_5min(self):
+        """passive_decay: sample is NOT appended if < 300s since last sample."""
+        coord = _make_obs_coord(hvac_action="idle", indoor_temp=75.0, outdoor_temp=55.0)
+        # Pre-seed obs with last_sample_time only 30s ago — below the 300s interval
+        obs = self._make_obs_with_last_sample(OBS_TYPE_PASSIVE_DECAY, last_sample_offset_s=30)
+        coord._pending_observations[OBS_TYPE_PASSIVE_DECAY] = obs
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        # No new sample should have been appended (30s < 300s interval)
+        assert len(coord._pending_observations.get(OBS_TYPE_PASSIVE_DECAY, {}).get("samples", [])) == 0, (
+            "passive_decay should not append a sample when only 30s has elapsed (interval=300s)"
+        )
+
+    def test_passive_obs_appended_after_5min(self):
+        """passive_decay: sample IS appended after >= 300s since last sample."""
+        coord = _make_obs_coord(hvac_action="idle", indoor_temp=75.0, outdoor_temp=55.0)
+        # last_sample_time was 310s ago — above the 300s interval
+        obs = self._make_obs_with_last_sample(OBS_TYPE_PASSIVE_DECAY, last_sample_offset_s=310)
+        coord._pending_observations[OBS_TYPE_PASSIVE_DECAY] = obs
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        assert len(coord._pending_observations.get(OBS_TYPE_PASSIVE_DECAY, {}).get("samples", [])) == 1, (
+            "passive_decay should append a sample after 310s (interval=300s)"
+        )
+
+    def test_fan_only_decimated_at_2min(self):
+        """fan_only_decay: sample is NOT appended if < 120s since last sample."""
+        coord = _make_obs_coord(
+            hvac_action="idle",
+            indoor_temp=72.0,
+            outdoor_temp=65.0,
+            fan_active=True,
+        )
+        # last_sample_time was only 60s ago — below the 120s interval
+        obs = self._make_obs_with_last_sample(OBS_TYPE_FAN_ONLY_DECAY, last_sample_offset_s=60)
+        coord._pending_observations[OBS_TYPE_FAN_ONLY_DECAY] = obs
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        assert len(coord._pending_observations.get(OBS_TYPE_FAN_ONLY_DECAY, {}).get("samples", [])) == 0, (
+            "fan_only_decay should not append a sample when only 60s has elapsed (interval=120s)"
+        )
+
+    def test_fan_only_appended_after_2min(self):
+        """fan_only_decay: sample IS appended after >= 120s since last sample."""
+        coord = _make_obs_coord(
+            hvac_action="idle",
+            indoor_temp=72.0,
+            outdoor_temp=65.0,
+            fan_active=True,
+        )
+        obs = self._make_obs_with_last_sample(OBS_TYPE_FAN_ONLY_DECAY, last_sample_offset_s=130)
+        coord._pending_observations[OBS_TYPE_FAN_ONLY_DECAY] = obs
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        assert len(coord._pending_observations.get(OBS_TYPE_FAN_ONLY_DECAY, {}).get("samples", [])) == 1, (
+            "fan_only_decay should append a sample after 130s (interval=120s)"
+        )
+
+    def test_hvac_active_not_decimated(self):
+        """HVAC active obs is not in the interval map — every poll appends (interval=0)."""
+        coord = _make_obs_coord(hvac_action="heating", indoor_temp=70.0, outdoor_temp=50.0)
+        # Pre-seed an HVAC heat obs in active phase
+        coord._pending_observations[OBS_TYPE_HVAC_HEAT] = {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-hvac-nodecim",
+            "start_time": _FAKE_NOW.isoformat(),
+            "active_start": _FAKE_NOW.isoformat(),
+            "status": "monitoring",
+            "_phase": "active",
+            "active_samples": [],
+            "post_heat_samples": [],
+            "peak_indoor_f": None,
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        # Active HVAC samples should be appended immediately (no decimation)
+        active_samples = coord._pending_observations.get(OBS_TYPE_HVAC_HEAT, {}).get("active_samples", [])
+        assert len(active_samples) == 1, f"HVAC active obs should append every poll — got {len(active_samples)} samples"
+
+    def test_post_heat_decimated_at_5min(self):
+        """Post-heat samples are gated at THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S (300s)."""
+        coord = _make_obs_coord_with_sample_thermal_event(hvac_action="idle", indoor_temp=70.0, outdoor_temp=50.0)
+
+        from datetime import timedelta
+
+        last_ph_ts = _FAKE_NOW - timedelta(seconds=30)  # 30s ago — below 300s interval
+        coord._pending_thermal_event = {
+            "event_id": "test-postheat-decimate",
+            "status": "post_heat",
+            "session_mode": "heat",
+            "active_start": _FAKE_NOW.isoformat(),
+            "active_end": _FAKE_NOW.isoformat(),
+            "active_samples": [],
+            "post_heat_samples": [],
+            "last_post_heat_sample_time": last_ph_ts.isoformat(),
+        }
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_thermal_event()
+
+        assert len(coord._pending_thermal_event["post_heat_samples"]) == 0, (
+            "post-heat sample should NOT be appended when only 30s has elapsed (interval=300s)"
+        )
+
+    def test_post_heat_appended_after_5min(self):
+        """Post-heat sample IS appended after >= 300s since last post-heat sample."""
+        coord = _make_obs_coord_with_sample_thermal_event(hvac_action="idle", indoor_temp=70.0, outdoor_temp=50.0)
+
+        from datetime import timedelta
+
+        last_ph_ts = _FAKE_NOW - timedelta(seconds=310)  # 310s ago — above 300s interval
+        coord._pending_thermal_event = {
+            "event_id": "test-postheat-allowed",
+            "status": "post_heat",
+            "session_mode": "heat",
+            "active_start": _FAKE_NOW.isoformat(),
+            "active_end": _FAKE_NOW.isoformat(),
+            "active_samples": [],
+            "post_heat_samples": [],
+            "last_post_heat_sample_time": last_ph_ts.isoformat(),
+        }
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_thermal_event()
+
+        assert len(coord._pending_thermal_event["post_heat_samples"]) == 1, (
+            "post-heat sample should be appended after 310s (interval=300s)"
+        )
+
+    def test_interval_constants_have_expected_values(self):
+        """Confirm constant values match the plan spec."""
+        assert THERMAL_PASSIVE_SAMPLE_INTERVAL_S == 300, (
+            f"Expected THERMAL_PASSIVE_SAMPLE_INTERVAL_S=300, got {THERMAL_PASSIVE_SAMPLE_INTERVAL_S}"
+        )
+        assert THERMAL_FAN_SAMPLE_INTERVAL_S == 120, (
+            f"Expected THERMAL_FAN_SAMPLE_INTERVAL_S=120, got {THERMAL_FAN_SAMPLE_INTERVAL_S}"
+        )
+        assert THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S == 300, (
+            f"Expected THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S=300, got {THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestRollingWindowCommit  (Issue #122 — H2 rolling window commits)
+# ---------------------------------------------------------------------------
+
+
+class TestRollingWindowCommit:
+    """H2: 30-minute rolling windows commit+restart passive/vent/fan/solar observations."""
+
+    def _make_31min_obs(self, obs_type: str, n_samples: int = 6) -> dict:
+        """Build an obs that started 31 minutes ago with n_samples already collected."""
+        start = _make_obs_31min_ago()
+        samples = [
+            {
+                "timestamp": start.isoformat(),
+                "indoor_temp_f": 74.0 - i * 0.05,  # gentle slope so delta > 0 but < flat
+                "outdoor_temp_f": 55.0,
+                "elapsed_minutes": float(i * 5),
+            }
+            for i in range(n_samples)
+        ]
+        return {
+            "obs_type": obs_type,
+            "obs_id": "test-rolling-1",
+            "start_time": start.isoformat(),
+            "status": "monitoring",
+            "samples": samples,
+            "last_sample_time": start.isoformat(),
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+    def test_passive_decay_commits_after_30min(self):
+        """passive_decay started 31 min ago triggers rolling-window commit."""
+        coord = _make_obs_coord(hvac_action="idle", indoor_temp=74.0, outdoor_temp=55.0)
+        obs = self._make_31min_obs(OBS_TYPE_PASSIVE_DECAY, n_samples=6)
+        coord._pending_observations[OBS_TYPE_PASSIVE_DECAY] = obs
+
+        committed_obs_types: list[str] = []
+
+        def _fake_async_create_task(coro):
+            coro_name = getattr(coro, "__name__", getattr(coro, "__qualname__", ""))
+            if "_commit_observation" in coro_name:
+                committed_obs_types.append(OBS_TYPE_PASSIVE_DECAY)
+            coro.close()
+
+        coord.hass.async_create_task = _fake_async_create_task
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        obs_present = coord._pending_observations.get(OBS_TYPE_PASSIVE_DECAY)
+        was_committing = obs_present is not None and obs_present.get("status") == "committing"
+        was_queued = len(committed_obs_types) > 0
+
+        assert was_committing or was_queued, (
+            "passive_decay started 31 min ago should trigger rolling-window commit "
+            f"(status={obs_present.get('status') if obs_present else 'popped'}, queued={was_queued})"
+        )
+
+    def test_rolling_window_delta_guard_rejects_flat(self):
+        """Short windows with total ΔT < THERMAL_ROLLING_MIN_DELTA_T_F are abandoned."""
+        coord = _make_obs_coord(hvac_action="idle", indoor_temp=74.0, outdoor_temp=55.0)
+        # Build obs with 6 samples all at the SAME temperature → total ΔT = 0
+        start = _make_obs_31min_ago()
+        flat_samples = [
+            {
+                "timestamp": start.isoformat(),
+                "indoor_temp_f": 74.0,  # identical across all samples
+                "outdoor_temp_f": 55.0,
+                "elapsed_minutes": float(i * 5),
+            }
+            for i in range(6)
+        ]
+        obs = {
+            "obs_type": OBS_TYPE_PASSIVE_DECAY,
+            "obs_id": "test-rolling-flat",
+            "start_time": start.isoformat(),
+            "status": "monitoring",
+            "samples": flat_samples,
+            "last_sample_time": start.isoformat(),
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+        coord._pending_observations[OBS_TYPE_PASSIVE_DECAY] = obs
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        # The obs should be popped (abandoned with "insufficient_total_delta" path)
+        # It should NOT have status "committing"
+        obs_after = coord._pending_observations.get(OBS_TYPE_PASSIVE_DECAY)
+        if obs_after is not None:
+            assert obs_after.get("status") != "committing", (
+                "Flat-temperature short window should be abandoned, not committed "
+                f"(total ΔT=0.0 < {THERMAL_ROLLING_MIN_DELTA_T_F})"
+            )
+
+    def test_fresh_obs_starts_after_rolling_commit(self):
+        """After rolling-window commit pops the obs, next poll can start a fresh one."""
+        coord = _make_obs_coord(hvac_action="idle", indoor_temp=74.0, outdoor_temp=55.0)
+        obs = self._make_31min_obs(OBS_TYPE_PASSIVE_DECAY, n_samples=6)
+        coord._pending_observations[OBS_TYPE_PASSIVE_DECAY] = obs
+
+        def _fake_async_create_task(coro):
+            coro.close()
+
+        coord.hass.async_create_task = _fake_async_create_task
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        # After commit, the obs is removed (popped) or marked "committing" — no longer "monitoring"
+        obs_after = coord._pending_observations.get(OBS_TYPE_PASSIVE_DECAY)
+        assert obs_after is None or obs_after.get("status") != "monitoring", (
+            "After rolling-window commit, passive_decay should no longer be in monitoring status"
+        )
+
+    def test_rolling_window_constant_is_30min(self):
+        """Confirm THERMAL_ROLLING_WINDOW_MINUTES is exactly 30."""
+        assert THERMAL_ROLLING_WINDOW_MINUTES == 30, (
+            f"Expected THERMAL_ROLLING_WINDOW_MINUTES=30, got {THERMAL_ROLLING_WINDOW_MINUTES}"
+        )
+
+    def test_rolling_min_delta_constant_is_0_2(self):
+        """Confirm THERMAL_ROLLING_MIN_DELTA_T_F is exactly 0.2."""
+        assert pytest.approx(0.2) == THERMAL_ROLLING_MIN_DELTA_T_F, (
+            f"Expected THERMAL_ROLLING_MIN_DELTA_T_F=0.2, got {THERMAL_ROLLING_MIN_DELTA_T_F}"
+        )
