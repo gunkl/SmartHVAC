@@ -41,6 +41,7 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     OBS_TYPE_HVAC_COOL,
     OBS_TYPE_HVAC_HEAT,
     OBS_TYPE_PASSIVE_DECAY,
+    OBS_TYPE_SOLAR_GAIN,
     OBS_TYPE_VENTILATED_DECAY,
     THERMAL_FAN_MIN_SAMPLES,
     THERMAL_FAN_SAMPLE_INTERVAL_S,
@@ -52,6 +53,7 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     THERMAL_ROLLING_MIN_DELTA_T_F,
     THERMAL_ROLLING_WINDOW_MINUTES,
     THERMAL_VENT_MIN_SAMPLES,
+    THERMAL_VENTILATED_MIN_DELTA_F,
 )
 from custom_components.climate_advisor.learning import LearningEngine  # noqa: E402
 
@@ -1395,4 +1397,107 @@ class TestRollingWindowCommit:
         """Confirm THERMAL_ROLLING_MIN_DELTA_T_F is exactly 0.2."""
         assert pytest.approx(0.2) == THERMAL_ROLLING_MIN_DELTA_T_F, (
             f"Expected THERMAL_ROLLING_MIN_DELTA_T_F=0.2, got {THERMAL_ROLLING_MIN_DELTA_T_F}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestNatVentAndVentilatedDecay
+# ---------------------------------------------------------------------------
+
+
+class TestNatVentAndVentilatedDecay:
+    """Nat-vent guard and ventilated_decay start-condition regression tests."""
+
+    def test_passive_decay_blocked_when_nat_vent_active(self):
+        """passive_decay must NOT start when natural ventilation is active.
+
+        With nat_vent_active=True the engine is circulating outdoor air, so
+        any decay signal is a blend of envelope loss and ventilation — it must
+        not be attributed to k_passive alone.
+        """
+        coord = _make_obs_coord(
+            nat_vent_active=True,
+            indoor_temp=75.0,
+            outdoor_temp=50.0,
+            any_sensor_open=False,
+            hvac_action="idle",
+        )
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+        assert OBS_TYPE_PASSIVE_DECAY not in coord._pending_observations, (
+            "passive_decay must not start while nat_vent_active=True"
+        )
+
+    def test_ventilated_decay_starts_at_1_0f_delta(self):
+        """ventilated_decay starts when |indoor - outdoor| >= THERMAL_VENTILATED_MIN_DELTA_F (1.0°F).
+
+        delta = 72.0 - 70.5 = 1.5 >= 1.0 → observation should be created.
+        """
+        coord = _make_obs_coord(
+            indoor_temp=72.0,
+            outdoor_temp=70.5,
+            any_sensor_open=True,
+            hvac_action="idle",
+        )
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+        assert OBS_TYPE_VENTILATED_DECAY in coord._pending_observations, (
+            "ventilated_decay should start when delta=1.5 >= THERMAL_VENTILATED_MIN_DELTA_F=1.0"
+        )
+
+    def test_ventilated_decay_does_not_start_below_1_0f_delta(self):
+        """ventilated_decay does NOT start when |indoor - outdoor| < THERMAL_VENTILATED_MIN_DELTA_F (1.0°F).
+
+        delta = 72.0 - 71.3 = 0.7 < 1.0 → observation must NOT be created.
+        """
+        coord = _make_obs_coord(
+            indoor_temp=72.0,
+            outdoor_temp=71.3,
+            any_sensor_open=True,
+            hvac_action="idle",
+        )
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+        assert OBS_TYPE_VENTILATED_DECAY not in coord._pending_observations, (
+            "ventilated_decay must not start when delta=0.7 < THERMAL_VENTILATED_MIN_DELTA_F=1.0"
+        )
+
+    def test_warm_day_nat_vent_only_ventilated_decay_viable(self):
+        """On a warm day with nat_vent active and a window open, only ventilated_decay is viable.
+
+        passive_decay is blocked (nat_vent_active), fan_only is blocked (fan not active),
+        solar_gain is blocked (indoor < outdoor not required here, but HVAC idle + nat_vent
+        means solar_gain guard also blocks it).  Only ventilated_decay should start.
+        """
+        coord = _make_obs_coord(
+            indoor_temp=72.0,
+            outdoor_temp=68.0,  # delta = 4.0 >= 1.0
+            nat_vent_active=True,
+            any_sensor_open=True,
+            hvac_action="idle",
+        )
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        assert OBS_TYPE_PASSIVE_DECAY not in coord._pending_observations, (
+            "passive_decay must be blocked when nat_vent_active=True"
+        )
+        assert OBS_TYPE_FAN_ONLY_DECAY not in coord._pending_observations, (
+            "fan_only_decay must not start when fan_active=False"
+        )
+        assert OBS_TYPE_SOLAR_GAIN not in coord._pending_observations, (
+            "solar_gain must not start when nat_vent_active=True"
+        )
+        assert OBS_TYPE_VENTILATED_DECAY in coord._pending_observations, (
+            "ventilated_decay must start: sensor open, delta=4.0 >= 1.0, HVAC idle"
+        )
+
+    def test_ventilated_min_delta_constant_is_1_0f(self):
+        """Confirm THERMAL_VENTILATED_MIN_DELTA_F is exactly 1.0."""
+        assert pytest.approx(1.0) == THERMAL_VENTILATED_MIN_DELTA_F, (
+            f"Expected THERMAL_VENTILATED_MIN_DELTA_F=1.0, got {THERMAL_VENTILATED_MIN_DELTA_F}"
         )

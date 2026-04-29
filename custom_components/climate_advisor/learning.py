@@ -103,9 +103,11 @@ def _grade_passive_confidence(cache: dict) -> str:
     """Compute confidence tier for k_passive based on combined observation count."""
     count = (
         cache.get("observation_count_passive", 0)
+        + cache.get("observation_count_vent", 0)
+        + cache.get("observation_count_fan_only", 0)
         + cache.get("observation_count_heat", 0)
         + cache.get("observation_count_cool", 0)
-    )
+    )  # TODO: add confidence_k_env as a dedicated envelope-only confidence field (future follow-up)
     if count < THERMAL_PASSIVE_CONF_LOW:
         return "none"
     if count < THERMAL_PASSIVE_CONF_MEDIUM:
@@ -616,6 +618,8 @@ class LearningEngine:
             confidence = "medium"
         else:
             confidence = "high"
+
+        cache["confidence"] = confidence
 
         k_active_heat = cache.get("k_active_heat")
         k_active_cool = cache.get("k_active_cool")
