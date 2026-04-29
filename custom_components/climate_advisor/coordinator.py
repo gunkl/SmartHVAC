@@ -3144,8 +3144,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         thermal_model = self.learning.get_thermal_model() if self.learning else {}
         unit = self.config.get("temp_unit", "fahrenheit")
         _LOGGER.debug(
-            "Chart data: thermal_model confidence=%s heat_obs=%d cool_obs=%d",
+            "Chart data: thermal_model conf_passive=%s conf_hvac=%s passive=%d fan=%d vent=%d solar=%d heat=%d cool=%d",
+            thermal_model.get("confidence_k_passive", "none"),
             thermal_model.get("confidence", "none"),
+            thermal_model.get("observation_count_passive", 0),
+            thermal_model.get("observation_count_fan_only", 0),
+            thermal_model.get("observation_count_vent", 0),
+            thermal_model.get("observation_count_solar", 0),
             thermal_model.get("observation_count_heat", 0),
             thermal_model.get("observation_count_cool", 0),
         )
