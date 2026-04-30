@@ -245,7 +245,7 @@ class ClimateAdvisorComplianceSensor(ClimateAdvisorBaseSensor):
             "comfort_range_high": self.coordinator.config.get("comfort_cool", 75),
         }
         unit = self.coordinator.config.get("temp_unit", FAHRENHEIT)
-        thermal = self.coordinator.learning.get_thermal_model()
+        thermal = self.coordinator.learning.get_thermal_model(learning_health=self.coordinator._build_learning_health())
         heat_rate_f = thermal.get("heating_rate_f_per_hour")
         cool_rate_f = thermal.get("cooling_rate_f_per_hour")
         attrs[ATTR_THERMAL_HEATING_RATE] = convert_delta(heat_rate_f, unit) if heat_rate_f is not None else None

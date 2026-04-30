@@ -220,8 +220,20 @@ def compute_k_passive(
 
     # Validate sign and bounds
     if k_p > 0:
+        _LOGGER.debug(
+            "compute_k_passive: wrong sign k_p=%.5f (must be < 0) n=%d",
+            k_p,
+            len(rates),
+        )
         return None, 0.0, REJECT_OLS_WRONG_SIGN
     if not (THERMAL_K_PASSIVE_MIN <= k_p <= THERMAL_K_PASSIVE_MAX):
+        _LOGGER.debug(
+            "compute_k_passive: out of bounds k_p=%.5f (must be in [%.3f, %.3f]) n=%d",
+            k_p,
+            THERMAL_K_PASSIVE_MIN,
+            THERMAL_K_PASSIVE_MAX,
+            len(rates),
+        )
         return None, 0.0, REJECT_OLS_BOUNDS
 
     # R² (vs forced-through-origin model)
@@ -757,11 +769,15 @@ class LearningEngine:
             samples = event.get("samples", event.get("active_samples", []))
             k_p, r2_p, _reject_code = compute_k_passive(samples, min_samples=THERMAL_MIN_DECAY_SAMPLES)
             if k_p is None:
+                _temps = [s["indoor_temp_f"] for s in samples if "indoor_temp_f" in s]
+                _indoor_dt = round(max(_temps) - min(_temps), 2) if len(_temps) >= 2 else 0.0
                 _LOGGER.info(
-                    "Thermal event commit failed (%s): k_passive rejected (R²=%.3f, n=%d)",
+                    "Thermal event commit failed (%s): k_passive rejected (R²=%.3f, n=%d, indoor_ΔT=%.2f°F) code=%s",
                     obs_type,
                     r2_p,
                     len(samples),
+                    _indoor_dt,
+                    _reject_code or "unknown",
                 )
                 return None
             now_str = dt_util.now().isoformat()

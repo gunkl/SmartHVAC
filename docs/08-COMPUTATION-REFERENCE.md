@@ -976,7 +976,9 @@ thermal_learning_health: {
 
 ### 20.9 `tools/thermal_health.py` Usage
 
-Standalone CLI tool. Reads the `thermal_learning_health` attribute from the compliance sensor via HA REST API (`HA_URL` and `HA_TOKEN` environment variables, following the pattern in `tools/validate.py`). Prints a per-obs-type report:
+Standalone CLI tool. Requires `HA_URL` and `HA_TOKEN` environment variables (same pattern as `tools/validate.py`). Prints two sections.
+
+**Section 1 — Historical Aggregates** (existing): reads `thermal_learning_health` from the compliance sensor attribute via HA REST API. Shows per-obs-type rejection counts and last rejection reason.
 
 ```
 Thermal Learning Health Report
@@ -990,6 +992,19 @@ fan_only_decay      2         0          2           too_few_samples (n=2/5)
 ventilated_decay    0         0          0           —
 solar_gain          1         0          1           small_delta (ΔT=0.1°F/0.2°F)
 ```
+
+**Section 2 — Current Observations** (added in Issue #125): reads `thermal_pipeline` from `GET /api/climate_advisor/automation_state`. Shows a live table of every observation currently accumulating samples. Fields are sourced from `_build_thermal_pipeline_summary()` in `coordinator.py`.
+
+```
+Current Observations
+--------------------
+obs_type            status      elapsed   samples  last_smp  indoor           outdoor   delta
+ventilated_decay    monitoring  164.3 min 6        2.1 min   71.8-72.1°F      69.0°F    0.3°F
+
+(Rejection log entries: ventilated_decay=5)
+```
+
+If the debug-state endpoint is unreachable or returns no `thermal_pipeline` key, the tool prints a warning and skips Section 2 — it does not abort.
 
 No new secrets or external dependencies. Run from the project root after setting env vars.
 
@@ -1005,6 +1020,74 @@ No new secrets or external dependencies. Run from the project root after setting
 | `last_rejection` populated after a rejection event | `tests/test_thermal_rejection.py` |
 | `thermal_learning_health` in compliance sensor attributes | `tests/test_thermal_rejection.py` |
 | Sensor attribute exposes counts/summary only (not raw events) | `tests/test_thermal_rejection.py` |
+
+### 20.11 Log Taxonomy (Issue #125)
+
+Issue #125 adds structured log lines at key points in the observation lifecycle. The following table documents every new log line, its level, source method, and field semantics.
+
+| Log line format | Level | Source method | What it means |
+|---|---|---|---|
+| `Thermal rolling window: obs_type=<T> n=<N> elapsed=<E>min indoor=[<lo>..<hi>] (ΔT=<dt>°F) outdoor=<out>` | INFO | `_commit_rolling_window_obs()` | Fires immediately before every rolling-window commit attempt, including ones that will be rejected. `n` = sample count; `ΔT` = max−min indoor temp across samples; `outdoor` = last sample's outdoor temp or `?` if unavailable. |
+| `Thermal pipeline: <N> pending observations active` | INFO | `_async_update_data()` | Emitted once per coordinator update cycle when at least one pending observation exists. Confirms the pipeline is alive without requiring full debug-state output. |
+| `Thermal event commit failed (<T>): k_passive rejected (R²=<r2>, n=<N>, indoor_ΔT=<dt>°F) code=<code>` | INFO | `_commit_event_from_dict()` | Rejection of a decay observation after OLS. `indoor_ΔT` is the max−min span across all sample indoor temps. `code` is one of the `REJECT_*` constants. |
+| `Thermal obs abandoned [type=<T> reason=<code> n=<N>/<req> dt=<dt>°F/? elapsed=<E>m]` | INFO | `_abandon_observation()` | Fires whenever an observation is discarded before commit. `elapsed` is now always populated from `obs["start_time"]` — the `?` value that appeared in Issue #124 logs no longer occurs. |
+| `compute_k_passive: wrong sign k_p=<v> (must be < 0) n=<N>` | DEBUG | `compute_k_passive()` | OLS returned a positive k_passive — a physics violation. The observation is rejected with `REJECT_OLS_WRONG_SIGN`. |
+| `compute_k_passive: out of bounds k_p=<v> (must be in [<min>, <max>]) n=<N>` | DEBUG | `compute_k_passive()` | OLS result is outside the `[THERMAL_K_PASSIVE_MIN, THERMAL_K_PASSIVE_MAX]` interval. Rejected with `REJECT_OLS_BOUNDS`. |
+
+**Reading the rolling-window line during a flat-temperature episode:**
+
+When indoor temperature is stable (HVAC holding setpoint, mild outdoor conditions), a sequence like this is normal and expected:
+
+```
+Thermal rolling window: obs_type=ventilated_decay n=6 elapsed=5.0min indoor=[72.0..72.0] (ΔT=0.00°F) outdoor=69.0
+Thermal event commit failed (ventilated_decay): k_passive rejected (R²=0.000, n=6, indoor_ΔT=0.00°F) code=ols_bad_fit
+Thermal obs abandoned [type=ventilated_decay reason=ols_bad_fit n=6/4 dt=0.00°F/? elapsed=35m]
+```
+
+`R²=0.000` with `indoor_ΔT=0.00°F` means the indoor temperature was effectively flat — there was no temperature excursion for OLS to fit. This is **not a bug**. The learning engine correctly refuses to extract a thermal decay rate from flat data; fitting a slope to a flat line would produce a meaningless or unstable k_passive. This condition occurs whenever indoor and outdoor temperatures are within 2–3°F of each other, or when HVAC is actively cycling to maintain a stable setpoint. Resolution: wait for a natural temperature excursion — a warm afternoon, a morning pre-heat, or an overnight cooldown — to provide the ≥ 0.2°F indoor ΔT the quality gate requires.
+
+### 20.12 `thermal_pipeline` Key in `/api/climate_advisor/automation_state`
+
+Issue #125 adds a `thermal_pipeline` key to the debug-state API response. This key is built on every call by `_build_thermal_pipeline_summary()` in `coordinator.py` and reflects the live state of all pending observations at the moment of the request.
+
+**Response shape:**
+
+```json
+{
+  "thermal_pipeline": {
+    "pending": [
+      {
+        "obs_type": "ventilated_decay",
+        "status": "monitoring",
+        "elapsed_minutes": 164.3,
+        "sample_count": 6,
+        "last_sample_age_minutes": 2.1,
+        "indoor_range_f": [71.8, 72.1],
+        "indoor_delta_f": 0.3,
+        "outdoor_f": 69.0
+      }
+    ],
+    "rejection_log_counts": {
+      "ventilated_decay": 5
+    }
+  }
+}
+```
+
+**Field semantics:**
+
+| Field | Type | Description |
+|---|---|---|
+| `pending` | `list` | One entry per obs_type currently in `_pending_observations`. Empty list when no observations are active. |
+| `pending[].obs_type` | `str` | Observation type key (e.g., `"passive_decay"`, `"ventilated_decay"`) |
+| `pending[].status` | `str` | Raw `status` field from the pending observation dict (e.g., `"monitoring"`) |
+| `pending[].elapsed_minutes` | `float \| null` | Minutes since observation started; `null` if `start_time` is absent or unparseable |
+| `pending[].sample_count` | `int` | Number of samples accumulated so far |
+| `pending[].last_sample_age_minutes` | `float \| null` | Minutes since the most recent sample; `null` if `last_sample_time` is absent |
+| `pending[].indoor_range_f` | `[float, float] \| null` | `[min, max]` of indoor temps across all samples; `null` if no samples have `indoor_temp_f` |
+| `pending[].indoor_delta_f` | `float \| null` | `max − min` indoor temp; `null` if no samples |
+| `pending[].outdoor_f` | `float \| null` | Outdoor temp from the last sample; falls back to coordinator's `_last_outdoor_temp`; `null` if neither is available |
+| `rejection_log_counts` | `dict[str, int]` | Per-obs-type count of entries in `_rejection_log`. Mirrors the same data visible in `learning_health` but scoped to raw counts only, for quick triage without parsing `ThermalRejectionEvent` dicts. |
 
 ---
 

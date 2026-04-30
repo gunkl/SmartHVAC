@@ -1228,6 +1228,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._update_pre_heat_buffer()
         self._sample_thermal_event()
         self._sample_all_observations()
+        if hasattr(self, "_pending_observations") and self._pending_observations:
+            _LOGGER.info(
+                "Thermal pipeline: %d pending observations active",
+                len(self._pending_observations),
+            )
         await self._check_stabilization()
         for _hvac_obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
             await self._check_hvac_stabilization(_hvac_obs_type)
@@ -2731,7 +2736,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 _window_elapsed = (now - _start_ts).total_seconds() / 60.0 if _start_ts else 0
                 _fan_sig = abs((indoor or 0) - (outdoor or 0)) if indoor is not None and outdoor is not None else 0
                 if _window_elapsed >= THERMAL_ROLLING_WINDOW_MINUTES and _fan_sig >= THERMAL_FAN_MIN_SIGNAL_F:
-                    # Signal already verified above; skip indoor-ΔT guard (signal is in I-O differential)
                     self._commit_rolling_window_obs(obs_type, obs, skip_delta_guard=True)
                     continue
                 _fan_only_mode = _cs.state == "fan_only" if _cs else False
@@ -2773,7 +2777,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 _window_elapsed = (now - _start_ts).total_seconds() / 60.0 if _start_ts else 0
                 _vent_sig = abs((indoor or 0) - (outdoor or 0)) if indoor is not None and outdoor is not None else 0
                 if _window_elapsed >= THERMAL_ROLLING_WINDOW_MINUTES and _vent_sig >= THERMAL_VENT_MIN_SIGNAL_F:
-                    # Signal already verified above; skip indoor-ΔT guard (signal is in I-O differential)
                     self._commit_rolling_window_obs(obs_type, obs, skip_delta_guard=True)
                     continue
                 if not _sensor_open:
@@ -2966,13 +2969,26 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             obs_type,
         )
 
-        if committed and self._today_record is not None and obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
-            self._today_record.thermal_session_count += 1
-
-        self._pending_observations.pop(obs_type, None)
-        if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
-            self.learning.set_pending_thermal_event(None)
-        await self.hass.async_add_executor_job(self.learning.save_state)
+        if committed:
+            if self._today_record is not None and obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                self._today_record.thermal_session_count += 1
+            self._pending_observations.pop(obs_type, None)
+            if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                self.learning.set_pending_thermal_event(None)
+            await self.hass.async_add_executor_job(self.learning.save_state)
+        else:
+            # Learning engine rejected (OLS bad fit, wrong sign, bounds, etc.).
+            # Route through _abandon_observation so the rejection enters _rejection_log
+            # and the health surface stays accurate.
+            self._abandon_observation(
+                obs_type,
+                "ols_rejected",
+                reason_code=REJECT_OLS_BAD_FIT,
+                n_required=THERMAL_MIN_DECAY_SAMPLES,
+            )
+            if obs_type in (OBS_TYPE_HVAC_HEAT, OBS_TYPE_HVAC_COOL):
+                self.learning.set_pending_thermal_event(None)
+            await self.hass.async_add_executor_job(self.learning.save_state)
 
     def _abandon_observation(
         self,
@@ -2989,6 +3005,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         obs = self._pending_observations.pop(obs_type, None)
         if obs is None:
             return
+        if elapsed_minutes is None and obs is not None:
+            _start_str = obs.get("start_time")
+            if _start_str:
+                try:
+                    _start_ts = dt_util.parse_datetime(_start_str)
+                    if _start_ts:
+                        elapsed_minutes = int((dt_util.now() - _start_ts).total_seconds() / 60)
+                except Exception:
+                    pass
         samples = obs.get("samples", obs.get("active_samples", []))
         delta_f = 0.0
         if len(samples) >= 2:
@@ -3054,6 +3079,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             REJECT_OLS_BOUNDS,
             REJECT_ABANDONED,
         ]
+        _hvac_mode_to_obs_type = {
+            "passive": OBS_TYPE_PASSIVE_DECAY,
+            "fan_only": OBS_TYPE_FAN_ONLY_DECAY,
+            "ventilated": OBS_TYPE_VENTILATED_DECAY,
+            "solar": OBS_TYPE_SOLAR_GAIN,
+            "heat": OBS_TYPE_HVAC_HEAT,
+            "cool": OBS_TYPE_HVAC_COOL,
+        }
         health = {}
         thermal_observations = getattr(self.learning._state, "thermal_observations", [])
         rejection_log = getattr(self, "_rejection_log", {})
@@ -3066,7 +3099,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     rejection_counts[rc] += 1
             last = events[-1] if events else None
             committed = (
-                sum(1 for o in thermal_observations if isinstance(o, dict) and o.get("obs_type") == obs_type)
+                sum(
+                    1
+                    for o in thermal_observations
+                    if isinstance(o, dict) and _hvac_mode_to_obs_type.get(o.get("hvac_mode")) == obs_type
+                )
                 if isinstance(thermal_observations, list)
                 else 0
             )
@@ -3126,6 +3163,20 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         """
         self._ensure_pending_observations()
         samples = obs.get("samples", [])
+        _start_ts = dt_util.parse_datetime(obs.get("start_time", "")) if obs.get("start_time") else None
+        _elapsed = round((dt_util.now() - _start_ts).total_seconds() / 60.0, 1) if _start_ts else None
+        _temps = [s["indoor_temp_f"] for s in samples if "indoor_temp_f" in s]
+        _outdoor = samples[-1].get("outdoor_temp_f") if samples else None
+        _LOGGER.info(
+            "Thermal rolling window: obs_type=%s n=%d elapsed=%.1fmin indoor=[%.1f..%.1f] (ΔT=%.2f°F) outdoor=%s",
+            obs_type,
+            len(samples),
+            _elapsed or 0,
+            min(_temps) if _temps else 0,
+            max(_temps) if _temps else 0,
+            (max(_temps) - min(_temps)) if _temps else 0,
+            f"{_outdoor:.1f}" if _outdoor is not None else "?",
+        )
         if len(samples) < THERMAL_MIN_DECAY_SAMPLES + 1:
             self._abandon_observation(obs_type, "window_elapsed_too_few_samples")
             return
@@ -3530,6 +3581,50 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "unit": unit,
         }
 
+    def _build_thermal_pipeline_summary(self) -> dict:
+        """Build a snapshot of the current thermal observation pipeline state."""
+        self._ensure_pending_observations()
+        now = dt_util.now()
+        pending = []
+        for obs_type, obs in self._pending_observations.items():
+            start_str = obs.get("start_time")
+            elapsed = None
+            if start_str:
+                try:
+                    start_ts = dt_util.parse_datetime(start_str)
+                    if start_ts:
+                        elapsed = round((now - start_ts).total_seconds() / 60.0, 1)
+                except Exception:
+                    pass
+            samples = obs.get("samples", obs.get("active_samples", []))
+            temps = [s["indoor_temp_f"] for s in samples if "indoor_temp_f" in s]
+            last_s = obs.get("last_sample_time")
+            last_age = None
+            if last_s:
+                try:
+                    last_ts = dt_util.parse_datetime(last_s)
+                    if last_ts:
+                        last_age = round((now - last_ts).total_seconds() / 60.0, 1)
+                except Exception:
+                    pass
+            outdoor = samples[-1].get("outdoor_temp_f") if samples else getattr(self, "_last_outdoor_temp", None)
+            pending.append(
+                {
+                    "obs_type": obs_type,
+                    "status": obs.get("status", "unknown"),
+                    "elapsed_minutes": elapsed,
+                    "sample_count": len(samples),
+                    "last_sample_age_minutes": last_age,
+                    "indoor_range_f": [round(min(temps), 1), round(max(temps), 1)] if temps else None,
+                    "indoor_delta_f": round(max(temps) - min(temps), 2) if temps else None,
+                    "outdoor_f": round(outdoor, 1) if outdoor is not None else None,
+                }
+            )
+        return {
+            "pending": pending,
+            "rejection_log_counts": {ot: len(evts) for ot, evts in getattr(self, "_rejection_log", {}).items()},
+        }
+
     def get_debug_state(self) -> dict[str, Any]:
         """Return serializable debug state for the dashboard."""
         ae = self.automation_engine
@@ -3608,6 +3703,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "resumed_from_pause": ae._resumed_from_pause,
             "occupancy_away_timer_pending": self._occupancy_away_timer_cancel is not None,
             "unit": unit,
+            "thermal_pipeline": self._build_thermal_pipeline_summary(),
         }
 
     async def async_shutdown(self) -> None:
