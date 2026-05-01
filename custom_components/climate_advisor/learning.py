@@ -589,21 +589,28 @@ class LearningEngine:
             }
 
         k_p = obs.get("k_passive")
-        if k_p is not None:
+        mode = obs.get("hvac_mode")
+
+        # k_passive tracks envelope-only decay — fan_only and ventilated observations
+        # must NOT write here.  fan_only k_p reflects fan-modified heat transfer (→ k_vent);
+        # ventilated k_p reflects window-open heat transfer (→ k_vent_window).  Mixing either
+        # into k_passive would bias the envelope rate used for bedtime-setback predictions.
+        _envelope_modes = mode not in ("fan_only", "ventilated")
+        if k_p is not None and _envelope_modes:
             if cache["k_passive"] is None:
                 cache["k_passive"] = k_p
             else:
                 cache["k_passive"] = (1.0 - alpha) * cache["k_passive"] + alpha * k_p
 
-        # Update avg_r_squared_passive (simple EWMA)
+        # Update avg_r_squared_passive (simple EWMA) — same guard as k_passive.
+        # Ventilated/fan R² reflects fit quality of a different physical regime and
+        # must not contaminate the envelope-fit confidence metric.
         r2_p = obs.get("r_squared_passive")
-        if r2_p is not None:
+        if r2_p is not None and _envelope_modes:
             if cache["avg_r_squared_passive"] is None:
                 cache["avg_r_squared_passive"] = r2_p
             else:
                 cache["avg_r_squared_passive"] = (1.0 - alpha) * cache["avg_r_squared_passive"] + alpha * r2_p
-
-        mode = obs.get("hvac_mode")
         k_a = obs.get("k_active")
         if mode == "heat" and k_a is not None:
             if cache["k_active_heat"] is None:
@@ -645,7 +652,12 @@ class LearningEngine:
         cache["last_observation_date"] = obs.get("date")
         self._state.thermal_model_cache = cache
 
-    def get_thermal_model(self, learning_health: dict | None = None) -> dict:
+    def get_thermal_model(
+        self,
+        learning_health: dict | None = None,
+        outdoor_temp_f: float | None = None,
+        solar_factor: float = 0.0,
+    ) -> dict:
         """Return the current thermal model from the EWMA cache.
 
         Returns v2 model fields (k_active_heat, k_active_cool, k_passive) plus
@@ -657,6 +669,11 @@ class LearningEngine:
             learning_health: Optional pre-aggregated health dict (built by the coordinator
                 from its _rejection_log). Included verbatim in the returned dict under the
                 "learning_health" key. Pass None or omit to get an empty dict.
+            outdoor_temp_f: Current outdoor temperature (°F). When provided, enables
+                computation of thermal_equilibrium_f — the indoor temperature the house
+                will naturally reach with HVAC off.
+            solar_factor: Normalized solar intensity [0.0–1.0] for equilibrium computation.
+                Defaults to 0.0 (night or no solar data).
         """
         cache = self._state.thermal_model_cache or {}
         count_heat = cache.get("observation_count_heat", 0)
@@ -676,14 +693,26 @@ class LearningEngine:
 
         k_active_heat = cache.get("k_active_heat")
         k_active_cool = cache.get("k_active_cool")
+        k_passive = cache.get("k_passive")
+        k_solar = cache.get("k_solar")
+
+        # Thermal equilibrium: the indoor temp the house converges to with HVAC off.
+        # ODE steady-state: T_eq = T_outdoor + (k_solar / |k_passive|) * solar_factor
+        # Requires outdoor_temp_f and k_passive; solar term added when k_solar is known.
+        thermal_equilibrium_f: float | None = None
+        if outdoor_temp_f is not None and k_passive is not None and k_passive < 0:
+            thermal_equilibrium_f = outdoor_temp_f
+            if k_solar is not None and solar_factor > 0:
+                thermal_equilibrium_f += (k_solar / abs(k_passive)) * solar_factor
 
         return {
             "k_active_heat": k_active_heat,
             "k_active_cool": k_active_cool,
-            "k_passive": cache.get("k_passive"),
+            "k_passive": k_passive,
             "k_vent": cache.get("k_vent"),
             "k_vent_window": cache.get("k_vent_window"),
-            "k_solar": cache.get("k_solar"),
+            "k_solar": k_solar,
+            "thermal_equilibrium_f": thermal_equilibrium_f,
             # Legacy compat
             "heating_rate_f_per_hour": round(k_active_heat, 2) if k_active_heat is not None else None,
             "cooling_rate_f_per_hour": round(abs(k_active_cool), 2) if k_active_cool is not None else None,

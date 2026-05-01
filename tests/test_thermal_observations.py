@@ -860,6 +860,18 @@ class TestE6CacheBugFix:
             "confidence_grade": "high",
         }
 
+    def _ventilated_obs(self, k_passive: float, r_squared_passive: float | None = None) -> dict:
+        """Minimal ventilated_decay observation dict."""
+        obs = {
+            "date": "2026-04-28",
+            "hvac_mode": "ventilated",
+            "k_passive": k_passive,
+            "confidence_grade": "high",
+        }
+        if r_squared_passive is not None:
+            obs["r_squared_passive"] = r_squared_passive
+        return obs
+
     def test_passive_decay_does_not_update_k_vent(self, tmp_path: Path):
         """A passive_decay commit must update k_passive but leave k_vent untouched."""
         engine = self._make_engine(tmp_path)
@@ -872,25 +884,35 @@ class TestE6CacheBugFix:
         assert model["k_vent"] is None, f"k_vent must be None after passive_decay commit; got {model['k_vent']}"
 
     def test_fan_only_decay_updates_k_vent(self, tmp_path: Path):
-        """A fan_only_decay commit must set k_vent and also update k_passive."""
+        """A fan_only_decay commit must set k_vent but must NOT write k_passive.
+
+        fan_only k_p reflects the effective decay rate with a running fan, which
+        is not the same as the envelope-only decay rate.  Writing it into k_passive
+        would bias the envelope model and corrupt bedtime-setback predictions.
+        """
         engine = self._make_engine(tmp_path)
         engine._update_thermal_model_cache(self._fan_only_obs(-0.15))
 
         model = engine.get_thermal_model()
         assert pytest.approx(-0.15, abs=1e-9) == model["k_vent"], f"k_vent should be -0.15, got {model['k_vent']}"
-        # k_passive is updated unconditionally for all modes
-        assert pytest.approx(-0.15, abs=1e-9) == model["k_passive"], (
-            f"k_passive should also be -0.15 after fan_only commit, got {model['k_passive']}"
+        # k_passive must remain None — fan_only observations do not contribute to envelope model
+        assert model["k_passive"] is None, (
+            "k_passive must be None after fan_only commit "
+            f"(fan_only must not write k_passive); got {model['k_passive']}"
         )
 
     def test_passive_and_fan_only_do_not_cross_contaminate(self, tmp_path: Path):
-        """passive then fan_only: k_vent reflects only fan_only; k_passive is EMA of both."""
+        """passive then fan_only: k_vent reflects only fan_only; k_passive reflects only passive.
+
+        After the fix, fan_only observations do not write to k_passive.  k_passive must
+        equal the value set by the passive_decay commit only — no EMA blending with fan_only.
+        """
         engine = self._make_engine(tmp_path)
 
         # First: passive_decay — should touch k_passive only
         engine._update_thermal_model_cache(self._passive_obs(-0.08))
 
-        # Second: fan_only_decay — should set k_vent and update k_passive via EMA
+        # Second: fan_only_decay — should set k_vent but must NOT update k_passive
         engine._update_thermal_model_cache(self._fan_only_obs(-0.12))
 
         model = engine.get_thermal_model()
@@ -900,11 +922,53 @@ class TestE6CacheBugFix:
             f"k_vent should be -0.12 (fan_only only); got {model['k_vent']} — passive_decay must not contaminate k_vent"
         )
 
-        # k_passive: first commit set it to -0.08 (alpha=0.3 for "high").
-        # Second commit: EMA = (1 - 0.3) * -0.08 + 0.3 * -0.12 = -0.092
-        expected_k_passive = (1.0 - 0.3) * (-0.08) + 0.3 * (-0.12)
-        assert pytest.approx(expected_k_passive, abs=1e-9) == model["k_passive"], (
-            f"k_passive should be EMA of both observations ({expected_k_passive:.4f}); got {model['k_passive']}"
+        # k_passive must reflect ONLY the passive_decay commit (-0.08).
+        # The fan_only commit must not touch k_passive — no EMA blending.
+        assert pytest.approx(-0.08, abs=1e-9) == model["k_passive"], (
+            f"k_passive should be -0.08 (passive only, no fan_only contamination); got {model['k_passive']}"
+        )
+
+    def test_ventilated_decay_does_not_update_k_passive(self, tmp_path: Path):
+        """A ventilated_decay commit must set k_vent_window but must NOT write k_passive.
+
+        ventilated k_p reflects effective heat transfer with windows open — a different
+        physical regime than the closed-envelope decay rate.  Writing it into k_passive
+        would bias the envelope model and corrupt bedtime-setback predictions.
+        """
+        engine = self._make_engine(tmp_path)
+        engine._update_thermal_model_cache(self._ventilated_obs(-0.20))
+
+        model = engine.get_thermal_model()
+        assert pytest.approx(-0.20, abs=1e-9) == model["k_vent_window"], (
+            f"k_vent_window should be -0.20, got {model['k_vent_window']}"
+        )
+        # k_passive must remain None — ventilated observations do not contribute to envelope model
+        assert model["k_passive"] is None, (
+            "k_passive must be None after ventilated commit "
+            f"(ventilated must not write k_passive); got {model['k_passive']}"
+        )
+
+    def test_ventilated_does_not_contaminate_avg_r_squared_passive(self, tmp_path: Path):
+        """avg_r_squared_passive must reflect only envelope-mode fit quality.
+
+        A ventilated observation carrying r_squared_passive must NOT update
+        avg_r_squared_passive — that metric tracks the closed-envelope fit only.
+        """
+        engine = self._make_engine(tmp_path)
+
+        # Set baseline avg_r_squared_passive via a passive_decay observation
+        passive_with_r2 = self._passive_obs(-0.08)
+        passive_with_r2["r_squared_passive"] = 0.85
+        engine._update_thermal_model_cache(passive_with_r2)
+        baseline_r2 = engine._state.thermal_model_cache["avg_r_squared_passive"]
+        assert pytest.approx(0.85, abs=1e-9) == baseline_r2
+
+        # Now commit a ventilated observation with a very different R² — must be ignored
+        engine._update_thermal_model_cache(self._ventilated_obs(-0.20, r_squared_passive=0.10))
+
+        post_r2 = engine._state.thermal_model_cache["avg_r_squared_passive"]
+        assert pytest.approx(0.85, abs=1e-9) == post_r2, (
+            f"avg_r_squared_passive must remain {baseline_r2} (ventilated R² must not blend in); got {post_r2}"
         )
 
 
@@ -961,6 +1025,40 @@ def _make_very_stale_obs(obs_type: str, n_samples: int, indoor_temp: float, outd
     return {
         "obs_type": obs_type,
         "obs_id": "test-wallclock-2",
+        "start_time": start.isoformat(),
+        "status": "monitoring",
+        "samples": samples,
+        "flags_at_start": {},
+        "schema_version": 1,
+    }
+
+
+def _make_stale_obs_rising_temps(
+    obs_type: str,
+    n_samples: int,
+    indoor_start: float,
+    indoor_end: float,
+    outdoor_temp: float,
+) -> dict:
+    """Build a monitoring observation dict started 61 min ago with linearly rising indoor temps.
+
+    Used to test rolling-window commit: indoor range (max-min) >= THERMAL_ROLLING_MIN_DELTA_T_F
+    triggers signal_sufficient=True regardless of the indoor-outdoor snapshot differential.
+    """
+    start = _make_obs_61min_ago()
+    step = (indoor_end - indoor_start) / max(n_samples - 1, 1)
+    samples = [
+        {
+            "timestamp": start.isoformat(),
+            "indoor_temp_f": round(indoor_start + i * step, 2),
+            "outdoor_temp_f": outdoor_temp,
+            "elapsed_minutes": float(i * 5),
+        }
+        for i in range(n_samples)
+    ]
+    return {
+        "obs_type": obs_type,
+        "obs_id": "test-rising-1",
         "start_time": start.isoformat(),
         "status": "monitoring",
         "samples": samples,
@@ -1049,19 +1147,23 @@ class TestWallClockTimeout:
         )
 
     def test_ventilated_decay_commits_at_max_window_sufficient_signal(self):
-        """ventilated_decay started 61 min ago, sensor open, sufficient |ΔT| → commit triggered."""
-        # |indoor - outdoor| = 76.0 - 60.0 = 16.0 >= THERMAL_VENT_MIN_SIGNAL_F (0.3)
-        indoor, outdoor = 76.0, 60.0
+        """ventilated_decay started 61 min ago, sensor open, indoor has moved → commit triggered.
+
+        Signal check uses indoor sample range (max-min), not snapshot differential.
+        indoor_start=72.0 → indoor_end=74.0 gives range=2.0 >= THERMAL_ROLLING_MIN_DELTA_T_F (0.2).
+        """
+        indoor_start, indoor_end, outdoor = 72.0, 74.0, 70.0
         coord = _make_obs_coord(
             hvac_action="idle",
-            indoor_temp=indoor,
+            indoor_temp=indoor_end,
             outdoor_temp=outdoor,
             any_sensor_open=True,
         )
-        coord._pending_observations[OBS_TYPE_VENTILATED_DECAY] = _make_stale_obs(
+        coord._pending_observations[OBS_TYPE_VENTILATED_DECAY] = _make_stale_obs_rising_temps(
             OBS_TYPE_VENTILATED_DECAY,
             n_samples=THERMAL_VENT_MIN_SAMPLES + 5,
-            indoor_temp=indoor,
+            indoor_start=indoor_start,
+            indoor_end=indoor_end,
             outdoor_temp=outdoor,
         )
         committed_obs_types: list[str] = []
@@ -1086,6 +1188,45 @@ class TestWallClockTimeout:
             "ventilated_decay with sufficient signal at max window should trigger commit "
             f"(status={obs_still_present.get('status') if obs_still_present else 'popped'}, "
             f"queued={was_queued})"
+        )
+
+    def test_ventilated_decay_kept_alive_flat_indoor_large_snapshot_diff(self, caplog):
+        """Regression: ventilated_decay with flat indoor temps kept alive even when snapshot diff is large.
+
+        Production scenario: indoor=72°F (integer, flat), outdoor=60°F → snapshot diff=12°F.
+        Old signal check (snapshot diff) would deem signal sufficient → OLS fails → 30-min loop.
+        New signal check (indoor sample range) → range=0 < 0.2 → keep-alive fires correctly.
+        """
+        indoor, outdoor = 72.0, 60.0  # 12°F snapshot diff, but indoor flat
+        coord = _make_obs_coord(
+            hvac_action="idle",
+            indoor_temp=indoor,
+            outdoor_temp=outdoor,
+            any_sensor_open=True,
+        )
+        coord._pending_observations[OBS_TYPE_VENTILATED_DECAY] = _make_stale_obs(
+            OBS_TYPE_VENTILATED_DECAY,
+            n_samples=THERMAL_VENT_MIN_SAMPLES + 5,
+            indoor_temp=indoor,  # flat — range=0
+            outdoor_temp=outdoor,
+        )
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+
+        import logging
+
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock),
+            caplog.at_level(logging.INFO, logger="custom_components.climate_advisor.coordinator"),
+        ):
+            coord._sample_all_observations()
+
+        assert OBS_TYPE_VENTILATED_DECAY in coord._pending_observations, (
+            "ventilated_decay with flat indoor temps should be kept alive at 61 min "
+            "even when indoor-outdoor snapshot diff is large (12°F). "
+            "Signal check must use indoor sample range, not snapshot differential."
+        )
+        assert any("keeping alive" in r.message for r in caplog.records), (
+            "Expected 'keeping alive' log — flat indoor means signal_sufficient=False"
         )
 
     def test_fan_only_decay_kept_alive_at_61min_low_signal(self, caplog):

@@ -1660,7 +1660,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         # Inject thermal model into automation engine for adaptive scheduling
         if self.config.get("learning_enabled", True):
-            thermal_model = self.learning.get_thermal_model(learning_health=self._build_learning_health())
+            thermal_model = self.learning.get_thermal_model(
+                learning_health=self._build_learning_health(),
+                outdoor_temp_f=forecast.current_outdoor_temp,
+                solar_factor=_solar_factor(now.hour),
+            )
             self.automation_engine._thermal_model = thermal_model
         else:
             thermal_model = {}
@@ -2688,7 +2692,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 and not _is_heating_cooling
                 and not _fan_active
                 and not _sensor_open
-                and indoor > outdoor
                 and THERMAL_SOLAR_DAYTIME_START_H <= _hour < THERMAL_SOLAR_DAYTIME_END_H
             ):
                 self._start_decay_observation(OBS_TYPE_SOLAR_GAIN)
@@ -2730,9 +2733,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
 
             elif obs_type == OBS_TYPE_FAN_ONLY_DECAY:
-                # Two-threshold accumulation (Issue #126): signal = indoor/outdoor differential
-                _fan_sig = abs((indoor or 0) - (outdoor or 0)) if indoor is not None and outdoor is not None else 0
-                _fan_signal_sufficient = _fan_sig >= THERMAL_FAN_MIN_SIGNAL_F
+                # Two-threshold accumulation: signal = indoor sample range (max-min).
+                # Uses indoor movement, not snapshot differential, so keep-alive fires when
+                # the integer thermostat is flat even with a large indoor-outdoor gap.
+                _fan_temps = [s["indoor_temp_f"] for s in samples_list if "indoor_temp_f" in s]
+                _fan_signal_sufficient = (
+                    (max(_fan_temps) - min(_fan_temps)) >= THERMAL_ROLLING_MIN_DELTA_T_F if _fan_temps else False
+                )
                 if self._evaluate_rolling_window(obs_type, obs, _fan_signal_sufficient, skip_delta_guard=True):
                     continue
                 _fan_only_mode = _cs.state == "fan_only" if _cs else False
@@ -2752,9 +2759,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     self._commit_observation_if_sufficient(obs_type, "insufficient_signal")
 
             elif obs_type == OBS_TYPE_VENTILATED_DECAY:
-                # Two-threshold accumulation (Issue #126): signal = indoor/outdoor differential
-                _vent_sig = abs((indoor or 0) - (outdoor or 0)) if indoor is not None and outdoor is not None else 0
-                _vent_signal_sufficient = _vent_sig >= THERMAL_VENT_MIN_SIGNAL_F
+                # Two-threshold accumulation: signal = indoor sample range (max-min).
+                # Uses indoor movement, not snapshot differential, so keep-alive fires when
+                # the integer thermostat is flat even with a large indoor-outdoor gap.
+                _vent_temps = [s["indoor_temp_f"] for s in samples_list if "indoor_temp_f" in s]
+                _vent_signal_sufficient = (
+                    (max(_vent_temps) - min(_vent_temps)) >= THERMAL_ROLLING_MIN_DELTA_T_F if _vent_temps else False
+                )
                 if self._evaluate_rolling_window(obs_type, obs, _vent_signal_sufficient, skip_delta_guard=True):
                     continue
                 if not _sensor_open:
@@ -2785,7 +2796,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     self._abandon_observation(obs_type, "outside_daytime")
                 elif len(samples_list) >= 5:
                     recent_indoor = [s["indoor_temp_f"] for s in samples_list[-5:]]
-                    if len(recent_indoor) >= 2 and (recent_indoor[-1] - recent_indoor[0]) < 0:
+                    # Only abandon if 3+ consecutive samples are each lower than the previous
+                    # (guards against brief cloud-pass dips triggering premature abandonment)
+                    _falling_streak = sum(
+                        1 for i in range(1, len(recent_indoor)) if recent_indoor[i] < recent_indoor[i - 1]
+                    )
+                    if _falling_streak >= 3:
                         self._commit_observation_if_sufficient(obs_type, "temperature_falling")
                     elif len(samples_list) >= THERMAL_SOLAR_MIN_SAMPLES and indoor is not None:
                         _first_ts = dt_util.parse_datetime(samples_list[0]["timestamp"])
@@ -3907,6 +3923,10 @@ def _simulate_indoor_physics(
 
 def _solar_factor(local_hour: int) -> float:
     """Return a 0–1 solar intensity factor for the given local hour."""
+    try:
+        local_hour = int(local_hour)
+    except (TypeError, ValueError):
+        return 0.0
     if local_hour < THERMAL_SOLAR_DAYTIME_START_H or local_hour >= THERMAL_SOLAR_DAYTIME_END_H:
         return 0.0
     span = (THERMAL_SOLAR_DAYTIME_END_H - THERMAL_SOLAR_DAYTIME_START_H) / 2.0
@@ -4173,10 +4193,25 @@ def _build_predicted_indoor_future(
         _k_active_cool = thermal_model.get("k_active_cool")
         _k_vent = thermal_model.get("k_vent")
         _k_solar = thermal_model.get("k_solar")
+        _k_vent_window = thermal_model.get("k_vent_window")
+        # Gate bridge: when k_passive is absent but k_vent_window is learned, use it as
+        # a proxy k_passive so the ODE can activate for thermally inert homes that only
+        # have ventilated observations.  k_vent_window is always ≤ 0 for valid commits
+        # (inert home → k≈0 accepted by widened ventilated bounds in learning.py).
+        # When k_vent_window = 0.0 exactly the ODE produces a flat prediction (T stays at
+        # current_indoor_temp), which is correct for a perfectly inert home.
+        _k_passive_via_bridge = False
+        if _k_passive is None and _k_vent_window is not None and _k_vent_window <= 0:
+            _k_passive = _k_vent_window
+            _k_passive_via_bridge = True
+            _LOGGER.debug(
+                "_build_predicted_indoor_future: gate bridge — using k_vent_window=%.4f as proxy k_passive",
+                _k_passive,
+            )
         _physics_eligible = (
             (_conf != "none" or (_conf_k_passive is not None and _conf_k_passive not in (None, "none")))
             and _k_passive is not None
-            and _k_passive < 0
+            and (_k_passive < 0 or _k_passive_via_bridge)
         )
         if _physics_eligible:
             _use_physics = True
@@ -4301,7 +4336,16 @@ def _build_predicted_indoor_future(
             elif mode == "cool":
                 temp = _band["upper"]
             else:
-                temp = max(setback_heat, float(outdoor) + 2.0) if outdoor is not None else comfort_heat
+                # Off-day ramp: anchor to current indoor when available — a stable home
+                # sitting at 69°F is better predicted by its actual reading than by
+                # outdoor+2°F (which would be ~58°F on a cold day).  Fall back to
+                # outdoor+2°F only when no indoor seed exists.
+                if _t_current is not None:
+                    temp = _t_current
+                elif outdoor is not None:
+                    temp = max(setback_heat, float(outdoor) + 2.0)
+                else:
+                    temp = comfort_heat
 
         _prev_ts = local_ts
         result.append({"ts": local_ts.isoformat(), "temp": round(temp, 1)})

@@ -353,8 +353,13 @@ def test_ewma_heat_and_cool_independent(tmp_path):
     assert model["observation_count_cool"] == 3
 
 
-def test_fan_only_k_passive_only(tmp_path):
-    """fan_only observation accumulates k_passive but k_active_heat/cool stay None."""
+def test_fan_only_k_vent_only(tmp_path):
+    """fan_only observation sets k_vent but must NOT write k_passive or k_active_heat/cool.
+
+    fan_only k_p reflects the effective decay rate with the fan running — a different
+    coefficient from the bare envelope rate.  Writing it into k_passive would bias the
+    envelope model and corrupt bedtime-setback physics predictions.
+    """
     engine = _make_engine(tmp_path)
 
     fan_obs = {
@@ -383,7 +388,12 @@ def test_fan_only_k_passive_only(tmp_path):
 
     _record_obs(engine, fan_obs)
     model = engine.get_thermal_model()
-    assert model["k_passive"] is not None, "k_passive should be set from fan_only obs"
+    # k_passive must stay None — fan_only must not contaminate the envelope model
+    assert model["k_passive"] is None, f"k_passive must be None after fan_only obs; got {model['k_passive']}"
+    # k_vent must be set to the observed decay rate
+    assert model["k_vent"] is not None and abs(model["k_vent"] - (-0.04)) < 1e-9, (
+        f"k_vent should be -0.04 from fan_only obs; got {model['k_vent']}"
+    )
     assert model["k_active_heat"] is None
     assert model["k_active_cool"] is None
 
