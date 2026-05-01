@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Fetch Home Assistant logs from a remote HAOS instance via SSH or REST API.
 
-Uses `ha core logs` on the remote (HAOS stores logs in the container, not on disk).
+Uses `ha core logs` on the remote (reads Docker log files from disk on HAOS).
 Reuses the SSH connection config from .deploy.env.
 
 SSH mode (default):
-    python3 tools/ha_logs.py                        # Last 50 climate_advisor lines
-    python3 tools/ha_logs.py --all                   # Last 100 lines of full HA log
+    python3 tools/ha_logs.py                        # Last 500 climate_advisor lines
+    python3 tools/ha_logs.py --all                   # Last 500 lines of full HA log
     python3 tools/ha_logs.py --lines 200             # Last 200 climate_advisor lines
     python3 tools/ha_logs.py --filter "ERROR"        # Only ERROR lines for climate_advisor
     python3 tools/ha_logs.py --all --filter "ERROR"  # All ERROR lines in HA log
     python3 tools/ha_logs.py --full                  # Dump entire HA log (large!)
+    python3 tools/ha_logs.py --thermal               # Thermal-learning lines only (2000 lines)
     python3 tools/ha_logs.py --save                  # Save output to logs/ directory
 
 REST API history mode (--history):
@@ -313,7 +314,7 @@ def fetch_logs(
     full_dump: bool = False,
 ) -> str:
     """Fetch logs from HA via SSH using `ha core logs`. Returns cleaned log text."""
-    # HAOS stores logs in the container — `ha core logs` is the only way to access them.
+    # ha core logs reads Docker log files from disk on HAOS; retention is typically days, not just a few hours.
     # The command streams the full log, so we pipe through grep/tail on the remote side.
     if full_dump:
         remote_cmd = "ha core logs"
@@ -346,10 +347,20 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Fetch Home Assistant logs via SSH or REST API history")
     # SSH mode args
-    parser.add_argument("--lines", "-n", type=int, default=50, help="Number of log lines to fetch (default: 50)")
+    parser.add_argument("--lines", "-n", type=int, default=500, help="Number of log lines to fetch (default: 500)")
     parser.add_argument("--all", action="store_true", help="Show all HA log lines, not just climate_advisor")
     parser.add_argument("--filter", "-f", type=str, default="", help="Additional grep/text filter (e.g. 'ERROR')")
     parser.add_argument("--full", action="store_true", help="Dump the entire HA log (can be large)")
+    parser.add_argument(
+        "--thermal",
+        action="store_true",
+        help=(
+            "Show thermal-learning-relevant log lines only. "
+            "Uses --lines 2000 unless overridden. "
+            "Filters for Thermal/rolling window/keeping alive/commit/abandon/reject/pending obs/pipeline entries "
+            "and excludes Chart data/predicted_indoor/Generated 0/Day type/Trend/Recommendations noise."
+        ),
+    )
     parser.add_argument("--save", "-s", action="store_true", help="Save output to logs/ directory")
     # REST API history mode args
     parser.add_argument(
@@ -439,14 +450,30 @@ def main() -> None:
 
     else:
         # SSH mode (original behaviour)
-        component = "" if args.all else "climate_advisor"
-        output = fetch_logs(
-            config,
-            lines=args.lines,
-            component_filter=component,
-            extra_filter=args.filter,
-            full_dump=args.full,
-        )
+        if args.thermal:
+            thermal_lines = args.lines if args.lines != 500 else 2000  # use 2000 unless user overrode --lines
+            raw = fetch_logs(
+                config, lines=thermal_lines, component_filter="climate_advisor", extra_filter="", full_dump=False
+            )
+            thermal_keywords = re.compile(
+                r"Thermal|thermal|rolling window|keeping alive|max_window|commit|abandon|reject|pending obs|pipeline",
+                re.IGNORECASE,
+            )
+            noise_keywords = re.compile(
+                r"Chart data|predicted_indoor|Generated 0|Day type|Trend |Recommendations",
+                re.IGNORECASE,
+            )
+            lines_out = [ln for ln in raw.splitlines() if thermal_keywords.search(ln) and not noise_keywords.search(ln)]
+            output = "\n".join(lines_out)
+        else:
+            component = "" if args.all else "climate_advisor"
+            output = fetch_logs(
+                config,
+                lines=args.lines,
+                component_filter=component,
+                extra_filter=args.filter,
+                full_dump=args.full,
+            )
 
         if not output.strip():
             print("(no matching log lines found)")

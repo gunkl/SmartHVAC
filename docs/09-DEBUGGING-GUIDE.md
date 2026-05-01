@@ -6,7 +6,7 @@ This guide documents debugging strategies, sensor entities, and tooling for diag
 
 ### 1. HA Sensor Entities (Recommended First)
 
-Climate Advisor exposes several sensor entities in Home Assistant. These persist in the Recorder database (default 10 days) and survive container log rotation.
+Climate Advisor exposes several sensor entities in Home Assistant. These persist in the Recorder database (default 10 days).
 
 | Sensor | Entity ID | State | Key Attributes | Debugging Value |
 |--------|-----------|-------|----------------|-----------------|
@@ -52,17 +52,25 @@ The dashboard's **Temperature Forecast** chart provides a 1-year visual timeline
 
 
 ```bash
-# Recent climate_advisor logs
-python3 tools/ha_logs.py --lines 100
+# Recent climate_advisor logs (default: last 500 matching lines)
+python3 tools/ha_logs.py
+
+# Thermal learning diagnosis — filtered to thermal-relevant lines only
+python3 tools/ha_logs.py --thermal
 
 # Filter for errors only
-python3 tools/ha_logs.py --lines 100 --filter "ERROR"
+python3 tools/ha_logs.py --filter "ERROR"
+
+# Deeper history (Docker log files on HAOS persist to disk — typically days available)
+python3 tools/ha_logs.py --lines 5000
 
 # Save to file for later analysis
-python3 tools/ha_logs.py --lines 200 --save
+python3 tools/ha_logs.py --lines 2000 --save
 ```
 
-**Limitation:** Container logs (`ha core logs`) have limited buffer — typically only a few hours of history. For older data, use the HA REST API method (--history).
+**Note:** `ha core logs` reads Docker log files from disk on HAOS. Retention is typically
+days (rotated by size, not time). Use `--lines 5000` or `--full` for deeper searches.
+The default `--lines 500` covers ~40 minutes of thermal sampling activity.
 
 ### 4. HA REST API History (Historical)
 
@@ -137,36 +145,44 @@ The circuit breaker trips after **5 consecutive failures** (`AI_CIRCUIT_BREAKER_
 
 ### "Thermal model confidence is 'none' after weeks of use"
 
-The v2 architecture (Issue #114) requires the full post-heat decay curve to extract `k_passive`. Observations are silently abandoned if they do not meet minimum quality bars.
-
-**Step 1 — Check for WARNING logs from thermal methods:**
+**Step 1 — Check the structured rejection log (primary tool):**
 ```bash
-python3 tools/ha_logs.py --lines 500 --filter "thermal\|k_passive\|k_active"
+python3 tools/learning_db.py --rejections
+```
+This reads `climate_advisor_learning.json` directly via SSH and shows every rejection event
+with timestamps, reason codes, elapsed time, R², and delta-T. No HA_URL/HA_TOKEN needed.
+
+**Step 2 — Check current active observations:**
+```bash
+python3 tools/thermal_health.py   # requires HA_URL + HA_TOKEN in .env or environment
+```
+
+**Step 3 — Check thermal log activity:**
+```bash
+python3 tools/ha_logs.py --thermal          # last 2000 thermal-relevant lines
+python3 tools/ha_logs.py --thermal --lines 10000  # deeper history
 ```
 
 Look for:
-- `"Thermal event commit failed: k_passive rejected"` — R² too low; likely sensor noise or very short runs
-- `"Thermal observation abandoned"` — timeout (post-heat took > 45 min to stabilize) or insufficient post-heat samples (< 10)
-- `"Thermal observation abandoned: active phase restart"` — HVAC mode changed mid-session; the old active phase was discarded
+- `"keeping alive"` — multi-window accumulator running; observation extending past 30 min
+- `"Thermal event commit"` — successful commit with k_passive and R²
+- `"abandoned"` / `"max_window_exceeded"` — rejection with reason code
 
-**Step 2 — Check observation history in the learning DB:**
-```bash
-python3 tools/ha_logs.py --history --entity sensor.climate_advisor_comfort_score --hours 72
-```
-The `thermal_observation_count` attribute on `sensor.climate_advisor_comfort_score` shows how many observations have been accepted. If it is 0 after multiple heating/cooling days, all observations are being rejected.
-
-**Step 3 — Common root causes:**
+**Step 4 — Common root causes:**
 
 | Symptom | Likely cause | What to check |
 |---|---|---|
-| R² rejection logged repeatedly | Very short HVAC runs (< 10 post-heat samples) | Use the 24h chart view — do runs end quickly? Setpoints may be too close to current temp |
-| Stabilization timeout logged | Indoor temp still drifting 45+ min after HVAC stops | House may have poor insulation or large thermal mass; observations still accumulate if R² ≥ 0.2 |
-| No WARNING logs at all but count stays 0 | `_start_thermal_event` never called | Check `hvac_action` attribute on the climate entity — thermostat must report `"heating"` or `"cooling"`, not just `hvac_mode` |
-| k_passive out of bounds | Value rejected by sanity bounds | Very unusual; log will show the rejected value |
+| All rejections `small_delta` | Integer-°F thermostat; ΔT < 0.2°F in 30 min | Normal — multi-window (Issue #126) accumulates up to 4h; check "keeping alive" logs |
+| All rejections `too_few_samples` | Conditions change too fast | Check elapsed_minutes in rejection log; may need longer stable windows |
+| R² rejection logged repeatedly | Short HVAC runs or sensor noise | Use 24h chart view; check run lengths |
+| Rejections show `abandoned`, elapsed < 5 min | Condition-change abort (window closed, HVAC started) | Normal if window briefly closed; look for restart immediately after |
+| No rejections AND count stays 0 | Observation never started | Check `hvac_action` / window sensor state; thermal trigger eval logs |
 
-**Step 4 — Verify the pending event is being persisted:**
-
-Check `climate_advisor_learning.json` in the HA config directory for a `pending_thermal_event` key. If it is always `null` even during an active heating run, the state machine is not being entered — confirm `_async_thermostat_changed` is being called by checking thermostat entity history.
+**Step 5 — Check the full learning DB:**
+```bash
+python3 tools/learning_db.py
+```
+Shows model summary, all committed observations, and rejection log in one report.
 
 ### "Predicted temperature curve looks wrong"
 

@@ -9,6 +9,10 @@ Usage:
     export HA_TOKEN=<your-long-lived-access-token>
     python3 tools/thermal_health.py
 
+    # Or create tools/.env (see tools/.env.example):
+    # HA_URL=http://homeassistant.local:8123
+    # HA_TOKEN=<your-long-lived-access-token>
+
 Exit codes:
     0 = report printed successfully
     1 = configuration or connection error
@@ -22,6 +26,24 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load HA_URL and HA_TOKEN from .env file if not already set in environment."""
+    env_path = Path(__file__).parent.parent / ".env"
+    if not env_path.exists():
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            if k in ("HA_URL", "HA_TOKEN") and k not in os.environ:
+                os.environ[k] = v.strip().strip('"').strip("'")
+
 
 SENSOR_ENTITY_ID = "sensor.climate_advisor_comfort_score"
 OBS_TYPES = [
@@ -246,6 +268,7 @@ def _print_report(health: dict) -> None:
 
 
 def main() -> None:
+    _load_dotenv()
     ha_url = os.environ.get("HA_URL", "").rstrip("/")
     ha_token = os.environ.get("HA_TOKEN", "")
 
