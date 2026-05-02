@@ -183,6 +183,8 @@ From Issue #119, the chart's "Target Band" overlay is no longer two static scala
 - The chart layer was renamed from "Comfort Band" to "Target Band" in Issue #119 to reflect that the band now varies over time.
 - `_build_predicted_indoor_future()` pre-computes the band schedule once via `_compute_target_band_schedule()` before iterating forecast hours (Issue #119 Phase 2 fix for B3 — eliminates redundant per-hour recomputation).
 
+**Per-hour k selection — ventilation wiring (Issue #126 Phase 2C):** For forecast hours where `classification.windows_recommended=True` and `local_ts.time()` falls in `[window_open_time, window_close_time)`, the ODE uses `k_vent_window` as the effective decay rate instead of `k_passive`. `k_vent_window` is the **total** measured k during ventilated conditions (not an incremental addend) — so it replaces, not supplements, `k_passive`. Gate bridge guard: when `_k_passive_via_bridge=True` (k_passive was `None` and k_vent_window was already promoted to proxy k_passive for all hours), per-hour substitution does not fire — k_vent_window is already in play for the entire forecast and double-substitution would be incorrect. During sunny window-open hours, the combined ODE is `dT/dt = k_vent_window*(T_out − T_in) + k_solar*solar_factor`; for a thermally inert home (k_vent_window ≈ 0) this reduces to `dT/dt ≈ k_solar*solar_factor`, correctly predicting solar-driven warming even with windows open.
+
 ### 5e. Thermal Model v3 — Observation Types (Issue #121)
 
 The thermal model collects observations from six parallel observation types, not just

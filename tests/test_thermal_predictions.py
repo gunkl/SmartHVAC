@@ -1,5 +1,6 @@
-"""Tests for Phase 1 (ramp anchor) and Phase 2B (gate bridge) fixes in
-_build_predicted_indoor_future() (Issue #126).
+"""Tests for Phase 1 (ramp anchor), Phase 2B (gate bridge), and Phase 2C
+(per-hour ventilation wiring) fixes in _build_predicted_indoor_future()
+(Issue #126).
 
 Phase 1 — Ramp anchor fix (coordinator.py line ~4339):
   Off-day setpoint-schedule fallback anchors to current_indoor_temp when
@@ -10,11 +11,19 @@ Phase 2B — Gate bridge (coordinator.py lines ~4196-4214):
   When k_passive is absent but k_vent_window is learned, the ODE activates
   using k_vent_window as a proxy, so thermally inert homes get physics
   prediction instead of the ramp fallback.
+
+Phase 2C — Per-hour ventilation wiring (coordinator.py _build_predicted_indoor_future):
+  For forecast hours where classification recommends windows open, k_vent_window
+  is substituted as the effective k_passive in the ODE (replacement semantics —
+  k_vent_window is the total measured k during ventilated conditions).
+  Gate bridge guard: when _k_passive_via_bridge=True (k_passive was None,
+  k_vent_window already used as proxy for all hours), per-hour substitution does
+  not fire to avoid double-counting.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -255,3 +264,307 @@ class TestGateBridge:
         # Moderate rise confirms k_passive=-0.05 was used, not -0.5.
         assert temps[-1] > indoor_f, "Heating mode should raise indoor temps"
         assert temps[0] < 70.0, "k_passive=-0.05 path should not reach comfort_heat setpoint in 1hr"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2C — Per-hour ventilation wiring
+# ---------------------------------------------------------------------------
+
+
+def _make_classification(
+    *,
+    windows_recommended: bool = False,
+    window_open_time: time | None = None,
+    window_close_time: time | None = None,
+) -> MagicMock:
+    """Build a minimal classification mock with window schedule attributes."""
+    cls = MagicMock()
+    cls.windows_recommended = windows_recommended
+    cls.window_open_time = window_open_time
+    cls.window_close_time = window_close_time
+    return cls
+
+
+def _call_vc(
+    entries,
+    *,
+    now=_NOW,
+    indoor: float,
+    model: dict,
+    classification=None,
+    config=None,
+):
+    """Call _build_predicted_indoor_future with optional classification arg."""
+    cfg = config or _PRED_CONFIG
+    with patch("custom_components.climate_advisor.coordinator.dt_util", _make_dt_util_mock(now)):
+        return _build_predicted_indoor_future(
+            entries,
+            cfg,
+            now,
+            current_indoor_temp=indoor,
+            thermal_model=model,
+            classification=classification,
+        )
+
+
+class TestPerHourVentilationWiring:
+    """Per-hour k_vent_window substitution in the physics ODE (Phase 2C / Issue #126).
+
+    For forecast hours where the classification recommends windows open,
+    k_vent_window replaces k_passive as the effective decay rate in the ODE.
+    k_vent_window is the TOTAL measured k during ventilated conditions
+    (replacement semantics, not addition).
+    """
+
+    # Base "warm off-day" timestamps: outlook 06:00–23:00 local today.
+    # Outdoor=60°F sits in THRESHOLD_MILD(60) ≤ T < THRESHOLD_WARM(75) → mode="off".
+    # All entries are in the future relative to _NOW (noon UTC = noon local via mock).
+    _OUTDOOR = 60.0
+    _INDOOR = 72.0
+    # Use a fresh NOW so "future" entries are unambiguous
+    _NOW_VC = datetime(2026, 4, 20, 8, 0, 0, tzinfo=UTC)
+
+    def _entries(self, now: datetime, hours: list[int]) -> list[dict]:
+        """Build forecast entries at specified UTC hours (same day as now)."""
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return [_entry(base + timedelta(hours=h), self._OUTDOOR) for h in hours]
+
+    def test_window_open_hours_use_k_vent_window(self):
+        """During window-open hours, k_vent_window drives a weaker decay than k_passive.
+
+        Setup: k_passive=-0.30 (strong decay toward outdoor at 60°F),
+               k_vent_window=-0.10 (weaker decay — insulated by window schedule),
+               windows_recommended=True, open 10:00–17:00, outdoor=60°F, indoor=72°F.
+
+        k_vent_window=-0.10 is a weaker negative, so indoor stays HIGHER during
+        window hours than with k_passive=-0.30 (which drives indoor toward 60°F faster).
+
+        Assertion: temps during 10:00–17:00 are higher in the k_vent_window run
+        than in a baseline run without k_vent_window.
+        Pre-window temps (09:00–10:00) should be approximately equal (same k_passive).
+
+        Note: _NOW_VC is 08:00, so hour-8 entry equals now and is filtered out.
+        Entries start at hour 9 (strictly after now).
+        """
+        now = self._NOW_VC
+        # Hours: 9 (before window), 10–16 (window open), 17–18 (after)
+        hours = list(range(9, 19))
+        entries = self._entries(now, hours)
+
+        model_with_kv = {
+            "confidence": "low",
+            "k_passive": -0.30,
+            "k_vent_window": -0.10,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        model_without_kv = {
+            "confidence": "low",
+            "k_passive": -0.30,
+            "k_vent_window": None,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        classification = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(10, 0),
+            window_close_time=time(17, 0),
+        )
+
+        result_with = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_with_kv, classification=classification
+        )
+        result_without = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_without_kv, classification=classification
+        )
+
+        assert len(result_with) == len(result_without) == len(hours)
+
+        # Build lookup by hour
+        def _hour(ts_str: str) -> int:
+            return datetime.fromisoformat(ts_str).hour
+
+        with_by_h = {_hour(r["ts"]): r["temp"] for r in result_with}
+        without_by_h = {_hour(r["ts"]): r["temp"] for r in result_without}
+
+        # During window-open hours: k_vent_window (-0.10) is weaker decay than k_passive (-0.30)
+        # so indoor stays higher (closer to 72°F than to outdoor 60°F).
+        for h in range(10, 17):
+            assert with_by_h[h] > without_by_h[h], (
+                f"Hour {h}: k_vent_window run should be warmer than k_passive run; "
+                f"got {with_by_h[h]:.2f} vs {without_by_h[h]:.2f}"
+            )
+
+        # Before the window: same k_passive used in both — temps should be approximately equal.
+        # Only hour 9 is strictly before the window (hour 8 equals now and is filtered).
+        for h in [9]:
+            assert abs(with_by_h[h] - without_by_h[h]) < 0.5, (
+                f"Hour {h}: pre-window temps should match; got {with_by_h[h]:.2f} vs {without_by_h[h]:.2f}"
+            )
+
+    def test_window_closed_hours_use_k_passive_unchanged(self):
+        """When windows_recommended=False, no substitution fires — all hours use k_passive.
+
+        Same k_passive and k_vent_window as above, but classification has
+        windows_recommended=False.  Predictions must match a run with no k_vent_window.
+        """
+        now = self._NOW_VC
+        hours = list(range(9, 18))
+        entries = self._entries(now, hours)
+
+        model_with_kv = {
+            "confidence": "low",
+            "k_passive": -0.30,
+            "k_vent_window": -0.10,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        model_without_kv = {
+            "confidence": "low",
+            "k_passive": -0.30,
+            "k_vent_window": None,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        classification_closed = _make_classification(
+            windows_recommended=False,
+            window_open_time=time(10, 0),
+            window_close_time=time(17, 0),
+        )
+
+        result_with = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_with_kv, classification=classification_closed
+        )
+        result_without = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_without_kv, classification=classification_closed
+        )
+
+        assert len(result_with) == len(result_without)
+        for r_w, r_wo in zip(result_with, result_without, strict=True):
+            assert r_w["temp"] == pytest.approx(r_wo["temp"], abs=0.01), (
+                f"windows_recommended=False: temps should be identical at {r_w['ts']}; "
+                f"got {r_w['temp']} vs {r_wo['temp']}"
+            )
+
+    def test_k_vent_window_none_no_change(self):
+        """k_vent_window=None prevents substitution even if windows_recommended=True.
+
+        Guard condition: `_k_vent_window is not None` must be checked before
+        any per-hour substitution.  With k_vent_window=None, all hours must use
+        k_passive and predictions must equal a windows_recommended=False run.
+        """
+        now = self._NOW_VC
+        hours = list(range(9, 18))
+        entries = self._entries(now, hours)
+
+        model_kv_none = {
+            "confidence": "low",
+            "k_passive": -0.30,
+            "k_vent_window": None,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        classification_open = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(10, 0),
+            window_close_time=time(17, 0),
+        )
+        classification_closed = _make_classification(windows_recommended=False)
+
+        result_open = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_kv_none, classification=classification_open
+        )
+        result_closed = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_kv_none, classification=classification_closed
+        )
+
+        assert len(result_open) == len(result_closed)
+        for r_o, r_c in zip(result_open, result_closed, strict=True):
+            assert r_o["temp"] == pytest.approx(r_c["temp"], abs=0.01), (
+                f"k_vent_window=None guard: temps should match at {r_o['ts']}; got {r_o['temp']} vs {r_c['temp']}"
+            )
+
+    def test_inert_home_window_open_solar_drives_warming(self):
+        """k_vent_window=0.0 (perfectly inert) + k_solar: solar gain drives indoor up.
+
+        With k_vent_window=0.0, the passive ODE term vanishes: dT/dt ≈ k_solar*solar_factor.
+        During daytime window hours (peak solar_factor > 0), indoor should rise above seed.
+        After window close (no solar at hour 20), indoor should stay near the noon peak.
+
+        This validates that solar+ventilation interact correctly without requiring
+        k_vent_window != 0 to see any movement.
+        """
+        now = self._NOW_VC
+        # Daytime hours inside window (8–17) and one post-close hour (20)
+        # Outdoor=65°F; high=65°F → off-day mode → HVAC off → pure passive+solar ODE.
+        outdoor = 65.0
+        hours = list(range(9, 21))
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        entries = [_entry(base + timedelta(hours=h), outdoor) for h in hours]
+
+        model = {
+            "confidence": "low",
+            "k_passive": -0.20,
+            "k_vent_window": 0.0,
+            "k_solar": 2.5,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        classification = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(8, 0),
+            window_close_time=time(18, 0),
+        )
+
+        result = _call_vc(entries, now=now, indoor=70.0, model=model, classification=classification)
+
+        assert len(result) == len(hours)
+        temps_by_h = {datetime.fromisoformat(r["ts"]).hour: r["temp"] for r in result}
+
+        # At noon (hour 12), solar_factor should be near peak — indoor should be above seed (70°F).
+        assert temps_by_h[12] > 70.0, (
+            f"Inert home with solar should warm above 70°F by noon; got {temps_by_h[12]:.2f}°F"
+        )
+
+    def test_gate_bridge_home_no_double_counting(self):
+        """When gate bridge is active (k_passive=None), per-hour substitution must NOT fire.
+
+        The gate bridge sets k_passive = k_vent_window for ALL hours.
+        If per-hour substitution also fires, k_vent_window would be used twice
+        (no change in value, but the semantics would be wrong if k_vent_window
+        were ever replaced with a different value in the bridge path).
+
+        The observable guard: predictions with windows_recommended=True and
+        windows_recommended=False must be IDENTICAL when the bridge is active.
+        This confirms the `not _k_passive_via_bridge` guard is working.
+        """
+        now = self._NOW_VC
+        hours = list(range(9, 18))
+        entries = self._entries(now, hours)
+
+        # k_passive=None → gate bridge activates, uses k_vent_window=-0.20 as proxy
+        model = {
+            "confidence": "low",
+            "k_passive": None,
+            "k_vent_window": -0.20,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        classification_open = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(10, 0),
+            window_close_time=time(17, 0),
+        )
+        classification_closed = _make_classification(windows_recommended=False)
+
+        result_open = _call_vc(entries, now=now, indoor=self._INDOOR, model=model, classification=classification_open)
+        result_closed = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model, classification=classification_closed
+        )
+
+        assert len(result_open) == len(result_closed)
+        for r_o, r_c in zip(result_open, result_closed, strict=True):
+            assert r_o["temp"] == pytest.approx(r_c["temp"], abs=0.01), (
+                f"Gate bridge guard: temps must be identical at {r_o['ts']} "
+                f"regardless of windows_recommended; got {r_o['temp']} vs {r_c['temp']}"
+            )

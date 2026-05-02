@@ -4261,6 +4261,13 @@ def _build_predicted_indoor_future(
     )
     _band_lookup: dict[str, dict] = {b["ts"]: b for b in _band_schedule}
 
+    # Pre-compute window schedule for per-hour ventilation switching (Phase 2C).
+    # k_vent_window is the total measured k during ventilated conditions — replacement
+    # semantics, not addition. Window-open hours substitute k_vent_window for k_passive.
+    _windows_recommended = bool(classification.windows_recommended) if classification else False
+    _window_open_time = getattr(classification, "window_open_time", None) if classification else None
+    _window_close_time = getattr(classification, "window_close_time", None) if classification else None
+
     result = []
     skipped_past = 0
     _t_current = current_indoor_temp  # running indoor temp for physics simulation
@@ -4302,11 +4309,33 @@ def _build_predicted_indoor_future(
                 dt_hours = 1.0
             dt_hours = max(dt_hours, 1 / 60.0)  # floor at 1 min
 
+            # Per-hour k selection: window-open hours use k_vent_window (total ventilated
+            # rate) as a replacement for k_passive. k_vent_window is measured as the total
+            # effective k during ventilated conditions — replacement semantics, not addition.
+            # Guard: skip substitution when gate bridge already used k_vent_window as
+            # k_passive for all hours (_k_passive_via_bridge=True).
+            _hour_windows_open = (
+                _windows_recommended
+                and _k_vent_window is not None
+                and _window_open_time is not None
+                and _window_close_time is not None
+                and _window_open_time <= local_ts.time() < _window_close_time
+            )
+            _k_passive_for_hour = _k_vent_window if (_hour_windows_open and not _k_passive_via_bridge) else _k_passive
+            if _hour_windows_open and not _k_passive_via_bridge:
+                _LOGGER.debug(
+                    "_build_predicted_indoor_future: hour=%s using k_vent_window=%.4f (windows open %s–%s)",
+                    local_ts.strftime("%H:%M"),
+                    _k_vent_window,
+                    _window_open_time,
+                    _window_close_time,
+                )
+
             if _k_solar is not None or _k_vent is not None:
                 _t_current = _simulate_indoor_physics_v3(
                     _t_current,
                     float(outdoor),
-                    _k_passive,  # type: ignore[arg-type]
+                    _k_passive_for_hour,  # type: ignore[arg-type]
                     k_active_for_mode,
                     dt_hours,
                     setpoint,
@@ -4321,7 +4350,7 @@ def _build_predicted_indoor_future(
                 _t_current = _simulate_indoor_physics(
                     _t_current,
                     float(outdoor),
-                    _k_passive,  # type: ignore[arg-type]
+                    _k_passive_for_hour,  # type: ignore[arg-type]
                     k_active_for_mode,
                     dt_hours,
                     setpoint,
