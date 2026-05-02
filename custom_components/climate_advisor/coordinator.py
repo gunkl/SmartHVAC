@@ -3609,6 +3609,18 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 ),
                 "unit": unit,
                 "learning_health": thermal_model.get("learning_health", {}),
+                "confidence_k_passive": thermal_model.get("confidence_k_passive", "none"),
+                "k_passive": thermal_model.get("k_passive"),
+                "k_vent": thermal_model.get("k_vent"),
+                "k_solar": (
+                    convert_delta(thermal_model["k_solar"], unit) if thermal_model.get("k_solar") is not None else None
+                ),
+                "avg_r_squared_passive": thermal_model.get("avg_r_squared_passive"),
+                "last_observation_date": thermal_model.get("last_observation_date"),
+                "observation_count_passive": thermal_model.get("observation_count_passive", 0),
+                "observation_count_fan_only": thermal_model.get("observation_count_fan_only", 0),
+                "observation_count_vent": thermal_model.get("observation_count_vent", 0),
+                "observation_count_solar": thermal_model.get("observation_count_solar", 0),
             },
             "state_log": log_entries,
             "target_band": [

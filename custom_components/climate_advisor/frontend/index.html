@@ -396,6 +396,98 @@
   @media (max-width: 768px) {
     #daily-record { grid-template-columns: 1fr !important; }
   }
+/* Thermal Learning Model — two-rail redesign */
+.tm-subtitle {
+  font-size: .8rem;
+  color: var(--text-secondary, #666);
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.tm-sep { opacity: .5; }
+.tm-rails {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+@media (max-width: 480px) { .tm-rails { grid-template-columns: 1fr; } }
+.tm-rail {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tm-rail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tm-rail-title { font-weight: 600; font-size: .9rem; }
+.tm-pill {
+  font-size: .72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: #fff;
+  background: #9e9e9e;
+}
+.tm-pill[data-confidence="low"]    { background: #ff9800; }
+.tm-pill[data-confidence="medium"] { background: #2196f3; }
+.tm-pill[data-confidence="high"]   { background: #4caf50; }
+.tm-dots { display: flex; align-items: center; gap: 5px; }
+.tm-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--border, #e5e7eb);
+  flex-shrink: 0;
+}
+.tm-meas-count { font-size: .78rem; color: var(--text-secondary, #666); margin-left: 3px; }
+.tm-params { list-style: none; margin: 2px 0 0; padding: 0; }
+.tm-param {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: .78rem;
+  padding: 1px 0;
+}
+.tm-param-label { color: var(--text-secondary, #666); }
+.tm-param-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tm-hint {
+  font-size: .75rem;
+  color: var(--text-secondary, #666);
+  font-style: italic;
+  margin: 2px 0 0;
+}
+.tm-status-line { font-size: .84rem; font-weight: 500; margin: 4px 0 0; }
+.tm-health { margin-top: 8px; font-size: .78rem; }
+.tm-health > summary { cursor: pointer; color: var(--text-secondary, #666); user-select: none; }
+.tm-health-count { font-weight: 600; }
+.tm-health-body { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.tm-health-group-title {
+  font-weight: 600;
+  font-size: .78rem;
+  margin-bottom: 4px;
+  color: var(--text-secondary, #666);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.tm-health-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px dashed var(--border, #e5e7eb);
+  flex-wrap: wrap;
+}
+.tm-health-row:last-child { border-bottom: none; }
+.tm-health-row-label { color: var(--text-primary, inherit); }
+.tm-health-row-value { color: var(--text-secondary, #666); text-align: right; }
 </style>
 <script src="hammer.min.js"></script>
 <script src="chart.umd.min.js"></script>
@@ -1422,98 +1514,162 @@
   }
 
   function updateThermalPanel(tm) {
-    const panel = document.getElementById('thermal-model-panel');
-    const content = document.getElementById('thermal-model-content');
-    if (!tm) { panel.style.display = 'none'; return; }
-    panel.style.display = '';
-    const badgeColors = { none: '#9e9e9e', low: '#ff9800', medium: '#2196f3', high: '#4caf50' };
-    const unitLabel = tm.unit === 'celsius' ? '°C/hr' : '°F/hr';
-    const totalObs = (tm.observation_count_passive || 0) + (tm.observation_count_fan_only || 0) +
-      (tm.observation_count_vent || 0) + (tm.observation_count_solar || 0) +
-      (tm.observation_count_heat || 0) + (tm.observation_count_cool || 0);
-    const nextThreshold = totalObs < 5 ? 5 : totalObs < 15 ? 15 : totalObs < 30 ? 30 : 30;
-    const progressPct = totalObs >= 30 ? 100 : Math.round((totalObs / nextThreshold) * 100);
+  const panel = document.getElementById('thermal-model-panel');
+  const content = document.getElementById('thermal-model-content');
+  if (!tm) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
 
-    // Dual confidence badges
-    const envConf = tm.confidence_k_passive || 'none';
-    const hvacConf = tm.confidence || 'none';
-    const envColor = badgeColors[envConf] || '#9e9e9e';
-    const hvacColor = badgeColors[hvacConf] || '#9e9e9e';
-    const envLabel = envConf.charAt(0).toUpperCase() + envConf.slice(1);
-    const hvacLabel = hvacConf.charAt(0).toUpperCase() + hvacConf.slice(1);
-    const badgeHtml =
-      `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">` +
-      `<span style="background:${envColor};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;font-weight:600">Envelope: ${envLabel}</span>` +
-      `<span style="background:${hvacColor};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;font-weight:600">HVAC: ${hvacLabel}</span>` +
-      `</div>`;
+  const CAL_LABEL = { none: 'Not yet', low: 'Early', medium: 'Solid', high: 'Strong' };
+  const DOT_COLOR = { none: '#9e9e9e', low: '#ff9800', medium: '#2196f3', high: '#4caf50' };
+  const REASON_LABELS = {
+    insufficient_samples: 'Window ended before enough samples collected',
+    window_elapsed_too_few_samples: 'Window closed before enough samples collected',
+    insufficient_decay: "Temperature didn't move enough to measure",
+    ols_bad_fit: 'Reading was too noisy to trust',
+    poor_fit: 'Reading was too noisy to trust',
+    state_changed: 'HVAC, fan, or window state changed mid-window',
+    outlier: 'Result was an outlier vs prior measurements',
+    abandoned: 'Measurement interrupted',
+  };
+  const TYPE_LABELS = {
+    passive_decay: 'Passive windows', fan_only_decay: 'Fan-only windows',
+    ventilated_decay: 'Ventilated windows', solar_gain: 'Solar readings',
+    hvac_heat: 'Heating cycles', hvac_cool: 'Cooling cycles',
+  };
+  const ENVELOPE_TYPES = ['passive_decay', 'fan_only_decay', 'ventilated_decay', 'solar_gain'];
+  const HVAC_TYPES = ['hvac_heat', 'hvac_cool'];
 
-    // Observation counts row — always shown
-    const obsHtml =
-      `<div style="font-size:0.8rem;color:var(--text-secondary,#666);margin-bottom:8px">` +
-      `Passive: ${tm.observation_count_passive || 0} &nbsp;&middot;&nbsp; ` +
-      `Fan: ${tm.observation_count_fan_only || 0} &nbsp;&middot;&nbsp; ` +
-      `Vent: ${tm.observation_count_vent || 0} &nbsp;&middot;&nbsp; ` +
-      `Solar: ${tm.observation_count_solar || 0} &nbsp;&middot;&nbsp; ` +
-      `Heat: ${tm.observation_count_heat || 0} &nbsp;&middot;&nbsp; ` +
-      `Cool: ${tm.observation_count_cool || 0}` +
-      `</div>`;
+  const envConf = tm.confidence_k_passive || 'none';
+  const hvacConf = tm.confidence || 'none';
+  const unitLabel = tm.unit === 'celsius' ? '°C' : '°F';
 
-    // Progress bar
-    const progressHtml =
-      `<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden;margin-bottom:10px">` +
-      `<div style="background:${envColor};width:${progressPct}%;height:100%;transition:width 0.3s"></div>` +
-      `</div>`;
-
-    // Learned parameters section
-    const hasKPassive = tm.k_passive != null;
-    const hasHvacRates = tm.heating_rate != null || tm.cooling_rate != null;
-    const hasKVent = tm.k_vent != null;
-    const hasKSolar = tm.k_solar != null;
-    let paramsHtml = '';
-    if (hasKPassive || hasHvacRates || hasKVent || hasKSolar) {
-      paramsHtml = `<div style="margin-top:4px;font-size:0.85rem;color:var(--text-secondary,#666)">`;
-      if (hasKPassive) {
-        paramsHtml += `<div>Envelope: <strong>k_passive = ${tm.k_passive.toFixed(3)} hr⁻¹</strong></div>`;
-      }
-      if (hasHvacRates) {
-        const hRate = tm.heating_rate != null ? tm.heating_rate.toFixed(2) : '—';
-        const cRate = tm.cooling_rate != null ? tm.cooling_rate.toFixed(2) : '—';
-        paramsHtml += `<div>HVAC: <strong>Heat +${hRate} ${unitLabel}</strong> &nbsp;|&nbsp; <strong>Cool −${cRate} ${unitLabel}</strong></div>`;
-      }
-      if (hasKVent) {
-        paramsHtml += `<div>Vent: <strong>k_vent = ${tm.k_vent.toFixed(3)} hr⁻¹</strong></div>`;
-      }
-      if (hasKSolar) {
-        paramsHtml += `<div>Solar: <strong>k_solar = ${tm.k_solar.toFixed(2)} ${unitLabel}·frac</strong></div>`;
-      }
-      paramsHtml += `</div>`;
-    } else {
-      paramsHtml =
-        `<div style="margin-top:4px;font-size:0.85rem;color:var(--text-secondary,#666);font-style:italic">` +
-        `Collecting observations — values appear as each type accumulates.` +
-        `</div>`;
+  function makeDots(conf) {
+    const filled = { none: 0, low: 1, medium: 2, high: 4 }[conf] ?? 0;
+    const color = DOT_COLOR[conf] || DOT_COLOR.none;
+    let html = '';
+    for (let i = 0; i < 4; i++) {
+      html += i < filled
+        ? `<span class="tm-dot" style="background:${color}"></span>`
+        : `<span class="tm-dot"></span>`;
     }
+    return html;
+  }
 
-    // Learning Health section — per-obs-type rejection diagnostics
-    const health = (tm && tm.learning_health) || {};
-    const obsTypes = [
-      'passive_decay', 'fan_only_decay', 'ventilated_decay',
-      'solar_gain', 'hvac_heat', 'hvac_cool'
-    ];
-    const healthRows = obsTypes.map(obsType => {
-      const h = health[obsType] || { attempts: 0, committed: 0, rejections: {}, last_rejection: null };
-      const totalRejections = Object.values(h.rejections || {}).reduce((a, b) => a + b, 0);
-      const lastReason = (h.last_rejection && h.last_rejection.reason_code) ? escapeHtml(h.last_rejection.reason_code) : '—';
-      return `<div class="health-row">` +
-        `<div class="label">${escapeHtml(obsType)}</div>` +
-        `<div class="value">${h.attempts || 0} attempts · ${h.committed || 0} committed · ${totalRejections} rejected · last: ${lastReason}</div>` +
-        `</div>`;
-    }).join('');
-    const healthHtml =
-      `<div class="section-subtitle">Learning Health</div>` +
-      `<div class="health-rows">${healthRows}</div>`;
+  function makePill(conf) {
+    const label = CAL_LABEL[conf] || conf;
+    return `<span class="tm-pill" data-confidence="${conf}">Calibration: ${label}</span>`;
+  }
 
-    content.innerHTML = badgeHtml + obsHtml + progressHtml + paramsHtml + healthHtml;
+  function makeParams(rows) {
+    if (!rows.length) return '';
+    const items = rows.map(r =>
+      `<li class="tm-param"><span class="tm-param-label">${r.label}</span><span class="tm-param-value">${r.value}</span></li>`
+    ).join('');
+    return `<ul class="tm-params">${items}</ul>`;
+  }
+
+  function makeLastObs(dateStr) {
+    if (!dateStr) return 'No measurements yet';
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffDays = Math.floor((now - d) / 86400000);
+    if (diffDays < 1) return 'Last measurement: today';
+    if (diffDays === 1) return 'Last measurement: yesterday';
+    if (diffDays <= 30) return `Last measurement: ${diffDays} days ago`;
+    return `Last measurement: ${d.toLocaleDateString()}`;
+  }
+
+  function makeStatusLine(eConf, hConf) {
+    const eHas = eConf !== 'none';
+    const hHas = hConf !== 'none';
+    if (!eHas && !hHas) return 'Falling back to schedule until first measurements land.';
+    if (!eHas && hHas) return 'Active — using HVAC response; house response on schedule fallback.';
+    if (eHas && !hHas) return 'Active — using house response; HVAC predictions on schedule fallback.';
+    const bothGood = (eConf === 'medium' || eConf === 'high') && (hConf === 'medium' || hConf === 'high');
+    if (bothGood) return 'Active — using full physics model for predictions and setbacks.';
+    return 'Active — early calibration, accuracy will improve with more measurements.';
+  }
+
+  function makeHealthRows(types, health) {
+    const rows = types
+      .map(t => {
+        const h = (health && health[t]) || { attempts: 0, committed: 0, rejections: {}, last_rejection: null };
+        if (!h.attempts) return '';
+        const totalRej = Object.values(h.rejections || {}).reduce((a, b) => a + b, 0);
+        const name = escapeHtml(TYPE_LABELS[t] || t);
+        let val = `${h.committed} kept, ${totalRej} skipped`;
+        if (h.last_rejection && h.last_rejection.reason_code) {
+          const code = h.last_rejection.reason_code;
+          val += ` · last: ${escapeHtml(REASON_LABELS[code] || code)}`;
+        }
+        return `<div class="tm-health-row"><span class="tm-health-row-label">${name}</span><span class="tm-health-row-value">${val}</span></div>`;
+      })
+      .join('');
+    return rows;
+  }
+
+  // --- Envelope rail ---
+  const envCount = (tm.observation_count_passive || 0) + (tm.observation_count_fan_only || 0)
+    + (tm.observation_count_vent || 0) + (tm.observation_count_solar || 0);
+  const envParamRows = [];
+  if (tm.k_passive != null) envParamRows.push({ label: 'Heat loss rate', value: `${Math.abs(tm.k_passive).toFixed(2)} /hr` });
+  if (tm.k_vent != null) envParamRows.push({ label: 'Air exchange', value: `${Math.abs(tm.k_vent).toFixed(2)} /hr` });
+  if (tm.k_solar != null) envParamRows.push({ label: 'Solar gain', value: `${tm.k_solar.toFixed(2)} ${unitLabel}/hr·sun` });
+  if (tm.avg_r_squared_passive != null && envConf !== 'none') {
+    envParamRows.push({ label: 'Avg fit quality', value: `${Math.round(tm.avg_r_squared_passive * 100)}%` });
+  }
+  const envHint = envConf === 'none'
+    ? `<p class="tm-hint">Needs a few hours of HVAC-off time with a 3${unitLabel}+ indoor-outdoor temperature difference.</p>`
+    : '';
+  const envRail =
+    `<section class="tm-rail">` +
+    `<header class="tm-rail-head"><span class="tm-rail-title">House response</span>${makePill(envConf)}</header>` +
+    `<div class="tm-dots">${makeDots(envConf)}<span class="tm-meas-count">${envCount} measurement${envCount !== 1 ? 's' : ''}</span></div>` +
+    makeParams(envParamRows) +
+    envHint +
+    `</section>`;
+
+  // --- HVAC rail ---
+  const hvacCount = (tm.observation_count_heat || 0) + (tm.observation_count_cool || 0);
+  const hvacParamRows = [];
+  if (tm.heating_rate != null) hvacParamRows.push({ label: 'Heating', value: `+${tm.heating_rate.toFixed(1)} ${unitLabel}/hr` });
+  if (tm.cooling_rate != null) hvacParamRows.push({ label: 'Cooling', value: `−${tm.cooling_rate.toFixed(1)} ${unitLabel}/hr` });
+  const hvacHint = hvacConf === 'none'
+    ? `<p class="tm-hint">Updates each time the system runs a heating or cooling cycle.</p>`
+    : '';
+  const hvacRail =
+    `<section class="tm-rail">` +
+    `<header class="tm-rail-head"><span class="tm-rail-title">HVAC response</span>${makePill(hvacConf)}</header>` +
+    `<div class="tm-dots">${makeDots(hvacConf)}<span class="tm-meas-count">${hvacCount} measurement${hvacCount !== 1 ? 's' : ''}</span></div>` +
+    makeParams(hvacParamRows) +
+    hvacHint +
+    `</section>`;
+
+  // --- Health disclosure ---
+  const health = (tm && tm.learning_health) || {};
+  const totalRejections = [...ENVELOPE_TYPES, ...HVAC_TYPES].reduce((sum, t) => {
+    const h = health[t] || { rejections: {} };
+    return sum + Object.values(h.rejections || {}).reduce((a, b) => a + b, 0);
+  }, 0);
+  const totalAttempts = [...ENVELOPE_TYPES, ...HVAC_TYPES].reduce((sum, t) => {
+    return sum + ((health[t] && health[t].attempts) || 0);
+  }, 0);
+  const envHealthRows = makeHealthRows(ENVELOPE_TYPES, health);
+  const hvacHealthRows = makeHealthRows(HVAC_TYPES, health);
+  const healthHtml = totalAttempts > 0
+    ? `<details class="tm-health">` +
+      `<summary>Why some measurements were skipped <span class="tm-health-count">(${totalRejections})</span></summary>` +
+      `<div class="tm-health-body">` +
+      `<div><div class="tm-health-group-title">House response</div>${envHealthRows || '<div style="color:var(--text-secondary,#666);font-style:italic">None skipped</div>'}</div>` +
+      `<div><div class="tm-health-group-title">HVAC response</div>${hvacHealthRows || '<div style="color:var(--text-secondary,#666);font-style:italic">None skipped</div>'}</div>` +
+      `</div></details>`
+    : '';
+
+  content.innerHTML =
+    `<div class="tm-subtitle"><span>How well I know your home</span><span class="tm-sep">·</span><span>${escapeHtml(makeLastObs(tm.last_observation_date))}</span></div>` +
+    `<div class="tm-rails">${envRail}${hvacRail}</div>` +
+    `<p class="tm-status-line">${escapeHtml(makeStatusLine(envConf, hvacConf))}</p>` +
+    healthHtml;
   }
 
   async function loadChart() {
