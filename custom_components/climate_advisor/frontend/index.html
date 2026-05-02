@@ -1618,8 +1618,9 @@
   if (tm.avg_r_squared_passive != null && envConf !== 'none') {
     envParamRows.push({ label: 'Avg fit quality', value: `${Math.round(tm.avg_r_squared_passive * 100)}%` });
   }
+  const hintDelta = tm.unit === 'celsius' ? 1.7 : 3;
   const envHint = envConf === 'none'
-    ? `<p class="tm-hint">Needs a few hours of HVAC-off time with a 3${unitLabel}+ indoor-outdoor temperature difference.</p>`
+    ? `<p class="tm-hint">Needs a few hours of HVAC-off time with a ${hintDelta}${unitLabel}+ indoor-outdoor temperature difference.</p>`
     : '';
   const envRail =
     `<section class="tm-rail">` +
@@ -1927,8 +1928,9 @@
                   const eve = c.window_opportunity_evening
                     ? 'Yes (' + (c.window_opportunity_evening_start || '') + '+)'
                     : 'No';
-                  return '<tr><td>Morning Window Opportunity</td><td>' + morn + '<span class="kv-desc">Today low \u2264 80\u00b0F</span></td></tr>'
-                       + '<tr><td>Evening Window Opportunity</td><td>' + eve + '<span class="kv-desc">Tomorrow low \u2264 80\u00b0F</span></td></tr>';
+                  const winThreshold = data.unit === 'celsius' ? `${Math.round((80 - 32) * 5 / 9)}\u00b0C` : '80\u00b0F';
+                  return '<tr><td>Morning Window Opportunity</td><td>' + morn + '<span class="kv-desc">Today low \u2264 ' + winThreshold + '</span></td></tr>'
+                       + '<tr><td>Evening Window Opportunity</td><td>' + eve + '<span class="kv-desc">Tomorrow low \u2264 ' + winThreshold + '</span></td></tr>';
                 } else if (dt === 'warm' || dt === 'mild') {
                   return '<tr><td>Window Open Time</td><td>' + (c.window_open_time || 'N/A') + '<span class="kv-desc">Recommended open time</span></td></tr>'
                        + '<tr><td>Window Close Time</td><td>' + (c.window_close_time || 'N/A') + '<span class="kv-desc">Recommended close time</span></td></tr>';

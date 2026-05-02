@@ -39,10 +39,7 @@ REQUIRED_MANIFEST_KEYS = {
 
 SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 
-HARDCODED_UNIT_EXCEPTION_PHRASES = [
-    "\u2264 80",  # classifier threshold descriptions — not user-facing temps (Unicode char form)
-    "\\u2264 80",  # same, when stored as JS unicode escape sequence in HTML
-]
+HARDCODED_UNIT_EXCEPTION_PHRASES: list[str] = []
 
 SECRET_PATTERNS = [
     re.compile(r"""['"]([^'"]*(?:password|token|api_key|secret|credential)[^'"]*)['"]""", re.IGNORECASE),
@@ -250,6 +247,35 @@ def check_hardcoded_units(component_dir):
     return result
 
 
+def check_python_temperature_literals(component_dir: str) -> "CheckResult":
+    """Flag bare numeric temperature literals in comparison contexts in Python files.
+
+    Catches patterns like `outdoor < 60` that should reference a named _F constant.
+    """
+    import re as _re
+
+    _TEMP_VAR_PATTERN = _re.compile(
+        r"\b(outdoor|indoor|today_low|tomorrow_low|today_high|tomorrow_high"
+        r"|comfort_heat|comfort_cool|setback_heat|setback_cool)\s*"
+        r"(?:<=|>=|<|>|==)\s*(\d+\.?\d*)\b"
+    )
+    result = CheckResult("Python Temperature Literal Check")
+    for fname in os.listdir(component_dir):
+        if not fname.endswith(".py"):
+            continue
+        path = os.path.join(component_dir, fname)
+        with open(path, encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                if line.strip().startswith("#"):
+                    continue
+                for m in _TEMP_VAR_PATTERN.finditer(line):
+                    result.error(
+                        f"{fname}:{lineno}: bare temperature literal "
+                        f"`{m.group(0).strip()}` — use a named _F constant from const.py"
+                    )
+    return result
+
+
 def main():
     print("Climate Advisor Pre-Deploy Validation")
     print(f"Component dir: {COMPONENT_DIR}")
@@ -266,6 +292,7 @@ def main():
         check_strings(COMPONENT_DIR),
         check_secrets(COMPONENT_DIR),
         check_hardcoded_units(COMPONENT_DIR),
+        check_python_temperature_literals(COMPONENT_DIR),
     ]
 
     all_passed = True

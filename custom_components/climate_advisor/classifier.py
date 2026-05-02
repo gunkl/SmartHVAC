@@ -26,6 +26,7 @@ from .const import (
     TREND_THRESHOLD_SIGNIFICANT,
     WARM_WINDOW_CLOSE_HOUR,
     WARM_WINDOW_OPEN_HOUR,
+    WINDOW_OPPORTUNITY_MAX_LOW_F,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,21 +87,22 @@ class DayClassification:
             self.pre_condition_target = -2.0  # 2°F below cooling setpoint
             # Check if morning/evening temps might be favorable for window cooling
             # If today's low is within 5°F of a typical comfort_cool (75°F), windows could help
-            if self.today_low <= 80:  # Today's low is moderate enough for window opportunity
+            if self.today_low <= WINDOW_OPPORTUNITY_MAX_LOW_F:  # Today's low is moderate enough for window opportunity
                 self.window_opportunity_morning = True
                 self.window_opportunity_morning_start = time(ECONOMIZER_MORNING_START_HOUR, 0)
                 self.window_opportunity_morning_end = time(ECONOMIZER_MORNING_END_HOUR, 0)
-            if self.tomorrow_low <= 80:  # Tomorrow's low suggests cool evening
+            if self.tomorrow_low <= WINDOW_OPPORTUNITY_MAX_LOW_F:  # Tomorrow's low suggests cool evening
                 self.window_opportunity_evening = True
                 self.window_opportunity_evening_start = time(ECONOMIZER_EVENING_START_HOUR, 0)
                 self.window_opportunity_evening_end = time(0, 0)  # midnight
             _LOGGER.debug(
                 "HOT day window opportunity — today_low=%.1f (morning=%s), "
-                "tomorrow_low=%.1f (evening=%s), threshold=80°F",
+                "tomorrow_low=%.1f (evening=%s), threshold=%.0f°F",
                 self.today_low,
                 self.window_opportunity_morning,
                 self.tomorrow_low,
                 self.window_opportunity_evening,
+                WINDOW_OPPORTUNITY_MAX_LOW_F,
             )
         elif self.day_type == DAY_TYPE_WARM:
             self.hvac_mode = "off"

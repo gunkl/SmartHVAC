@@ -17,6 +17,7 @@ from datetime import time
 
 from .classifier import DayClassification
 from .const import (
+    COLD_DAY_SETBACK_DEPTH_F,
     DAY_TYPE_COLD,
     DAY_TYPE_COOL,
     DAY_TYPE_HOT,
@@ -25,6 +26,8 @@ from .const import (
     DEFAULT_AUTOMATION_GRACE_SECONDS,
     DEFAULT_MANUAL_GRACE_SECONDS,
     DEFAULT_SENSOR_DEBOUNCE_SECONDS,
+    DEFAULT_SETBACK_DEPTH_COOL_F,
+    DEFAULT_SETBACK_DEPTH_F,
     ECONOMIZER_TEMP_DELTA,
     FAN_MODE_DISABLED,
     OCCUPANCY_SETBACK_MINUTES,
@@ -288,10 +291,14 @@ def _generate_tldr_table(
     sleep_str = sleep_time.strftime(_FMT_HOUR)
     if c.hvac_mode == "cool":
         # setback for cool days goes up (warmer is fine when sleeping)
-        bedtime_temp = bedtime_setback_cool if bedtime_setback_cool is not None else comfort_cool + 3
+        bedtime_temp = (
+            bedtime_setback_cool if bedtime_setback_cool is not None else comfort_cool + DEFAULT_SETBACK_DEPTH_COOL_F
+        )
         bedtime_val = f"{format_temp(bedtime_temp, temp_unit)} at {sleep_str}"
     elif c.hvac_mode == "heat":
-        bedtime_temp = bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - 4
+        bedtime_temp = (
+            bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - DEFAULT_SETBACK_DEPTH_F
+        )
         bedtime_val = f"{format_temp(bedtime_temp, temp_unit)} at {sleep_str}"
     else:
         bedtime_val = "No setback"
@@ -500,7 +507,9 @@ def _cool_day_plan(
     bedtime_setback_heat: float | None = None,
 ) -> list[str]:
     """Conversational plan for cool days (45-59\u00b0F)."""
-    setback_display = bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - 4
+    setback_display = (
+        bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - DEFAULT_SETBACK_DEPTH_F
+    )
     return [
         f"Heater day \u2014 too cool outside for windows. I'll hold {format_temp(comfort_heat, temp_unit)}"
         f" through the morning, ease back a couple degrees midday to ride any solar"
@@ -536,7 +545,9 @@ def _cold_day_plan(
             f" If the house feels extra warm before bed, that's on purpose."
         )
 
-    setback_display = bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - 3
+    setback_display = (
+        bedtime_setback_heat if bedtime_setback_heat is not None else comfort_heat - COLD_DAY_SETBACK_DEPTH_F
+    )
     lines.append("")
     lines.append(
         f"Tonight I'm using a conservative setback \u2014 {format_temp(setback_display, temp_unit)}"

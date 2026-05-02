@@ -785,6 +785,21 @@ MAX_PREHEAT_MINUTES = 240  # clamp ceiling (4 hrs)
 PREHEAT_SAFETY_MARGIN = 1.3  # multiply computed time by this
 DEFAULT_SETBACK_DEPTH_F = 4.0  # preserved fallback (current heat setback)
 DEFAULT_SETBACK_DEPTH_COOL_F = 3.0  # preserved fallback (current cool setback)
+
+# Conservative heat setback on cold days (shallower than normal to aid morning recovery)
+COLD_DAY_SETBACK_DEPTH_F: float = 3.0
+
+# Window opportunity: today/tomorrow low must be at or below this to open windows on a hot day
+WINDOW_OPPORTUNITY_MAX_LOW_F: float = 80.0
+
+# Thermal factor bucket boundaries (outdoor temp in °F, internal representation)
+THERMAL_COLD_BUCKET_LIMIT_F: float = 60.0  # below this → "cold" regime
+THERMAL_MILD_BUCKET_LIMIT_F: float = 70.0  # below this (≥ cold limit) → "mild" regime
+
+# Thermal factor interpolation zone half-width (°F either side of each bucket boundary)
+# Eliminates hard jumps when outdoor temp crosses a threshold.
+THERMAL_BUCKET_INTERP_HALF_F: float = 2.0
+
 THERMAL_MIN_DECAY_F = 1.0  # min total post-heat decay required to commit (°F)
 
 # --- v3 Observation Type string constants ---

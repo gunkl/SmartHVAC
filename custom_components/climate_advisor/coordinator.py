@@ -120,6 +120,8 @@ from .const import (
     TEMP_SOURCE_INPUT_NUMBER,
     TEMP_SOURCE_SENSOR,
     TEMP_SOURCE_WEATHER_SERVICE,
+    THERMAL_BUCKET_INTERP_HALF_F,
+    THERMAL_COLD_BUCKET_LIMIT_F,
     THERMAL_FAN_MIN_SAMPLES,
     THERMAL_FAN_MIN_SIGNAL_F,
     THERMAL_FAN_SAMPLE_INTERVAL_S,
@@ -128,6 +130,7 @@ from .const import (
     THERMAL_MAX_ACTIVE_SAMPLES,
     THERMAL_MAX_OBS_SAMPLES,
     THERMAL_MAX_POST_HEAT_SAMPLES,
+    THERMAL_MILD_BUCKET_LIMIT_F,
     THERMAL_MIN_DECAY_F,
     THERMAL_MIN_DECAY_SAMPLES,
     THERMAL_MIN_POST_HEAT_SAMPLES,
@@ -3807,9 +3810,9 @@ def _compute_thermal_factors(chart_entries: list[dict]) -> dict:
     Returns:
         {
             "time_lag_hours": float,
-            "cold_diff": float,    # indoor-outdoor when outdoor < 60°F (HVAC idle)
-            "mild_diff": float,    # indoor-outdoor when outdoor 60-70°F (HVAC idle)
-            "warm_diff": float,    # indoor-outdoor when outdoor > 70°F (HVAC idle)
+            "cold_diff": float,    # indoor-outdoor when outdoor < THERMAL_COLD_BUCKET_LIMIT_F
+            "mild_diff": float,    # THERMAL_COLD_BUCKET_LIMIT_F <= outdoor < THERMAL_MILD_BUCKET_LIMIT_F
+            "warm_diff": float,    # indoor-outdoor when outdoor >= THERMAL_MILD_BUCKET_LIMIT_F
             "has_data": bool,
         }
     """
@@ -3842,9 +3845,9 @@ def _compute_thermal_factors(chart_entries: list[dict]) -> dict:
             continue
         delta = e["indoor"] - e["outdoor"]
         outdoor = e["outdoor"]
-        if outdoor < 60:
+        if outdoor < THERMAL_COLD_BUCKET_LIMIT_F:
             buckets["cold"].append(delta)
-        elif outdoor < 70:
+        elif outdoor < THERMAL_MILD_BUCKET_LIMIT_F:
             buckets["mild"].append(delta)
         else:
             buckets["warm"].append(delta)
@@ -3867,22 +3870,28 @@ def _compute_thermal_factors(chart_entries: list[dict]) -> dict:
 def _outdoor_conditional_diff(outdoor: float, thermal_factors: dict) -> float:
     """Return the learned indoor-outdoor differential for a given outdoor temp.
 
-    Linear interpolation over ±2°F transition zones at bucket boundaries (60°F, 70°F)
-    eliminates the hard 7.6°F jump that occurs when outdoor crosses a threshold.
+    Linear interpolation over ±THERMAL_BUCKET_INTERP_HALF_F transition zones at bucket
+    boundaries (THERMAL_COLD_BUCKET_LIMIT_F, THERMAL_MILD_BUCKET_LIMIT_F) eliminates the
+    hard jump that occurs when outdoor crosses a threshold.
     """
     cold = thermal_factors.get("cold_diff", 15.0)
     mild = thermal_factors.get("mild_diff", 8.0)
     warm = thermal_factors.get("warm_diff", 0.0)
 
-    if outdoor <= 58.0:
+    _cold_lo = THERMAL_COLD_BUCKET_LIMIT_F - THERMAL_BUCKET_INTERP_HALF_F
+    _cold_hi = THERMAL_COLD_BUCKET_LIMIT_F + THERMAL_BUCKET_INTERP_HALF_F
+    _mild_lo = THERMAL_MILD_BUCKET_LIMIT_F - THERMAL_BUCKET_INTERP_HALF_F
+    _mild_hi = THERMAL_MILD_BUCKET_LIMIT_F + THERMAL_BUCKET_INTERP_HALF_F
+
+    if outdoor <= _cold_lo:
         return cold
-    elif outdoor < 62.0:
-        frac = (outdoor - 58.0) / 4.0  # 0 at 58°F, 1 at 62°F
+    elif outdoor < _cold_hi:
+        frac = (outdoor - _cold_lo) / (2 * THERMAL_BUCKET_INTERP_HALF_F)
         return cold + frac * (mild - cold)
-    elif outdoor <= 68.0:
+    elif outdoor <= _mild_lo:
         return mild
-    elif outdoor < 72.0:
-        frac = (outdoor - 68.0) / 4.0  # 0 at 68°F, 1 at 72°F
+    elif outdoor < _mild_hi:
+        frac = (outdoor - _mild_lo) / (2 * THERMAL_BUCKET_INTERP_HALF_F)
         return mild + frac * (warm - mild)
     else:
         return warm
@@ -4018,8 +4027,8 @@ def _compute_target_band_schedule(
     comfort_cool = float(config.get("comfort_cool", 75))
     setback_heat = float(config.get("setback_heat", 60))
     setback_cool = float(config.get("setback_cool", 80))
-    sleep_heat = float(config.get("sleep_heat", comfort_heat - 4.0))
-    sleep_cool = float(config.get("sleep_cool", comfort_cool + 3.0))
+    sleep_heat = float(config.get("sleep_heat", comfort_heat - DEFAULT_SETBACK_DEPTH_F))
+    sleep_cool = float(config.get("sleep_cool", comfort_cool + DEFAULT_SETBACK_DEPTH_COOL_F))
 
     # G1/G2: use compute_bedtime_setback() when thermal model + classification available —
     # aligns chart band with the adaptive sleep setpoint used by automation.py for both
