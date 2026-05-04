@@ -2638,6 +2638,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                         (now - dt_util.parse_datetime(_last_s)).total_seconds() if _last_s else _interval_s + 1
                     )
                     if _elapsed_since_last >= _interval_s:
+                        if obs_type == OBS_TYPE_VENTILATED_DECAY:
+                            sample["solar_factor"] = _solar_factor(now.hour)
                         samples_list.append(sample)
                         obs["last_sample_time"] = now.isoformat()
 
@@ -4260,7 +4262,7 @@ def _build_predicted_indoor_future(
         # When k_vent_window = 0.0 exactly the ODE produces a flat prediction (T stays at
         # current_indoor_temp), which is correct for a perfectly inert home.
         _k_passive_via_bridge = False
-        if _k_passive is None and _k_vent_window is not None and _k_vent_window <= 0:
+        if (_k_passive is None or _conf_k_passive == "none") and _k_vent_window is not None and _k_vent_window <= 0:
             _k_passive = _k_vent_window
             _k_passive_via_bridge = True
             _LOGGER.debug(
@@ -4268,7 +4270,11 @@ def _build_predicted_indoor_future(
                 _k_passive,
             )
         _physics_eligible = (
-            (_conf != "none" or (_conf_k_passive is not None and _conf_k_passive not in (None, "none")))
+            (
+                _conf != "none"
+                or (_conf_k_passive is not None and _conf_k_passive not in (None, "none"))
+                or _k_passive_via_bridge  # bridge-provided k needs no confidence count
+            )
             and _k_passive is not None
             and (_k_passive < 0 or _k_passive_via_bridge)
         )

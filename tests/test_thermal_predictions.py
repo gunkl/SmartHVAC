@@ -568,3 +568,340 @@ class TestPerHourVentilationWiring:
                 f"Gate bridge guard: temps must be identical at {r_o['ts']} "
                 f"regardless of windows_recommended; got {r_o['temp']} vs {r_c['temp']}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Gate bridge self-healing — Bug A + Bug B regression guards (Issue #126)
+# ---------------------------------------------------------------------------
+
+
+class TestGateBridgeSelfHealing:
+    """Gate bridge fires for contaminated installs (k_passive stale, conf_passive='none').
+
+    Bug A: Bridge previously only fired when k_passive is None.  It must also
+           fire when k_passive is present but confidence_k_passive='none'
+           (contaminated install — stale value, no real passive_decay observations).
+
+    Bug B: _k_passive_via_bridge must bypass the confidence gate in
+           _physics_eligible so a bridge-provided k still enables physics
+           prediction even when both conf and conf_k_passive are 'none'.
+
+    Self-healing semantics (the three states this class guards):
+      1. Fresh install   : k_passive=None → bridge fires  ← preserved (regression)
+      2. Contaminated    : k_passive=-0.28, conf_k_passive='none' → bridge fires  ← new
+      3. Healed install  : k_passive=-0.20, conf_k_passive='low'  → bridge skips  ← new
+    """
+
+    # Outdoor temp for a warm off-day (THRESHOLD_MILD=60 ≤ 65 < THRESHOLD_WARM=75)
+    _OUTDOOR = 65.0
+    _INDOOR = 69.0
+    _NOW_SH = datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC)
+
+    def _entries(self, hours: int = 4) -> list[dict]:
+        now = self._NOW_SH
+        return [_entry(now + timedelta(hours=i), self._OUTDOOR) for i in range(1, hours + 1)]
+
+    def test_bridge_fires_when_conf_passive_none_and_k_passive_stale(self):
+        """Contaminated install: k_passive=-0.28, confidence_k_passive='none', k_vent_window=-0.25.
+
+        Bug A: before the fix, bridge only checked `k_passive is None`.
+        With a stale k_passive present, bridge was skipped and physics fell back to ramp.
+        After the fix: bridge fires when conf_k_passive is None or 'none',
+        overwriting stale k_passive with k_vent_window.
+
+        Observable: physics produces a trajectory near indoor seed (69°F) for k≈-0.25,
+        while ramp fallback would return a flat 69°F (off-day indoor anchor).
+        We confirm physics activates by verifying predictions are returned and
+        remain in a physically plausible range (not stuck at outdoor+2=67°F).
+        """
+        model = {
+            "confidence": "none",
+            "confidence_k_passive": "none",
+            "k_passive": -0.2813,  # stale contaminated value
+            "k_vent_window": -0.2547,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        entries = self._entries()
+
+        result = _call(entries, now=self._NOW_SH, indoor=self._INDOOR, model=model)
+
+        assert len(result) == 4
+        # Bridge fires → physics runs → k_passive = k_vent_window = -0.2547.
+        # With outdoor=65°F and indoor=69°F above outdoor, passive decay slowly
+        # pulls indoor toward outdoor.  After 4 hours at k=-0.25, T drops measurably
+        # but stays above outdoor (65°F).  Ramp would produce exactly 69°F (indoor anchor).
+        # Physics produces < 69°F as heat leaks out.
+        temps = [r["temp"] for r in result]
+        for t in temps:
+            assert t > self._OUTDOOR, f"Physics should keep indoor above outdoor 65°F; got {t:.2f}°F"
+        # At least the 4-hour mark should show some decay from seed
+        assert temps[-1] < self._INDOOR, (
+            f"Physics should show some cooling from seed {self._INDOOR}°F after 4h; got {temps[-1]:.2f}°F"
+        )
+
+    def test_bridge_fires_when_k_passive_none(self):
+        """Regression guard: original case (fresh install) — k_passive=None still fires bridge.
+
+        Bridge must activate for k_passive=None with valid k_vent_window, producing
+        physics prediction rather than ramp fallback.  This was the original Bug A
+        scenario and must remain working after the fix.
+        """
+        model = {
+            "confidence": "none",
+            "confidence_k_passive": None,
+            "k_passive": None,
+            "k_vent_window": -0.25,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        entries = self._entries()
+
+        result = _call(entries, now=self._NOW_SH, indoor=self._INDOOR, model=model)
+
+        assert len(result) == 4
+        temps = [r["temp"] for r in result]
+        # Physics with k=-0.25 and indoor=69°F above outdoor=65°F: indoor cools slowly.
+        for t in temps:
+            assert t > self._OUTDOOR, f"Physics: indoor should remain above outdoor; got {t:.2f}°F"
+        assert temps[-1] < self._INDOOR, (
+            f"Physics: should show cooling from seed {self._INDOOR}°F after 4h; got {temps[-1]:.2f}°F"
+        )
+
+    def test_bridge_does_not_fire_when_conf_passive_has_value(self):
+        """Healed install: conf_k_passive='low' — bridge skips, real k_passive used.
+
+        When real passive_decay observations have been committed (conf_k_passive='low' or
+        higher), the bridge must NOT override k_passive with k_vent_window.
+        The real k_passive is used directly for physics prediction.
+        """
+        model = {
+            "confidence": "low",
+            "confidence_k_passive": "low",
+            "k_passive": -0.20,  # real learned value
+            "k_vent_window": -0.50,  # very different — must not override k_passive
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        entries = self._entries(hours=3)
+
+        result = _call(entries, now=self._NOW_SH, indoor=self._INDOOR, model=model)
+
+        assert len(result) == 3
+        temps = [r["temp"] for r in result]
+        # With k_passive=-0.20 (real), physics uses this rate.
+        # k_vent_window=-0.50 is much stronger — if bridge fired accidentally,
+        # cooling would be significantly faster.
+        # At k=-0.20 with indoor=69°F, outdoor=65°F, decay over 3h is small.
+        # At k=-0.50, decay would be about 2.5x stronger.
+        # We check that temps remain in a range consistent with k=-0.20, not k=-0.50.
+        for t in temps:
+            assert t > self._OUTDOOR, f"Physics: indoor should remain above outdoor; got {t:.2f}°F"
+        # All temps should be above 67°F (k=-0.50 would push below 67°F faster)
+        assert temps[-1] > 67.0, (
+            f"Bridge must NOT fire for healed install; k=-0.20 should hold indoor above 67°F; got {temps[-1]:.2f}°F"
+        )
+
+    def test_physics_eligible_with_bridge_bypasses_confidence_check(self):
+        """Bug B: bridge-provided k_passive enables physics even when conf='none' and conf_k_passive='none'.
+
+        Before Bug B fix: _physics_eligible required (_conf != 'none' OR conf_k_passive not none).
+        When both are 'none' and bridge is active, the confidence gate blocked physics.
+        After fix: _k_passive_via_bridge=True is sufficient for eligibility.
+
+        Setup: contaminated install where bridge fires (conf_passive='none', k_passive stale).
+        Expectation: physics activates (trajectory moves, not flat ramp).
+        """
+        model = {
+            "confidence": "none",
+            "confidence_k_passive": "none",
+            "k_passive": -0.2813,
+            "k_vent_window": -0.25,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        entries = self._entries(hours=6)
+
+        result = _call(entries, now=self._NOW_SH, indoor=self._INDOOR, model=model)
+
+        assert len(result) == 6
+        temps = [r["temp"] for r in result]
+        # Physics with bridge: indoor=69°F, outdoor=65°F, k=-0.25.
+        # After 6h the decay is significant — expect last temp noticeably below 69°F.
+        assert temps[-1] < self._INDOOR - 0.3, (
+            f"Bug B: physics must activate (bridge bypasses confidence); "
+            f"expected cooling below {self._INDOOR - 0.3:.1f}°F at 6h; got {temps[-1]:.2f}°F"
+        )
+
+    def test_physics_not_eligible_without_bridge_and_no_confidence(self):
+        """Regression: no bridge, conf='none', conf_k_passive='none' → physics stays off.
+
+        When k_passive is stale AND k_vent_window is None (no bridge possible),
+        conf='none', conf_k_passive='none' → _physics_eligible=False → ramp fallback.
+        On an off-day with indoor seed, ramp returns the indoor anchor (69°F).
+        """
+        model = {
+            "confidence": "none",
+            "confidence_k_passive": "none",
+            "k_passive": -0.20,
+            "k_vent_window": None,  # no bridge possible
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        entries = self._entries(hours=4)
+
+        result = _call(entries, now=self._NOW_SH, indoor=self._INDOOR, model=model)
+
+        assert len(result) == 4
+        # No bridge, no confidence → ramp fallback → off-day → indoor anchor = 69°F flat.
+        for point in result:
+            assert point["temp"] == pytest.approx(self._INDOOR, abs=0.1), (
+                f"No bridge + no confidence → ramp anchor {self._INDOOR}°F; got {point['temp']:.2f}°F"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Ventilated solar prediction — Phase C (Issue #126)
+# ---------------------------------------------------------------------------
+
+
+class TestVentilatedSolarPrediction:
+    """k_solar from adaptive 2-param OLS flows to the ODE during window-open hours.
+
+    Phase C confirms that k_solar is NOT suppressed during window-open hours.
+    _simulate_indoor_physics_v3 applies q_solar = k_solar * solar_factor unconditionally
+    (line: q_solar = (k_solar * solar_factor) if (k_solar is not None) else 0.0),
+    regardless of whether _k_passive_for_hour came from k_passive or k_vent_window.
+
+    Two properties are verified:
+      1. Solar term is active during window-open hours (warmer prediction vs no k_solar).
+      2. Solar contribution follows the sine factor curve — peaks at hour 13, zero at hour 18.
+    """
+
+    _NOW_VS = datetime(2026, 4, 20, 8, 0, 0, tzinfo=UTC)
+    _OUTDOOR = 65.0
+    _INDOOR = 70.0
+
+    def _entries_hours(self, hours: list[int]) -> list[dict]:
+        base = self._NOW_VS.replace(hour=0, minute=0, second=0, microsecond=0)
+        return [_entry(base + timedelta(hours=h), self._OUTDOOR) for h in hours]
+
+    def test_solar_term_active_during_window_open_hours(self):
+        """During daytime window-open hours, k_solar=2.5 warms prediction vs k_solar=None.
+
+        Setup:
+          k_vent_window=-0.05 (near zero — minimal ventilation cooling effect)
+          k_solar=2.5 vs k_solar=None
+          windows_recommended=True, open 09:00-17:00
+          outdoor=65°F (off-day), indoor seed=70°F
+
+        k_vent_window=-0.05 is near-inert — the passive ODE barely moves.
+        With k_solar=2.5, q_solar = k_solar * solar_factor during daytime hours.
+        For hours 10-16, solar_factor > 0 → the solar run should be measurably warmer.
+        Hour 9 (solar factor=sin(π/10)≈0.31) — small but nonzero contribution already.
+        """
+        now = self._NOW_VS
+        hours = list(range(9, 18))
+        entries = self._entries_hours(hours)
+
+        base_model = {
+            "confidence": "low",
+            "k_passive": -0.20,
+            "k_vent_window": -0.05,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        model_with_solar = {**base_model, "k_solar": 2.5}
+        model_no_solar = {**base_model, "k_solar": None}
+
+        classification = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(9, 0),
+            window_close_time=time(17, 0),
+        )
+
+        result_solar = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_with_solar, classification=classification
+        )
+        result_no_solar = _call_vc(
+            entries, now=now, indoor=self._INDOOR, model=model_no_solar, classification=classification
+        )
+
+        assert len(result_solar) == len(result_no_solar) == len(hours)
+
+        solar_by_h = {datetime.fromisoformat(r["ts"]).hour: r["temp"] for r in result_solar}
+        no_solar_by_h = {datetime.fromisoformat(r["ts"]).hour: r["temp"] for r in result_no_solar}
+
+        # During window-open daytime hours, solar run should be warmer
+        for h in range(10, 17):
+            assert solar_by_h[h] > no_solar_by_h[h], (
+                f"Hour {h}: k_solar=2.5 run should be warmer than k_solar=None run; "
+                f"got {solar_by_h[h]:.2f} vs {no_solar_by_h[h]:.2f}°F"
+            )
+
+    def test_solar_term_follows_solar_factor_curve(self):
+        """Solar contribution is proportional to solar_factor — peaks at hour 13, zero at 18.
+
+        Setup:
+          k_vent_window=0.0 (perfectly inert home — passive term vanishes when k_eff=0)
+          outdoor = indoor seed = 70°F (so T_out - T_in = 0 — passive ODE term also zero)
+          k_solar=2.5, windows open 08:00-19:00 (extended so hour 18 remains in-window)
+
+        With k_eff=0 and T_out=T_in: dT/dt = k_solar * solar_factor (pure solar driver).
+        The ODE reduces to: t_next = t_start + k_solar * solar_factor * dt_hours.
+
+        Consequently:
+          - Per-hour increments grow from hour 8 to hour 13 (rising half of sine curve)
+          - Per-hour increments shrink from hour 13 to hour 17 (falling half)
+          - No increment at hour 17→18 (solar_factor(18) = 0, window still open → k_eff=0)
+          - Temperature at peak-solar hours (12-14) is highest in the daytime window
+
+        Window close time is set to 19:00 so that hour 18 still uses k_vent_window=0.0
+        (inside window schedule).  This isolates solar_factor(18)=0 from any passive-decay
+        resumption that would occur if the window closed at 18:00.
+        """
+        now = self._NOW_VS
+        outdoor_eq_indoor = 70.0  # T_out = T_in eliminates passive ODE term
+        hours = list(range(9, 19))  # 9 through 18 inclusive
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        entries = [_entry(base + timedelta(hours=h), outdoor_eq_indoor) for h in hours]
+
+        model = {
+            "confidence": "low",
+            "k_passive": -0.20,  # irrelevant: overridden by k_vent_window=0 during window hours
+            "k_vent_window": 0.0,  # perfectly inert — k_eff = 0 during window hours
+            "k_solar": 2.5,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        classification = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(8, 0),
+            window_close_time=time(19, 0),  # extended: keeps hour 18 in-window for clean solar=0 test
+        )
+
+        result = _call_vc(entries, now=now, indoor=outdoor_eq_indoor, model=model, classification=classification)
+
+        assert len(result) == len(hours)
+        temps_by_h = {datetime.fromisoformat(r["ts"]).hour: r["temp"] for r in result}
+
+        # Solar accumulates during 8-17h window: peak-solar hours (12-14) must be hottest
+        assert temps_by_h[13] > temps_by_h[9], (
+            f"Solar accumulation: hour-13 temp should exceed hour-9; got {temps_by_h[13]:.2f} vs {temps_by_h[9]:.2f}°F"
+        )
+
+        # Per-hour increments: growing toward peak (9→13), shrinking after (13→17)
+        inc_9_10 = temps_by_h[10] - temps_by_h[9]
+        inc_12_13 = temps_by_h[13] - temps_by_h[12]
+        inc_16_17 = temps_by_h[17] - temps_by_h[16]
+        assert inc_12_13 > inc_9_10, (
+            f"Solar increment should grow toward peak; Δ[12→13]={inc_12_13:.3f} should exceed Δ[9→10]={inc_9_10:.3f}"
+        )
+        assert inc_12_13 > inc_16_17, (
+            f"Solar increment should be larger at peak than on falling side; "
+            f"Δ[12→13]={inc_12_13:.3f} should exceed Δ[16→17]={inc_16_17:.3f}"
+        )
+
+        # Hour 17→18: solar_factor(18)=0 → increment must be near zero
+        inc_17_18 = temps_by_h[18] - temps_by_h[17]
+        assert abs(inc_17_18) < 0.05, f"Hour 17→18: solar_factor=0 → no increment; got Δ={inc_17_18:.3f}°F"

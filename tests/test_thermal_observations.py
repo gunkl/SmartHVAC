@@ -1879,3 +1879,286 @@ class TestConfidenceGrading:
         assert model_at["confidence_k_hvac"] != "none", (
             "confidence_k_hvac must not be 'none' when heat obs reach threshold (C1 regression)"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestAdaptiveVentilatedOLS
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptiveVentilatedOLS:
+    """Adaptive 2-param OLS for ventilated_decay (Issue #126 Phase B).
+
+    When samples span sufficient solar_factor variation, _commit_event_from_dict
+    attempts a 2-parameter OLS: dT/dt = k_env*(T_out-T_in) + k_solar*solar_factor.
+    This separates solar gain from ventilation-driven temperature change so that
+    daytime ventilated_decay observations no longer suppress R² with unexplained
+    solar variance.
+    """
+
+    # dt_util produces MagicMocks in the stub HA environment.  Any test that calls
+    # _commit_event_from_dict must patch learning.dt_util so now() returns a real datetime.
+    _DT_PATCH = "custom_components.climate_advisor.learning.dt_util"
+    _FAKE_DT = datetime(2026, 5, 3, 12, 0, 0, tzinfo=UTC)
+
+    def _make_engine(self, tmp_path: Path) -> LearningEngine:
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        return engine
+
+    def _make_samples(
+        self,
+        n: int = 8,
+        *,
+        k_env: float = -0.10,
+        k_solar: float = 2.5,
+        indoor_start: float = 78.0,
+        outdoor_temp: float = 62.0,
+        sf_start: float = 0.0,
+        sf_end: float = 1.0,
+        noise: float = 0.0,
+    ) -> list[dict]:
+        """Generate synthetic ventilated_decay samples with known physics.
+
+        Physics: dT/dt = k_env*(T_out - T_in) + k_solar*sf
+        With indoor(78) > outdoor(62), k_env=-0.10:
+          ventilation cooling: -0.10*(62-78) = +1.6°F/hr (i.e., passive term drives cooling of the gap)
+          Wait — k_env is used as: rate = k_env*(T_out-T_in)
+          k_env=-0.10, T_out-T_in=-16 → rate = -0.10*(-16) = +1.6 ... that's heating, wrong.
+
+        compute_k_passive uses delta = T_in - T_out (positive when warm inside),
+        and rate = k_p * delta.  For cooling: rate < 0, delta > 0 → k_p < 0.
+        So the passive model convention is: rate = k_passive * (T_in - T_out).
+
+        To stay consistent with compute_k_passive, use:
+          rate = k_env * (T_in - T_out) + k_solar * sf
+        where k_env < 0 (cooling when indoor > outdoor).
+
+        With indoor=78, outdoor=62: delta=+16, k_env=-0.10 → passive rate=-1.6°F/hr (cooling).
+        Solar at sf=0.8: +k_solar*0.8 partially offsets → net slower cooling.
+        Uses Euler integration over 5-min steps.
+        """
+        import random
+
+        random.seed(42)
+        dt_minutes = 5.0
+        dt_hours = dt_minutes / 60.0
+        samples = []
+        t_in = indoor_start
+        for i in range(n):
+            elapsed = i * dt_minutes
+            sf = sf_start + (sf_end - sf_start) * (i / max(n - 1, 1))
+            samples.append(
+                {
+                    "indoor_temp_f": t_in + (random.gauss(0, noise) if noise else 0.0),
+                    "outdoor_temp_f": outdoor_temp,
+                    "elapsed_minutes": elapsed,
+                    "solar_factor": sf,
+                }
+            )
+            # rate = k_env*(T_in - T_out) + k_solar*sf
+            rate = k_env * (t_in - outdoor_temp) + k_solar * sf
+            t_in += rate * dt_hours
+        return samples
+
+    def _make_event(self, samples: list[dict]) -> dict:
+        """Wrap samples in a minimal event dict for _commit_event_from_dict."""
+        return {"obs_id": "test-vent-ols", "samples": samples}
+
+    # ── test 1: 2-param fires when solar_factor range sufficient ────────────
+
+    def test_2param_fires_when_solar_factor_range_sufficient(self):
+        """compute_k_env_solar returns non-None when sf spans [0.0, 1.0]."""
+        from custom_components.climate_advisor.learning import compute_k_env_solar
+
+        samples = self._make_samples(n=10, sf_start=0.0, sf_end=1.0)
+        k_env, k_solar, r2 = compute_k_env_solar(samples)
+        assert k_env is not None, "k_env should be non-None when solar_factor range >= 0.30"
+        assert k_solar is not None, "k_solar should be non-None when solar_factor range >= 0.30"
+        assert r2 is not None, "r2 should be non-None when solar_factor range >= 0.30"
+
+    # ── test 2: 1-param path when solar_factor range too low ────────────────
+
+    def test_1param_path_when_solar_factor_range_low(self):
+        """All samples sf=0.0 (nighttime) → (None, None, None) so caller falls back to 1-param."""
+        from custom_components.climate_advisor.learning import compute_k_env_solar
+
+        samples = self._make_samples(n=8, sf_start=0.0, sf_end=0.0)
+        k_env, k_solar, r2 = compute_k_env_solar(samples)
+        assert k_env is None, "k_env should be None when all solar_factor=0.0 (range < 0.30)"
+        assert k_solar is None, "k_solar should be None when all solar_factor=0.0"
+        assert r2 is None, "r2 should be None when solar_factor range is insufficient"
+
+    # ── test 3: collinearity guard when sf constant non-zero ────────────────
+
+    def test_collinearity_guard_returns_none(self):
+        """All samples sf=1.0 (all midday, constant) → returns (None, None, None)."""
+        from custom_components.climate_advisor.learning import compute_k_env_solar
+
+        samples = self._make_samples(n=8, sf_start=1.0, sf_end=1.0)
+        k_env, k_solar, r2 = compute_k_env_solar(samples)
+        assert k_env is None, "k_env should be None: sf constant at 1.0, range=0 < 0.30"
+        assert k_solar is None, "k_solar should be None when sf range is too narrow"
+
+    # ── test 4: recovers known k_env and k_solar within 10% ─────────────────
+
+    def test_2param_recovers_known_k_env_and_k_solar(self):
+        """OLS with known physics recovers k_env=-0.10, k_solar=2.5 within 10%."""
+        from custom_components.climate_advisor.learning import compute_k_env_solar
+
+        samples = self._make_samples(
+            n=20,
+            k_env=-0.10,
+            k_solar=2.5,
+            indoor_start=76.0,
+            outdoor_temp=68.0,
+            sf_start=0.0,
+            sf_end=1.0,
+            noise=0.0,
+        )
+        k_env, k_solar, r2 = compute_k_env_solar(samples)
+        assert k_env is not None, "OLS should succeed with clean synthetic data"
+        assert k_solar is not None, "k_solar should be recoverable"
+        assert abs(k_env - (-0.10)) / 0.10 < 0.10, f"k_env={k_env:.4f} should be within 10% of -0.10"
+        assert abs(k_solar - 2.5) / 2.5 < 0.10, f"k_solar={k_solar:.4f} should be within 10% of 2.5"
+
+    # ── test 5: k_solar bounds reject negative values ───────────────────────
+
+    def test_k_solar_bounds_reject_negative_value(self, tmp_path: Path):
+        """If 2-param returns k_solar < 0, _commit_event_from_dict must NOT store it.
+
+        A negative k_solar (solar cooling) is physically nonsensical for daytime
+        periods — it means the model picked up the ventilation signal in the wrong
+        parameter.  The bounds check must force fallback to the 1-param result.
+        """
+        from unittest.mock import patch
+
+        engine = self._make_engine(tmp_path)
+
+        # Pure-ventilation nighttime samples (sf=0) → 1-param will succeed cleanly.
+        samples = self._make_samples(n=20, k_env=-0.10, k_solar=0.0, sf_start=0.0, sf_end=0.0)
+
+        def _bad_k_solar(s, min_samples=4):
+            # Force 2-param to return a negative k_solar — bounds check must reject this.
+            return -0.10, -1.5, 0.85
+
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with (
+            patch(self._DT_PATCH, dt_mock),
+            patch("custom_components.climate_advisor.learning.compute_k_env_solar", side_effect=_bad_k_solar),
+        ):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        # Commit should still succeed (1-param fallback) but k_solar must NOT be stored.
+        assert obs is not None, "1-param fallback should still produce a valid obs"
+        assert obs.get("two_param") is not True, "two_param flag must not be set when k_solar out of bounds"
+        assert obs.get("k_solar") is None, f"k_solar must be None in obs when bounds-rejected; got {obs.get('k_solar')}"
+
+    # ── test 6: k_solar updates cache on 2-param commit ─────────────────────
+
+    def test_k_solar_updates_cache_on_2param_commit(self, tmp_path: Path):
+        """After a 2-param commit, model cache has k_solar > 0.
+
+        Uses mock compute_k_env_solar to guarantee 2-param path fires regardless of
+        1-param R² outcome, and to guarantee bounds check passes with k_solar=1.5.
+        The mock returns valid (k_env, k_solar, r2) with r2 above THERMAL_MIN_R_SQUARED.
+        """
+        from unittest.mock import patch
+
+        engine = self._make_engine(tmp_path)
+        # Nighttime samples — 1-param will succeed cleanly (sf=0, pure ventilation).
+        samples = self._make_samples(n=20, k_env=-0.10, k_solar=0.0, sf_start=0.0, sf_end=0.0)
+
+        def _good_2param(s, min_samples=4):
+            return -0.09, 1.5, 0.85  # valid k_env, positive k_solar, high R²
+
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with (
+            patch(self._DT_PATCH, dt_mock),
+            patch("custom_components.climate_advisor.learning.compute_k_env_solar", side_effect=_good_2param),
+        ):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        assert obs is not None, f"ventilated_decay commit should succeed; reject_code={reject_code}"
+        assert obs.get("two_param") is True, "two_param flag must be set when 2-param path succeeds"
+        model = engine.get_thermal_model()
+        assert model["k_solar"] is not None, "k_solar cache must be set after 2-param commit"
+        assert model["k_solar"] > 0, f"k_solar must be positive; got {model['k_solar']}"
+
+    # ── test 7: k_vent_window updated by 2-param k_env ──────────────────────
+
+    def test_k_vent_window_updated_by_2param_k_env(self, tmp_path: Path):
+        """After 2-param commit, k_vent_window is updated with k_env (not old 1-param value).
+
+        Uses mock compute_k_env_solar to guarantee 2-param path fires.  Verifies that the
+        2-param k_env (-0.09) is what ends up in k_vent_window, not the 1-param k_p.
+        """
+        from unittest.mock import patch
+
+        engine = self._make_engine(tmp_path)
+        samples = self._make_samples(n=20, k_env=-0.10, k_solar=0.0, sf_start=0.0, sf_end=0.0)
+
+        def _good_2param(s, min_samples=4):
+            return -0.09, 1.5, 0.85
+
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with (
+            patch(self._DT_PATCH, dt_mock),
+            patch("custom_components.climate_advisor.learning.compute_k_env_solar", side_effect=_good_2param),
+        ):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        assert obs is not None, f"commit should succeed; reject_code={reject_code}"
+        assert obs.get("two_param") is True, "two_param flag must be set"
+        model = engine.get_thermal_model()
+        assert model["k_vent_window"] is not None, "k_vent_window must be set after ventilated commit"
+        # With force_grade="high" and alpha=0.3, first obs → k_vent_window = k_env from 2-param = -0.09
+        assert abs(model["k_vent_window"] - (-0.09)) < 0.001, (
+            f"k_vent_window should reflect 2-param k_env=-0.09; got {model['k_vent_window']}"
+        )
+
+    # ── test 8: 1-param commit does not update k_solar ──────────────────────
+
+    def test_1param_commit_does_not_update_k_solar(self, tmp_path: Path):
+        """Nighttime obs (all sf=0.0, 1-param only) → k_solar cache remains None."""
+        from unittest.mock import patch
+
+        engine = self._make_engine(tmp_path)
+        # Nighttime: all solar_factor=0.0, pure ventilation signal → compute_k_env_solar returns None tuple
+        samples = self._make_samples(
+            n=20,
+            k_env=-0.10,
+            k_solar=0.0,
+            sf_start=0.0,
+            sf_end=0.0,
+            indoor_start=76.0,
+            outdoor_temp=62.0,
+            noise=0.0,
+        )
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with patch(self._DT_PATCH, dt_mock):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        assert obs is not None, f"1-param ventilated commit should succeed; reject_code={reject_code}"
+        model = engine.get_thermal_model()
+        assert model["k_solar"] is None, (
+            f"k_solar cache must stay None after 1-param-only ventilated commit; got {model['k_solar']}"
+        )
+
+    # ── test 9: old samples without solar_factor treated as 0.0 ─────────────
+
+    def test_old_samples_without_solar_factor_treated_as_zero(self):
+        """Samples missing solar_factor key are treated as 0.0 → range=0 → 1-param path."""
+        from custom_components.climate_advisor.learning import compute_k_env_solar
+
+        # Old-format samples: no solar_factor key at all
+        samples = [
+            {"indoor_temp_f": 76.0 - i * 0.1, "outdoor_temp_f": 68.0, "elapsed_minutes": i * 5.0} for i in range(10)
+        ]
+        k_env, k_solar, r2 = compute_k_env_solar(samples)
+        assert k_env is None, "k_env should be None when all samples missing solar_factor (treated as 0.0, range=0)"
+        assert k_solar is None, "k_solar should be None for old-format samples without solar_factor"

@@ -237,6 +237,67 @@ Each committed observation updates the EWMA cache in `learning.py`. The routing 
 
 **E6 fix (Issue #122):** The `passive` branch no longer writes `k_p` to `cache["k_vent"]`. Before this fix, `passive_decay` observations were incorrectly populating the ventilation parameter. Now only `fan_only` observations update `k_vent`.
 
+### Adaptive 2-Param Ventilated OLS (Issue #126)
+
+#### Design
+
+`ventilated_decay` observations were originally 1-param: OLS solves for `k_vent_window`
+only, treating solar gain as noise. On sunny mornings with windows open, uncontrolled
+solar gain inflates `dT/dt`, biasing `k_vent_window` toward a larger (more negative)
+value than the true ventilated decay rate. The 2-param path removes this bias by jointly
+solving for both `k_env_vent` (the true ventilated envelope decay rate) and `k_solar`
+(the solar contribution) when the observation window spans enough solar variation to
+distinguish the two effects.
+
+The upgrade is adaptive — it fires at commit time when the solar factor range across the
+observation's samples meets a minimum threshold. No new observation type, no new trigger
+condition, no new lifecycle complexity.
+
+#### Decision Points (D1–D7)
+
+| # | Decision | Choice | Rationale |
+|---|---|---|---|
+| D1 | New obs type vs. upgrade ventilated_decay | Upgrade existing | Ventilated windows are a single physical event; two concurrent obs types starting/stopping on the same event would complicate the lifecycle with no benefit |
+| D2 | Record solar_factor at collection time vs. compute at commit | Collect at sample time | Ensures samples reflect actual solar conditions during collection; commit-time computation would use a different clock position |
+| D3 | Hard day/night trigger gate (only run 2-param after 8 AM) | No gate | sf_range check is self-gating: nighttime-only windows have sf=0 throughout → range=0 → 1-param fallback fires automatically |
+| D4 | Clock-based solar_factor vs. cloud-aware/lag-corrected | Clock-based accepted | Adequate as approximation; lag averages out over hour-long prediction periods; EWMA smoothing attenuates single-obs error; cloud-aware model deferred |
+| D5 | Self-healing via conf_passive guard vs. data wipe | Guard (non-destructive) | Wipe loses accumulated k_vent_window and solar history; guard promotes k_vent_window to proxy without touching stored data |
+| D6 | 2-param result writes k_solar only vs. also k_vent_window | Both updated | k_env_vent is a cleaner estimate of ventilated decay (solar contamination removed); discarding it in favour of the 1-param result would lose information |
+| D7 | k_solar from ventilated 2-param usable in all prediction paths | Yes | k_solar is a model parameter, not obs-type-specific; the ODE applies it whenever solar conditions and window state warrant |
+
+#### Gate Bridge Self-Healing (Issue #126 Phase A)
+
+The gate bridge handles homes where only ventilated observations have accumulated (no
+passive decay, no HVAC cycles). Without the bridge, those homes would never get physics
+prediction because `confidence_k_passive == "none"` blocks `_physics_eligible()`.
+
+**Three install states:**
+
+1. **Fresh:** `k_passive = None`, `k_vent_window = None` → bridge has nothing to promote;
+   ramp interpolation used. Correct behaviour.
+2. **Contaminated** (pre-Issue #126 installs with the original bug): `k_passive = None`,
+   `confidence = "none"`, `k_vent_window` has a valid value → bridge detects
+   `_conf_k_passive == "none"` (Bug A fix) and promotes `k_vent_window` as proxy
+   k_passive. `_k_passive_via_bridge = True` flag bypasses the `_physics_eligible()`
+   confidence guard (Bug B fix). Physics prediction activates automatically on next
+   coordinator update — no user action, no data wipe.
+3. **Healed / normal:** k_passive is set (either via bridge promotion or real HVAC/passive
+   obs) → bridge does not fire; normal physics path.
+
+**H1 confirmed in production:** Logs from the affected install show
+`"using physics model (conf=none conf_k_passive=low k_passive=-0.2813)"` after the
+bridge runs — confirming that `conf=none` does not block physics when the bridge flag is
+set.
+
+#### Future Scope (Deferred)
+
+- **Cloud-aware solar_factor:** Replace the clock-based sinusoidal approximation with a
+  forecast-derived solar irradiance estimate (e.g., from a weather entity that exposes
+  cloud cover). Reduces thermal mass lag error on partly-cloudy days.
+- **`k_vent_delta` derived metric:** `k_vent_window − k_passive` quantifies the
+  incremental ventilation benefit above bare envelope decay. Useful for advising users on
+  whether opening windows meaningfully accelerates cooling.
+
 ### `record_thermal_observation(obs: dict) -> None`
 
 Called by `learning._commit_event_from_dict()` after parameter extraction. Appends the observation to the rolling history (capped at 90 entries) and calls `_update_thermal_model_cache()`. State is saved to disk immediately after each commit — HA restarts mid-day do not lose accumulated observations.

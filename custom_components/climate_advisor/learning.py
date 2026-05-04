@@ -37,6 +37,7 @@ from .const import (
     THERMAL_K_ACTIVE_HEAT_MIN,
     THERMAL_K_PASSIVE_MAX,
     THERMAL_K_PASSIVE_MIN,
+    THERMAL_K_SOLAR_MAX_F_PER_HR,
     THERMAL_MIN_DECAY_SAMPLES,
     THERMAL_MIN_POST_HEAT_SAMPLES,
     THERMAL_MIN_R_SQUARED,
@@ -44,6 +45,7 @@ from .const import (
     THERMAL_PASSIVE_CONF_HIGH,
     THERMAL_PASSIVE_CONF_LOW,
     THERMAL_PASSIVE_CONF_MEDIUM,
+    THERMAL_SOLAR_FACTOR_MIN_RANGE,
     WEATHER_BIAS_MAX_OBS,
 )
 
@@ -246,6 +248,82 @@ def compute_k_passive(
         return None, r_squared, REJECT_OLS_BAD_FIT
 
     return k_p, r_squared, None
+
+
+def compute_k_env_solar(
+    samples: list[dict],
+    min_samples: int = 4,
+) -> tuple[float | None, float | None, float | None]:
+    """Two-parameter OLS: dT/dt = k_env*(T_in-T_out) + k_solar*solar_factor.
+
+    Separates ventilation-driven heat transfer (k_env) from solar gain (k_solar)
+    in ventilated_decay observations.  Uses the same sign convention as compute_k_passive:
+    delta = midpoint(T_in - T_out), rate = k_env * delta + k_solar * sf.
+    k_env < 0 means the envelope/ventilation cools the home (indoor > outdoor → rate < 0).
+
+    Returns (k_env, k_solar, r_squared) or (None, None, None) on failure.
+    k_env expected range: [THERMAL_K_PASSIVE_MIN, 0.001] (matches k_passive convention)
+    k_solar expected range: [0.0, 8.0] °F/hr (positive; solar warms, not cools)
+
+    Falls back to (None, None, None) if:
+    - fewer than min_samples pairs are available
+    - solar_factor range across samples is < THERMAL_SOLAR_FACTOR_MIN_RANGE (collinear / no solar signal)
+    - OLS matrix is near-singular (det ≈ 0)
+    """
+    pairs = []
+    for i in range(len(samples) - 1):
+        s0, s1 = samples[i], samples[i + 1]
+        t0_in = s0.get("indoor_temp_f")
+        t1_in = s1.get("indoor_temp_f")
+        t0_out = s0.get("outdoor_temp_f")
+        t1_out = s1.get("outdoor_temp_f")
+        sf0 = s0.get("solar_factor", 0.0)
+        sf1 = s1.get("solar_factor", 0.0)
+        e0 = s0.get("elapsed_minutes")
+        e1 = s1.get("elapsed_minutes")
+        if any(v is None for v in (t0_in, t1_in, t0_out, t1_out, e0, e1)):
+            continue
+        dt_hours = (e1 - e0) / 60.0
+        if dt_hours <= 0:
+            continue
+        rate = (t1_in - t0_in) / dt_hours
+        # delta = midpoint(T_in - T_out): positive when indoor warmer than outdoor
+        delta = ((t0_in - t0_out) + (t1_in - t1_out)) / 2.0
+        sf = (sf0 + sf1) / 2.0
+        pairs.append((rate, delta, sf))
+
+    if len(pairs) < min_samples:
+        return None, None, None
+
+    rates = [p[0] for p in pairs]
+    deltas = [p[1] for p in pairs]
+    sfs = [p[2] for p in pairs]
+
+    # Collinearity guard: need sufficient solar_factor variation for 2-param separation
+    sf_range = max(sfs) - min(sfs)
+    if sf_range < THERMAL_SOLAR_FACTOR_MIN_RANGE:
+        return None, None, None  # caller falls back to 1-param
+
+    # 2×2 normal equations (no intercept): [x1x1 x1x2; x1x2 x2x2] @ [k_env; k_solar] = [x1y; x2y]
+    x1x1 = sum(d * d for d in deltas)
+    x2x2 = sum(s * s for s in sfs)
+    x1x2 = sum(d * s for d, s in zip(deltas, sfs, strict=False))
+    x1y = sum(d * r for d, r in zip(deltas, rates, strict=False))
+    x2y = sum(s * r for s, r in zip(sfs, rates, strict=False))
+    det = x1x1 * x2x2 - x1x2 * x1x2
+    if abs(det) < 1e-12:
+        return None, None, None  # numerical collinearity
+
+    k_env = (x2x2 * x1y - x1x2 * x2y) / det
+    k_solar = (x1x1 * x2y - x1x2 * x1y) / det
+
+    # R² (mean-centered, 2-param)
+    mean_r = sum(rates) / len(rates)
+    ss_res = sum((r - k_env * d - k_solar * s) ** 2 for r, d, s in zip(rates, deltas, sfs, strict=False))
+    ss_tot = sum((r - mean_r) ** 2 for r in rates)
+    r_squared = max(0.0, 1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    return k_env, k_solar, r_squared
 
 
 def compute_k_active(
@@ -639,6 +717,14 @@ class LearningEngine:
                     cache["k_vent_window"] = k_p
                 else:
                     cache["k_vent_window"] = (1.0 - alpha) * cache["k_vent_window"] + alpha * k_p
+            # If this was a 2-param commit, also update k_solar from the separated solar term.
+            k_sol = obs.get("k_solar")
+            if k_sol is not None and obs.get("two_param"):
+                alpha_sol = {"high": 0.3, "medium": 0.15, "low": 0.05}.get(grade, 0.05)
+                if cache["k_solar"] is None:
+                    cache["k_solar"] = k_sol
+                else:
+                    cache["k_solar"] = (1.0 - alpha_sol) * cache["k_solar"] + alpha_sol * k_sol
             cache["observation_count_vent"] = cache.get("observation_count_vent", 0) + 1
         elif mode == "solar":
             k_solar = obs.get("k_solar")
@@ -835,12 +921,32 @@ class LearningEngine:
                 "confidence_grade": force_grade or "low",
                 "schema_version": 2,
             }
+            # For ventilated_decay: attempt adaptive 2-param OLS to separate solar gain
+            # from ventilation-driven heat transfer.  Falls back silently to 1-param result
+            # if solar_factor variation is insufficient or bounds checks fail.
+            if obs_type == "ventilated_decay":
+                _k_env_2p, _k_solar_2p, _r2_2p = compute_k_env_solar(samples)
+                if _k_env_2p is not None and _k_solar_2p is not None and _r2_2p is not None:
+                    _k_env_in_bounds = THERMAL_K_PASSIVE_MIN <= _k_env_2p <= 0.001
+                    _k_solar_in_bounds = 0.0 <= _k_solar_2p <= THERMAL_K_SOLAR_MAX_F_PER_HR
+                    if _k_env_in_bounds and _k_solar_in_bounds and _r2_2p >= THERMAL_MIN_R_SQUARED:
+                        obs["k_passive"] = round(_k_env_2p, 5)
+                        obs["k_solar"] = round(_k_solar_2p, 3)
+                        obs["r_squared_passive"] = round(_r2_2p, 3)
+                        obs["two_param"] = True
+                        _LOGGER.info(
+                            "Thermal observation 2-param upgrade: mode=ventilated k_env=%.4f k_solar=%.3f R²=%.3f",
+                            _k_env_2p,
+                            _k_solar_2p,
+                            _r2_2p,
+                        )
+
             _LOGGER.info(
                 "Thermal observation committed: mode=%s grade=%s k_passive=%.4f R²_p=%.3f",
                 hvac_mode_tag,
                 obs["confidence_grade"],
-                k_p,
-                r2_p,
+                obs["k_passive"],
+                obs["r_squared_passive"],
             )
             self.record_thermal_observation(obs)
             return obs, None, None

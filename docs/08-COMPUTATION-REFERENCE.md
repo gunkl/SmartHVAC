@@ -141,6 +141,29 @@ T(t+dt) = T_outdoor + (T - T_outdoor) * exp(k_p * dt) + (Q/k_p) * (exp(k_p * dt)
 
 `_build_predicted_indoor_future()` accepts `occupancy_mode` (default `OCCUPANCY_HOME`) and `classification` parameters. It pre-computes the band schedule once via `_compute_target_band_schedule()` — passing `thermal_model`, `classification`, and `setback_modifier` — before iterating forecast hours. This means the predicted indoor curve uses the same adaptive sleep setpoints as the automation engine, and correctly targets setback temperatures on away/vacation days. Vacation mode propagates setback to all forecast days; away mode applies setback to today only.
 
+**Gate bridge self-healing (Issue #126 Phase A):** When `k_passive` is `None` but
+`k_vent_window` is available (homes with ventilated-only observations and no passive or
+HVAC cycles), the coordinator promotes `k_vent_window` to stand in as the proxy decay
+rate. Two bugs fixed:
+
+- **Bug A:** The bridge now fires when `_conf_k_passive == "none"` (string equality), not
+  only when `k_passive is None`. Pre-Issue #126 installs that stored `k_passive=None` with
+  `confidence="none"` self-heal automatically on the next coordinator update — the bridge
+  detects the "none" string and promotes `k_vent_window`.
+- **Bug B:** The `_k_passive_via_bridge=True` flag bypasses the `_physics_eligible()`
+  confidence check. Without this flag, bridge-provided k_passive would still fail the
+  `conf != "none"` guard and fall through to the ramp path, defeating the purpose of the
+  bridge.
+
+Install states handled:
+
+| Install state | k_passive | confidence | k_vent_window | Bridge fires? | Physics eligible? |
+|---|---|---|---|---|---|
+| Fresh — no data | `None` | `"none"` | `None` | No (nothing to promote) | No — ramp |
+| Contaminated — old bug | `None` | `"none"` | valid | Yes — promotes k_vent_window | Yes — physics |
+| Healed — bridge ran | promoted value | `"none"` (unchanged) | valid | Not needed (k_passive set) | Yes — bypass flag |
+| Normal — HVAC obs | valid | `"low"`/`"medium"`/`"high"` | any | Not needed | Yes — normal path |
+
 **Fallback (ramp interpolation):** When model confidence is `"none"` or `k_passive` is unavailable/non-negative, the legacy ramp path runs:
 
 | Condition | Ramp Duration |
@@ -281,12 +304,66 @@ The `hvac_mode` field in the observation dict determines which cache field is up
 | `"cool"` | `k_active_cool`, `k_passive` | `observation_count_cool` |
 | `"passive"` | `k_passive` only | `observation_count_passive` |
 | `"fan_only"` | `k_vent` (from obs `k_passive` field) | `observation_count_fan_only` |
-| `"ventilated"` | `k_vent_window` (from obs `k_passive` field) | `observation_count_vent` |
+| `"ventilated"` | `k_vent_window` (from obs `k_passive` field); also `k_solar` when 2-param OLS fires (see §5e-v) | `observation_count_vent` |
 | `"solar"` | `k_solar` (from obs `k_solar` field) | `observation_count_solar` |
 
 **E6 fix**: Before Issue #122, the `elif mode == "passive"` branch incorrectly wrote
 `k_p` to `cache["k_vent"]`. The fix removes that line — passive observations no longer
 contaminate the ventilation parameter. Only `fan_only` observations update `k_vent`.
+
+#### 5e-v. Adaptive 2-Param Ventilated OLS (Issue #126)
+
+`ventilated_decay` observations optionally upgrade from 1-parameter OLS (solving only
+`k_vent_window`) to a 2-parameter joint solve (`k_env_vent` + `k_solar`) when solar
+conditions during the window provide enough variation to separate the two effects.
+
+**Trigger condition:** At commit time, if
+`max(solar_factor across samples) − min(solar_factor across samples) ≥ THERMAL_SOLAR_FACTOR_MIN_RANGE (0.30)`,
+`compute_k_env_solar(samples)` runs the 2×2 normal equations:
+
+```
+[Σδ²    Σδ·sf ] [k_env ] = [Σrate·δ ]
+[Σδ·sf  Σsf²  ] [k_solar]   [Σrate·sf]
+```
+
+where `δ = T_out − T_in`, `sf = solar_factor`, `rate = ΔT/Δt` for each sample pair.
+
+**Collinearity guard:** If `|det(A)| < 1e-12`, the solve is skipped and the standard
+1-param OLS path runs instead. This protects against numerical instability when `δ` and
+`sf` are nearly proportional (e.g., morning window observations where outdoor temperature
+and solar position track together).
+
+**Acceptance criteria:** The 2-param result is accepted only if:
+- `k_env_vent` passes the same bounds check as `k_passive` (`[THERMAL_K_PASSIVE_MIN, THERMAL_K_PASSIVE_MAX]`)
+- `k_solar ≥ 0` (solar must add heat, not remove it)
+- R² of the 2-param fit ≥ `THERMAL_MIN_R_SQUARED (0.2)`
+
+**On acceptance:** `k_vent_window` in the EWMA cache is updated with `k_env_vent`
+(a cleaner ventilated estimate than the 1-param result, because solar contamination is
+removed). `k_solar` in the EWMA cache is updated separately via the same EWMA mechanism.
+**On rejection** (collinearity, bounds failure, or low R²): the standard 1-param OLS
+result for `k_vent_window` is used and `k_solar` is not updated from this observation.
+
+**`solar_factor` in samples:** From Issue #126, `solar_factor` is recorded in each
+`ventilated_decay` sample dict at collection time (not computed at commit time). Old
+sample dicts without a `solar_factor` key are treated as `0.0` — the 1-param fallback
+fires because `sf_range` will be 0.0 < 0.30.
+
+**Constant:** `THERMAL_SOLAR_FACTOR_MIN_RANGE = 0.30`
+
+**Why adaptive (not a separate obs type):** Ventilated windows are often long-duration
+open events. Splitting into separate obs types would require two concurrent windows that
+start and stop on the same physical event, complicating the observation lifecycle.
+Upgrading the existing `ventilated_decay` observation at commit time keeps the pipeline
+simple — the 2-param path is a quality improvement, not a new signal collection mechanism.
+
+**Thermal mass lag:** The clock-based `solar_factor` (sinusoidal, peaks at solar noon) is
+an approximation. Real solar heat transfer lags the solar position by 30–90 minutes due
+to thermal mass (walls, floors absorbing and re-radiating heat). This approximation is
+acceptable because: (a) `k_solar` is used in predictions that integrate over hour-long
+periods where lag averages out; (b) the EWMA smoothing (α = 0.05 at "low" grade) further
+attenuates single-observation error; (c) a cloud-aware, lag-corrected solar model is
+deferred to future scope.
 
 ---
 
@@ -607,6 +684,7 @@ Complete list of all constants from `const.py` that affect runtime behavior.
 | `THERMAL_FAN_SAMPLE_INTERVAL_S` | `120` | seconds (2 min) | Sample gate for `fan_only_decay` — faster than passive dynamics (H1) |
 | `THERMAL_SOLAR_SAMPLE_INTERVAL_S` | `300` | seconds (5 min) | Sample gate for `solar_gain` (H1) |
 | `THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S` | `300` | seconds (5 min) | Sample gate for HVAC post-heat phase — passive dynamics (H1) |
+| `THERMAL_SOLAR_FACTOR_MIN_RANGE` | `0.30` | — | Minimum solar_factor range (max−min) across ventilated_decay samples to trigger 2-param OLS (Issue #126) |
 
 **User-facing config keys** (set via config flow, stored in the config entry):
 
@@ -1119,4 +1197,4 @@ Issue #125 adds a `thermal_pipeline` key to the debug-state API response. This k
 
 ---
 
-_Last Updated: 2026-05-02_
+_Last Updated: 2026-05-03_
