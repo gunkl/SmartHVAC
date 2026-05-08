@@ -1991,6 +1991,13 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             was_running = old_state.state not in idle_modes
             is_running = new_state.state not in idle_modes
 
+        _LOGGER.info(
+            "_async_thermostat_changed: hvac action=%s was_running=%s is_running=%s",
+            new_action,
+            was_running,
+            is_running,
+        )
+
         if not was_running and is_running:
             # HVAC just turned on — determine session_mode from hvac_action or hvac_mode
             self._hvac_on_since = dt_util.now()
@@ -2504,6 +2511,12 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if obs_type in self._pending_observations:
             self._abandon_observation(obs_type, "new HVAC session started")
 
+        _LOGGER.info(
+            "_start_hvac_observation: type=%s starting (prior obs=%s)",
+            obs_type,
+            list(self._pending_observations.keys()),
+        )
+
         now = dt_util.now()
         pre_samples = []
         for s in self._pre_heat_sample_buffer:
@@ -2900,6 +2913,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         elapsed_post = (dt_util.now() - active_end).total_seconds() / 60.0
 
         if elapsed_post > THERMAL_POST_HEAT_TIMEOUT_MINUTES:
+            _n_active = len(obs.get("active_samples", []))
+            _n_post = len(obs.get("post_heat_samples", []))
+            _LOGGER.info(
+                "_check_hvac_stabilization: type=%s timeout n_active=%d n_post=%d elapsed_post=%.0fmin — abandoning",
+                obs_type,
+                _n_active,
+                _n_post,
+                elapsed_post,
+            )
             self._abandon_observation(obs_type, "post_heat timeout exceeded")
             await self.hass.async_add_executor_job(self.learning.save_state)
             return
@@ -2931,6 +2953,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             peak_f = obs.get("peak_indoor_f")
             end_f = indoor_vals[-1]
             if peak_f is not None and (peak_f - end_f) < THERMAL_HVAC_MIN_DECAY_F:
+                _n_active_pg = len(obs.get("active_samples", []))
+                _n_post_pg = len(obs.get("post_heat_samples", []))
+                _LOGGER.info(
+                    "_check_hvac_stabilization: type=%s plateau guard n_active=%d n_post=%d elapsed_post=%.0fmin",
+                    obs_type,
+                    _n_active_pg,
+                    _n_post_pg,
+                    elapsed_post,
+                )
                 _LOGGER.info(
                     "Thermal HVAC plateau guard: obs_id=%s peak=%.2f end=%.2f decay=%.2f < %.2f — abandoning",
                     obs.get("obs_id", "?"),

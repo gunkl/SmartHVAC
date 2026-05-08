@@ -2459,3 +2459,256 @@ class TestGradePassiveConfidence:
         """10 heat + 10 cool = 20 ≥ THERMAL_PASSIVE_CONF_MEDIUM(15), < THERMAL_PASSIVE_CONF_HIGH(30) → 'medium'."""
         cache = {"observation_count_heat": 10, "observation_count_cool": 10}
         assert _grade_passive_confidence(cache) == "medium"
+
+
+# ---------------------------------------------------------------------------
+# TestHvacObservationLogging
+# ---------------------------------------------------------------------------
+
+
+class TestHvacObservationLogging:
+    """Phase A diagnostics: structured INFO logs at HVAC observation lifecycle events.
+
+    These tests validate that the coordinator emits visible, parseable log lines at:
+      1. HVAC action state-change detection (was_running / is_running)
+      2. _start_hvac_observation entry (obs_type, prior obs list)
+      3. Pre-abandon in _check_hvac_stabilization timeout path (n_active, n_post, elapsed)
+    """
+
+    # ── helper: build a minimal thermostat-changed event ─────────────────────
+
+    @staticmethod
+    def _make_thermostat_event(old_action: str, new_action: str, old_mode: str = "heat", new_mode: str = "heat"):
+        """Build a minimal HA state-change event dict for _async_thermostat_changed."""
+        old_state = MagicMock()
+        old_state.state = old_mode
+        old_state.attributes = {"hvac_action": old_action}
+
+        new_state = MagicMock()
+        new_state.state = new_mode
+        new_state.attributes = {"hvac_action": new_action}
+
+        event = MagicMock()
+        event.data = {"old_state": old_state, "new_state": new_state}
+        return event
+
+    # ── helper: coord with _async_thermostat_changed bound ───────────────────
+
+    @staticmethod
+    def _make_coord_with_thermostat_handler():
+        """Coordinator stub with _async_thermostat_changed and _start_hvac_observation bound."""
+        ClimateAdvisorCoordinator = _get_coordinator_class()
+        coord = object.__new__(ClimateAdvisorCoordinator)
+
+        hass = MagicMock()
+
+        def _consume_coroutine(coro):
+            coro.close()
+
+        hass.async_create_task = MagicMock(side_effect=_consume_coroutine)
+
+        async def _exec_job(fn, *args):
+            return fn(*args)
+
+        hass.async_add_executor_job = _exec_job
+        coord.hass = hass
+
+        coord.config = {
+            "climate_entity": "climate.test",
+            "weather_entity": "weather.test",
+            "comfort_heat": 70,
+            "comfort_cool": 75,
+            "learning_enabled": True,
+        }
+
+        ae = MagicMock()
+        ae._fan_active = False
+        ae._natural_vent_active = False
+        ae.is_paused_by_door = False
+        ae._hvac_command_pending = False
+        coord.automation_engine = ae
+
+        learning = MagicMock()
+        learning.set_pending_thermal_event = MagicMock()
+        learning.save_state = MagicMock()
+        coord.learning = learning
+
+        coord._pending_observations = {}
+        coord._pending_thermal_event = None
+        coord._pre_heat_sample_buffer = []
+        coord._last_outdoor_temp = 55.0
+        coord._hvac_on_since = None
+
+        coord._get_indoor_temp = MagicMock(return_value=72.0)
+        coord._any_sensor_open = MagicMock(return_value=False)
+        coord._async_save_state = AsyncMock()
+        coord._flush_hvac_runtime = MagicMock()
+        coord._is_recent_hvac_command = MagicMock(return_value=False)
+
+        def _get_current_sample(elapsed: float) -> dict:
+            return {
+                "timestamp": _FAKE_NOW.isoformat(),
+                "indoor_temp_f": 72.0,
+                "outdoor_temp_f": 55.0,
+                "elapsed_minutes": elapsed,
+            }
+
+        coord._get_current_sample = _get_current_sample
+
+        async def _noop_start_thermal(*a, **kw):
+            pass
+
+        async def _noop_end_active(*a, **kw):
+            pass
+
+        async def _noop_abandon_thermal(*a, **kw):
+            pass
+
+        coord._start_thermal_event = _noop_start_thermal
+        coord._end_active_phase = _noop_end_active
+        coord._abandon_thermal_event = _noop_abandon_thermal
+
+        for method_name in (
+            "_ensure_pending_observations",
+            "_start_hvac_observation",
+            "_abandon_observation",
+            "_commit_observation_if_sufficient",
+            "_end_hvac_active_phase",
+            "_async_thermostat_changed",
+        ):
+            method = getattr(ClimateAdvisorCoordinator, method_name)
+            setattr(coord, method_name, types.MethodType(method, coord))
+
+        return coord
+
+    # ── test 1: hvac_action transition log ───────────────────────────────────
+
+    def test_hvac_state_change_logs_transition(self):
+        """_async_thermostat_changed emits INFO log with action, was_running, is_running
+        when hvac_action changes from idle to heating."""
+        coord = self._make_coord_with_thermostat_handler()
+        event = self._make_thermostat_event(old_action="idle", new_action="heating")
+
+        with patch("custom_components.climate_advisor.coordinator._LOGGER") as mock_log:
+            asyncio.run(coord._async_thermostat_changed(event))
+
+        # Collect all info calls and their rendered messages
+        info_messages = []
+        for call in mock_log.info.call_args_list:
+            fmt = call[0][0]
+            args = call[0][1:]
+            try:
+                info_messages.append(fmt % args)
+            except Exception:
+                info_messages.append(fmt)
+
+        matched = [m for m in info_messages if "was_running" in m or "_async_thermostat_changed" in m]
+        assert matched, (
+            f"Expected an INFO log containing 'was_running' or '_async_thermostat_changed'. "
+            f"Got info calls: {info_messages}"
+        )
+        combined = " ".join(matched)
+        assert "False" in combined or "was_running=False" in combined, (
+            f"Expected was_running=False in transition log. Got: {combined}"
+        )
+        assert "True" in combined or "is_running=True" in combined, (
+            f"Expected is_running=True in transition log. Got: {combined}"
+        )
+
+    # ── test 2: observation start log ────────────────────────────────────────
+
+    def test_hvac_observation_start_logged(self):
+        """_start_hvac_observation emits an INFO log that includes obs_type and 'starting'."""
+        coord = _make_obs_coord(hvac_action="heating", indoor_temp=72.0, outdoor_temp=55.0)
+        dt_mock = _make_dt_mock()
+
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock),
+            patch("custom_components.climate_advisor.coordinator._LOGGER") as mock_log,
+        ):
+            asyncio.run(coord._start_hvac_observation("heat"))
+
+        info_messages = []
+        for call in mock_log.info.call_args_list:
+            fmt = call[0][0]
+            args = call[0][1:]
+            try:
+                info_messages.append(fmt % args)
+            except Exception:
+                info_messages.append(fmt)
+
+        # Must see a log about starting the observation with obs_type
+        start_logs = [m for m in info_messages if "starting" in m.lower() or "start" in m.lower()]
+        assert start_logs, f"Expected an INFO log containing 'start' or 'starting'. Got info calls: {info_messages}"
+        combined = " ".join(start_logs)
+        assert "hvac_heat" in combined, f"Expected obs_type 'hvac_heat' in start log. Got: {combined}"
+
+    # ── test 3: abandon log includes n_post, elapsed, reason ─────────────────
+
+    def test_hvac_observation_abandon_logs_n_post_and_elapsed(self):
+        """_check_hvac_stabilization timeout path emits INFO log with n_post and elapsed before abandon."""
+        coord = _make_obs_coord(hvac_action="idle", indoor_temp=72.0, outdoor_temp=55.0)
+
+        from datetime import timedelta
+
+        active_end = _FAKE_NOW - timedelta(minutes=60)  # 60 min elapsed → exceeds timeout
+        post_samples = [
+            {
+                "timestamp": _FAKE_NOW.isoformat(),
+                "indoor_temp_f": 72.0,
+                "outdoor_temp_f": 55.0,
+                "elapsed_minutes": float(i),
+            }
+            for i in range(3)  # 3 post-heat samples
+        ]
+        coord._pending_observations[OBS_TYPE_HVAC_HEAT] = {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-abandon-hvac-1",
+            "start_time": (_FAKE_NOW - timedelta(minutes=90)).isoformat(),
+            "status": "monitoring",
+            "hvac_mode": "heat",
+            "session_mode": "heat",
+            "active_start": (_FAKE_NOW - timedelta(minutes=90)).isoformat(),
+            "active_end": active_end.isoformat(),
+            "_phase": "post_heat",
+            "active_samples": [],
+            "post_heat_samples": post_samples,
+            "pre_heat_samples": [],
+            "peak_indoor_f": 74.0,
+            "start_indoor_f": 70.0,
+            "end_indoor_f": None,
+            "stabilized_at": None,
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+        dt_mock = _make_dt_mock(now=_FAKE_NOW)
+        with (
+            patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock),
+            patch("custom_components.climate_advisor.coordinator._LOGGER") as mock_log,
+        ):
+            asyncio.run(coord._check_hvac_stabilization(OBS_TYPE_HVAC_HEAT))
+
+        # Confirm the observation was abandoned
+        assert OBS_TYPE_HVAC_HEAT not in coord._pending_observations, (
+            "Expected hvac_heat obs to be abandoned after 60-min post-heat timeout"
+        )
+
+        # Collect all info calls
+        info_messages = []
+        for call in mock_log.info.call_args_list:
+            fmt = call[0][0]
+            args = call[0][1:]
+            try:
+                info_messages.append(fmt % args)
+            except Exception:
+                info_messages.append(fmt)
+
+        # Must see a diagnostic log BEFORE the abandon that includes n_post and elapsed
+        pre_abandon_logs = [m for m in info_messages if "n_post" in m or "post_heat" in m.lower()]
+        assert pre_abandon_logs, (
+            f"Expected a pre-abandon INFO log containing 'n_post' or 'post_heat'. Got info calls: {info_messages}"
+        )
+        combined = " ".join(pre_abandon_logs)
+        # n_post=3 should appear
+        assert "3" in combined, f"Expected n_post=3 to appear in pre-abandon log. Got: {combined}"
