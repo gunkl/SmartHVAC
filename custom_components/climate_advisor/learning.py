@@ -121,14 +121,26 @@ class ThermalObservation:
 
 
 def _grade_passive_confidence(cache: dict) -> str:
-    """Compute confidence tier for k_passive based on combined observation count."""
+    """Compute confidence tier for k_passive based on combined observation count.
+
+    Only observation types that write to k_passive are counted:
+      - passive_decay, fan_only_decay, hvac_heat, hvac_cool
+
+    Excluded types (they write to different cache fields):
+      - observation_count_vent  → writes to k_vent_window only
+        (guarded by _envelope_modes check in learning.py commit path)
+      - observation_count_solar → writes to k_solar only
+
+    fan_only observations are an approximation: fan_only_decay does not write to
+    k_passive directly, but fan-only decay is a close proxy for envelope decay.
+    A dedicated confidence_k_vent field is deferred to a future follow-up.
+    """
     count = (
         cache.get("observation_count_passive", 0)
-        + cache.get("observation_count_vent", 0)
         + cache.get("observation_count_fan_only", 0)
         + cache.get("observation_count_heat", 0)
         + cache.get("observation_count_cool", 0)
-    )  # TODO: add confidence_k_env as a dedicated envelope-only confidence field (future follow-up)
+    )
     if count < THERMAL_PASSIVE_CONF_LOW:
         return "none"
     if count < THERMAL_PASSIVE_CONF_MEDIUM:
@@ -887,17 +899,79 @@ class LearningEngine:
         """
         if obs_type in ("passive_decay", "fan_only_decay", "ventilated_decay"):
             samples = event.get("samples", event.get("active_samples", []))
+
+            # For ventilated_decay: attempt 2-param OLS as PRIMARY path when solar_factor
+            # variation is sufficient.  This handles the warm-sunny-day case where solar
+            # gain drives a positive net dT/dt (indoor rising) even though outdoor is cooler
+            # than indoor.  1-param OLS sees a positive k and raises ols_wrong_sign — so
+            # 2-param must be tried FIRST to separate k_env (ventilation) from k_solar.
+            if obs_type == "ventilated_decay":
+                _sf_vals = [s.get("solar_factor", 0.0) for s in samples]
+                _sf_range = max(_sf_vals) - min(_sf_vals) if len(_sf_vals) >= 2 else 0.0
+                if _sf_range >= THERMAL_SOLAR_FACTOR_MIN_RANGE:
+                    _k_env_2p, _k_solar_2p, _r2_2p = compute_k_env_solar(samples)
+                    if (
+                        _k_env_2p is not None
+                        and _k_solar_2p is not None
+                        and _r2_2p is not None
+                        and THERMAL_K_PASSIVE_MIN <= _k_env_2p <= 0.001
+                        and 0.0 <= _k_solar_2p <= THERMAL_K_SOLAR_MAX_F_PER_HR
+                        and _r2_2p >= THERMAL_MIN_R_SQUARED
+                    ):
+                        # 2-param PRIMARY commit — bypass 1-param entirely.
+                        now_str = dt_util.now().isoformat()
+                        date_str = dt_util.now().date().isoformat()
+                        obs = {
+                            "event_id": event.get("obs_id", event.get("event_id", str(uuid.uuid4()))),
+                            "timestamp": now_str,
+                            "date": date_str,
+                            "hvac_mode": "ventilated",
+                            "k_passive": round(_k_env_2p, 5),
+                            "k_solar": round(_k_solar_2p, 3),
+                            "k_active": None,
+                            "r_squared_passive": round(_r2_2p, 3),
+                            "r_squared_active": None,
+                            "sample_count_post": len(samples),
+                            "confidence_grade": force_grade or "low",
+                            "schema_version": 2,
+                            "two_param": True,
+                        }
+                        _LOGGER.info(
+                            "Thermal obs 2-param PRIMARY commit: mode=ventilated "
+                            "k_env=%.4f k_solar=%.3f R²=%.3f sf_range=%.2f n=%d",
+                            _k_env_2p,
+                            _k_solar_2p,
+                            _r2_2p,
+                            _sf_range,
+                            len(samples),
+                        )
+                        self.record_thermal_observation(obs)
+                        return obs, None, None
+                    # 2-param attempted but failed bounds/R²; fall through to 1-param.
+
             k_p, r2_p, _reject_code = compute_k_passive(samples, min_samples=THERMAL_MIN_DECAY_SAMPLES)
             if k_p is None:
                 _temps = [s["indoor_temp_f"] for s in samples if "indoor_temp_f" in s]
                 _indoor_dt = round(max(_temps) - min(_temps), 2) if len(_temps) >= 2 else 0.0
+                _sf_vals = [s.get("solar_factor", 0.0) for s in samples if "solar_factor" in s]
+                _sf_range_diag = round(max(_sf_vals) - min(_sf_vals), 2) if len(_sf_vals) >= 2 else 0.0
+                _indoor_direction = (
+                    "rising"
+                    if len(_temps) >= 2 and _temps[-1] > _temps[0] + 0.1
+                    else "falling"
+                    if len(_temps) >= 2 and _temps[-1] < _temps[0] - 0.1
+                    else "flat"
+                )
                 _LOGGER.info(
-                    "Thermal event commit failed (%s): k_passive rejected (R²=%.3f, n=%d, indoor_ΔT=%.2f°F) code=%s",
+                    "Thermal event commit failed (%s): k_passive rejected (R²=%.3f, n=%d, "
+                    "indoor_ΔT=%.2f°F) code=%s sf_range=%.2f indoor=%s",
                     obs_type,
                     r2_p,
                     len(samples),
                     _indoor_dt,
                     _reject_code or "unknown",
+                    _sf_range_diag,
+                    _indoor_direction,
                 )
                 return None, _reject_code, r2_p
             now_str = dt_util.now().isoformat()
@@ -921,9 +995,9 @@ class LearningEngine:
                 "confidence_grade": force_grade or "low",
                 "schema_version": 2,
             }
-            # For ventilated_decay: attempt adaptive 2-param OLS to separate solar gain
-            # from ventilation-driven heat transfer.  Falls back silently to 1-param result
-            # if solar_factor variation is insufficient or bounds checks fail.
+            # For ventilated_decay: attempt adaptive 2-param OLS upgrade when sf_range
+            # is below the primary-path threshold (< 0.30) but 1-param succeeded.
+            # Falls back silently to 1-param result if bounds checks fail.
             if obs_type == "ventilated_decay":
                 _k_env_2p, _k_solar_2p, _r2_2p = compute_k_env_solar(samples)
                 if _k_env_2p is not None and _k_solar_2p is not None and _r2_2p is not None:

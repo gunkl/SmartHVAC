@@ -145,6 +145,7 @@ from .const import (
     THERMAL_ROLLING_MIN_WINDOW_MINUTES,
     THERMAL_SOLAR_DAYTIME_END_H,
     THERMAL_SOLAR_DAYTIME_START_H,
+    THERMAL_SOLAR_FACTOR_MIN_RANGE,
     THERMAL_SOLAR_MIN_RATE_F_PER_HR,
     THERMAL_SOLAR_MIN_SAMPLES,
     THERMAL_SOLAR_SAMPLE_INTERVAL_S,
@@ -2781,6 +2782,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 _vent_signal_sufficient = (
                     (max(_vent_temps) - min(_vent_temps)) >= THERMAL_ROLLING_MIN_DELTA_T_F if _vent_temps else False
                 )
+                # Solar accumulation guard: during daytime, suppress early commit if
+                # sf_range has not yet reached the 2-param OLS threshold.  Without this,
+                # obs commits at 30 min (sf_range ≈ 0.05–0.15) before 2-param can fire,
+                # producing ols_wrong_sign rejections on solar-gain mornings.
+                # The 240-min hard cap in _evaluate_rolling_window fires normally.
+                _sf_vals_vent = [s.get("solar_factor", 0.0) for s in samples_list if "solar_factor" in s]
+                _sf_range_vent = max(_sf_vals_vent) - min(_sf_vals_vent) if len(_sf_vals_vent) >= 2 else 0.0
+                if 8 <= now.hour < 18 and _sf_range_vent < THERMAL_SOLAR_FACTOR_MIN_RANGE:
+                    _vent_signal_sufficient = False
                 if self._evaluate_rolling_window(obs_type, obs, _vent_signal_sufficient, skip_delta_guard=True):
                     continue
                 if not _sensor_open:
@@ -3013,6 +3023,16 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             first = samples[0].get("indoor_temp_f", samples[0].get("indoor_f", 0))
             last = samples[-1].get("indoor_temp_f", samples[-1].get("indoor_f", 0))
             delta_f = round(abs(last - first), 2)
+        _sf_vals_ab = [s.get("solar_factor", 0.0) for s in samples if "solar_factor" in s]
+        _sf_range_ab = round(max(_sf_vals_ab) - min(_sf_vals_ab), 2) if len(_sf_vals_ab) >= 2 else 0.0
+        _temps_ab = [s.get("indoor_temp_f", 0.0) for s in samples if "indoor_temp_f" in s]
+        _dir_ab = (
+            "rising"
+            if len(_temps_ab) >= 2 and _temps_ab[-1] > _temps_ab[0] + 0.1
+            else "falling"
+            if len(_temps_ab) >= 2 and _temps_ab[-1] < _temps_ab[0] - 0.1
+            else "flat"
+        )
         _LOGGER.info(
             "Thermal obs abandoned [type=%s reason=%s n=%d/%s dt=%.2f°F/%s elapsed=%sm]",
             obs_type,
@@ -3033,6 +3053,8 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "delta_t_f": delta_f,
             "delta_t_required": delta_t_required,
             "elapsed_minutes": elapsed_minutes,
+            "sf_range": _sf_range_ab,
+            "indoor_direction": _dir_ab,
             "timestamp": dt_util.now().isoformat(),
         }
         if not hasattr(self, "_rejection_log"):
@@ -3655,6 +3677,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 "confidence_k_passive": thermal_model.get("confidence_k_passive", "none"),
                 "k_passive": thermal_model.get("k_passive"),
                 "k_vent": thermal_model.get("k_vent"),
+                "k_vent_window": thermal_model.get("k_vent_window"),
                 "k_solar": (
                     convert_delta(thermal_model["k_solar"], unit) if thermal_model.get("k_solar") is not None else None
                 ),
@@ -4246,6 +4269,8 @@ def _build_predicted_indoor_future(
     _k_active_cool: float | None = None
     _k_vent: float | None = None
     _k_solar: float | None = None
+    _k_vent_window: float | None = None
+    _k_passive_via_bridge: bool = False
     if thermal_model and current_indoor_temp is not None:
         _conf = thermal_model.get("confidence", "none")
         _conf_k_passive = thermal_model.get("confidence_k_passive")
@@ -4356,7 +4381,38 @@ def _build_predicted_indoor_future(
         # Look up pre-computed band entry for this timestamp
         _band = _band_lookup.get(local_ts.isoformat(), {"lower": comfort_heat, "upper": comfort_cool})
 
-        if _use_physics and _t_current is not None and outdoor is not None:
+        # Per-hour window-open check (computed before bridge guard so both can reference it).
+        # Guard: skip substitution when gate bridge already used k_vent_window as
+        # k_passive for all hours (_k_passive_via_bridge=True).
+        _hour_windows_open = (
+            _windows_recommended
+            and _k_vent_window is not None
+            and _window_open_time is not None
+            and _window_close_time is not None
+            and _window_open_time <= local_ts.time() < _window_close_time
+        )
+
+        # Bridge guard: k_vent_window is measured during open-window conditions
+        # (envelope k + ventilation k).  Applying it to window-closed hours overpredicts
+        # decay (τ≈7h) — the true envelope τ is much longer (≈50h).  Fall back to ramp
+        # only when the classification schedules windows for today but the current hour
+        # falls outside the open window.  When windows are not recommended at all (no
+        # window schedule), k_vent_window is the best available proxy and physics runs
+        # for all hours (behaviour consistent with pre-guard bridge semantics).
+        _bridge_guard_applies = (
+            _k_passive_via_bridge
+            and _windows_recommended  # classification has a window schedule today
+            and not _hour_windows_open  # but this hour is outside the open window
+        )
+        _use_physics_for_hour = _use_physics and not _bridge_guard_applies
+        if _bridge_guard_applies and _use_physics:
+            _LOGGER.debug(
+                "_build_predicted_indoor_future: bridge hour=%s windows-closed, using ramp "
+                "(k_vent_window not valid for envelope-only decay)",
+                local_ts.strftime("%H:%M"),
+            )
+
+        if _use_physics_for_hour and _t_current is not None and outdoor is not None:
             if mode == "heat":
                 setpoint = _band["lower"]
                 k_active_for_mode = _k_active_heat
@@ -4377,15 +4433,6 @@ def _build_predicted_indoor_future(
             # Per-hour k selection: window-open hours use k_vent_window (total ventilated
             # rate) as a replacement for k_passive. k_vent_window is measured as the total
             # effective k during ventilated conditions — replacement semantics, not addition.
-            # Guard: skip substitution when gate bridge already used k_vent_window as
-            # k_passive for all hours (_k_passive_via_bridge=True).
-            _hour_windows_open = (
-                _windows_recommended
-                and _k_vent_window is not None
-                and _window_open_time is not None
-                and _window_close_time is not None
-                and _window_open_time <= local_ts.time() < _window_close_time
-            )
             _k_passive_for_hour = _k_vent_window if (_hour_windows_open and not _k_passive_via_bridge) else _k_passive
             if _hour_windows_open and not _k_passive_via_bridge:
                 _LOGGER.debug(

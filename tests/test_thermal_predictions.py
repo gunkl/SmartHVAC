@@ -527,16 +527,18 @@ class TestPerHourVentilationWiring:
         )
 
     def test_gate_bridge_home_no_double_counting(self):
-        """When gate bridge is active (k_passive=None), per-hour substitution must NOT fire.
+        """When gate bridge is active (k_passive=None), per-hour k_vent_window substitution must NOT fire.
 
-        The gate bridge sets k_passive = k_vent_window for ALL hours.
-        If per-hour substitution also fires, k_vent_window would be used twice
-        (no change in value, but the semantics would be wrong if k_vent_window
-        were ever replaced with a different value in the bridge path).
+        After the bridge window guard fix (Issue #130):
+        - Bridge guard fires only when classification has windows_recommended=True AND the hour
+          falls outside the window schedule.  Window-closed bridge hours use ramp fallback.
+        - Window-open bridge hours let physics run (k_vent_window is valid for those conditions).
 
-        The observable guard: predictions with windows_recommended=True and
-        windows_recommended=False must be IDENTICAL when the bridge is active.
-        This confirms the `not _k_passive_via_bridge` guard is working.
+        The "no double-counting" intent is preserved: the per-hour substitution guard
+        (`not _k_passive_via_bridge`) still prevents double-counting during open-window hours.
+
+        Observable: bridge home with windows_recommended=True, hour 9 (pre-window) is ramp-flat.
+        Hours 10–16 (window open) use physics → temps decay below indoor seed (72°F).
         """
         now = self._NOW_VC
         hours = list(range(9, 18))
@@ -550,24 +552,229 @@ class TestPerHourVentilationWiring:
             "k_active_heat": None,
             "k_active_cool": None,
         }
+        # windows_recommended=True with schedule → bridge guard applies outside window
         classification_open = _make_classification(
             windows_recommended=True,
             window_open_time=time(10, 0),
             window_close_time=time(17, 0),
         )
-        classification_closed = _make_classification(windows_recommended=False)
 
-        result_open = _call_vc(entries, now=now, indoor=self._INDOOR, model=model, classification=classification_open)
-        result_closed = _call_vc(
-            entries, now=now, indoor=self._INDOOR, model=model, classification=classification_closed
+        result = _call_vc(entries, now=now, indoor=self._INDOOR, model=model, classification=classification_open)
+
+        assert len(result) == len(hours)
+        temps_by_h = {datetime.fromisoformat(r["ts"]).hour: r["temp"] for r in result}
+
+        # Hour 9 is window-closed (pre-window): bridge guard fires → ramp → ≈ indoor seed (72°F)
+        assert temps_by_h[9] == pytest.approx(self._INDOOR, abs=1.0), (
+            f"Bridge guard (window-closed hour 9): expected ramp anchor ~{self._INDOOR}°F; got {temps_by_h[9]:.2f}°F"
         )
 
-        assert len(result_open) == len(result_closed)
-        for r_o, r_c in zip(result_open, result_closed, strict=True):
-            assert r_o["temp"] == pytest.approx(r_c["temp"], abs=0.01), (
-                f"Gate bridge guard: temps must be identical at {r_o['ts']} "
-                f"regardless of windows_recommended; got {r_o['temp']} vs {r_c['temp']}"
+        # During window-open hours: physics runs, k_vent_window=-0.20 applied once (no double-counting).
+        # indoor=72°F, outdoor=60°F → decay toward outdoor.  By hour 16, physics should be visible.
+        open_hours = [h for h in range(10, 17) if h in temps_by_h]
+        assert len(open_hours) >= 4, "Need at least 4 window-open hours to observe physics decay"
+        last_open = max(open_hours)
+        assert temps_by_h[last_open] < self._INDOOR, (
+            f"Bridge open hours: physics with k_vent_window=-0.20 should cool below {self._INDOOR}°F; "
+            f"got {temps_by_h[last_open]:.2f}°F "
+            f"(no double-counting: per-hour substitution blocked by _k_passive_via_bridge)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bridge window guard — prevents k_vent_window from driving window-closed hours
+# (Issue #130)
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeWindowGuard:
+    """Bridge guard: when _k_passive_via_bridge=True, physics only runs during window-open hours.
+
+    k_vent_window = envelope k + ventilation k.  Applying it to window-CLOSED hours
+    overpredicts decay (τ≈7h vs true envelope τ≈50h).  The guard falls back to ramp
+    for window-closed bridge hours when classification schedules windows for today.
+
+    The guard fires only when:
+      - _k_passive_via_bridge=True (bridge is active)
+      - _windows_recommended=True (classification has a window schedule today)
+      - _hour_windows_open=False (current hour is outside the open window)
+
+    When windows_recommended=False (no window schedule), bridge physics runs for all hours
+    (k_vent_window is the best available proxy — consistent with pre-guard bridge semantics).
+
+    Cross-home safety matrix:
+      - Normal home (k_passive learned, no bridge): guard never fires → no change
+      - Bridge home, no window schedule: guard never fires → bridge physics for all hours
+      - Bridge home, window-scheduled, window-open hour: guard passes → physics with k_vent_window runs
+      - Bridge home, window-scheduled, window-closed hour: guard fires → ramp fallback (flat indoor)
+      - Fresh install (k_vent_window=None): bridge doesn't fire → k_passive_via_bridge=False → no change
+    """
+
+    _NOW_BG = datetime(2026, 4, 20, 6, 0, 0, tzinfo=UTC)
+    _INDOOR = 70.0
+
+    def _entries(self, hours: list[int], outdoor: float = 65.0) -> list[dict]:
+        base = self._NOW_BG.replace(hour=0, minute=0, second=0, microsecond=0)
+        return [_entry(base + timedelta(hours=h), outdoor) for h in hours]
+
+    def test_bridge_window_closed_holds_indoor_steady(self):
+        """Bridge home, windows scheduled but PRE-WINDOW hours: ramp fallback, temps flat.
+
+        Pre-fix behavior: bridge applies k_vent_window=-0.20 to all hours → rapid decay.
+        Post-fix behavior: bridge guard fires for pre-window hours → ramp → flat at indoor seed.
+
+        Setup: windows_recommended=True, window 14:00–20:00.
+        Hours 7–13 are pre-window (window-closed). outdoor=65°F (off-day), indoor=70°F.
+        After fix: all pre-window temps within 1.0°F of 70°F.
+        """
+        now = self._NOW_BG
+        outdoor_mild = 65.0
+        # Pre-window hours: 7–13 UTC (window opens at 14:00)
+        hours = list(range(7, 14))
+        entries = self._entries(hours, outdoor=outdoor_mild)
+
+        model = {
+            "confidence": "low",
+            "k_passive": None,
+            "k_vent_window": -0.20,  # strong decay — would drive rapid cooling if applied to closed hours
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        # windows_recommended=True with a future window schedule → guard fires for pre-window hours
+        classification = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(14, 0),
+            window_close_time=time(20, 0),
+        )
+
+        result = _call_vc(entries, now=now, indoor=self._INDOOR, model=model, classification=classification)
+
+        assert len(result) > 0
+        temps = [r["temp"] for r in result]
+        # After fix: guard fires for hours 7–13 (all pre-window) → ramp → flat at 70°F
+        for t in temps:
+            assert abs(t - self._INDOOR) <= 1.0, (
+                f"Bridge guard (window-closed pre-window hours): expected ramp anchor ~{self._INDOOR}°F; "
+                f"got {t:.2f}°F (pre-fix: rapid decay with k_vent_window=-0.20)"
             )
+
+    def test_bridge_window_open_uses_physics(self):
+        """Bridge home, windows recommended with schedule: physics runs during open hours.
+
+        outdoor=65°F, indoor=70°F above outdoor → passive decay pulls indoor down.
+        k_vent_window=-0.20 applied during open hours → temps drop below 69°F.
+        """
+        now = self._NOW_BG
+        # Window open 09:00–18:00 UTC
+        hours = list(range(7, 20))
+        outdoor_mild = 65.0
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        entries = [_entry(base + timedelta(hours=h), outdoor_mild) for h in hours]
+
+        model = {
+            "confidence": "low",
+            "k_passive": None,
+            "k_vent_window": -0.20,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        classification = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(9, 0),
+            window_close_time=time(18, 0),
+        )
+
+        result = _call_vc(entries, now=now, indoor=self._INDOOR, model=model, classification=classification)
+
+        assert len(result) > 0
+        temps_by_h = {datetime.fromisoformat(r["ts"]).hour: r["temp"] for r in result}
+
+        # During open hours (9–17), physics should drive cooling below 69°F
+        open_hours = [h for h in range(9, 18) if h in temps_by_h]
+        assert len(open_hours) >= 4, "Need at least 4 window-open hours in result to validate physics"
+        # By the end of the open window, decay with k=-0.20 over several hours should drop below 69°F
+        last_open = max(open_hours)
+        assert temps_by_h[last_open] < 69.0, (
+            f"Bridge home, window-open hours: physics with k=-0.20 should cool below 69°F by hour {last_open}; "
+            f"got {temps_by_h[last_open]:.2f}°F"
+        )
+
+    def test_non_bridge_home_unaffected_by_guard(self):
+        """Normal home with real k_passive: guard never fires, physics runs for all hours.
+
+        k_passive=-0.025 (real learned value), confidence_k_passive='low' → bridge does NOT activate
+        (_k_passive_via_bridge=False).  Guard condition requires _k_passive_via_bridge=True → skipped.
+        Physics runs via real k_passive → temps decay (lower than indoor seed after several hours).
+        """
+        now = self._NOW_BG
+        outdoor_mild = 65.0
+        hours = list(range(7, 19))
+        entries = self._entries(hours, outdoor=outdoor_mild)
+
+        model = {
+            "confidence": "low",
+            "confidence_k_passive": "low",
+            "k_passive": -0.025,  # real learned value — bridge must NOT fire
+            "k_vent_window": -0.20,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        # Pass windows_recommended=True to maximally exercise the guard — but since
+        # _k_passive_via_bridge=False, the guard still does not fire.
+        classification = _make_classification(
+            windows_recommended=True,
+            window_open_time=time(14, 0),
+            window_close_time=time(20, 0),
+        )
+
+        result = _call_vc(entries, now=now, indoor=self._INDOOR, model=model, classification=classification)
+
+        assert len(result) > 0
+        temps = [r["temp"] for r in result]
+        # Physics runs (no bridge, k_passive=-0.025 valid, confidence='low').
+        # indoor=70°F, outdoor=65°F → slow passive decay.
+        # After several hours with k=-0.025, temp drops measurably below seed.
+        assert temps[-1] < self._INDOOR, (
+            f"Non-bridge home: physics should run and decay indoor below {self._INDOOR}°F; "
+            f"got {temps[-1]:.2f}°F (guard must NOT suppress physics when _k_passive_via_bridge=False)"
+        )
+
+    def test_bridge_windows_not_recommended_physics_unchanged(self):
+        """Bridge home with windows_recommended=False: guard does NOT fire.
+
+        Cross-home matrix row: bridge active, classification has no window schedule.
+        Guard condition requires _windows_recommended=True — if False the guard is skipped
+        and bridge physics runs for all hours (pre-guard behavior).
+
+        Rationale: when no window schedule is set, k_vent_window is the only proxy we have;
+        suppressing physics entirely would remove all thermal signal from the prediction.
+        This is the accepted trade-off pending real passive_decay observations.
+        """
+        now = self._NOW_BG
+        outdoor = 50.0  # colder than indoor — physics should show decay
+        hours = list(range(1, 13))  # 12 overnight hours
+        entries = self._entries(hours, outdoor=outdoor)
+
+        model = {
+            "confidence": "low",
+            "k_passive": None,  # bridge will activate
+            "k_vent_window": -0.20,
+            "k_active_heat": None,
+            "k_active_cool": None,
+        }
+        # No window schedule — windows_recommended=False
+        classification = _make_classification(windows_recommended=False)
+
+        result = _call_vc(entries, now=now, indoor=self._INDOOR, model=model, classification=classification)
+
+        assert len(result) > 0
+        temps = [r["temp"] for r in result]
+        # Bridge physics runs (guard skipped because _windows_recommended=False).
+        # indoor=70°F, outdoor=50°F, k=-0.20 → meaningful decay expected over 12 hours.
+        assert temps[-1] < self._INDOOR - 1.0, (
+            f"Bridge home, no window schedule: physics should run and show decay; "
+            f"got {temps[-1]:.2f}°F (guard must NOT fire when windows_recommended=False)"
+        )
 
 
 # ---------------------------------------------------------------------------

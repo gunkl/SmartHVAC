@@ -1582,6 +1582,9 @@
   function makeStatusLine(eConf, hConf) {
     const eHas = eConf !== 'none';
     const hHas = hConf !== 'none';
+    const bridgeActive = !eHas && (tm.k_vent_window != null || tm.k_solar != null);
+    if (bridgeActive && !hHas) return 'Active via ventilation learning — house envelope calibration in progress.';
+    if (bridgeActive && hHas) return 'Active — using HVAC response and ventilation learning; envelope calibration in progress.';
     if (!eHas && !hHas) return 'Falling back to schedule until first measurements land.';
     if (!eHas && hHas) return 'Active — using HVAC response; house response on schedule fallback.';
     if (eHas && !hHas) return 'Active — using house response; HVAC predictions on schedule fallback.';
@@ -1614,13 +1617,16 @@
   const envParamRows = [];
   if (tm.k_passive != null) envParamRows.push({ label: 'Heat loss rate', value: `${Math.abs(tm.k_passive).toFixed(2)} /hr` });
   if (tm.k_vent != null) envParamRows.push({ label: 'Air exchange', value: `${Math.abs(tm.k_vent).toFixed(2)} /hr` });
+  if (tm.k_vent_window != null) envParamRows.push({ label: 'Ventilated loss rate', value: `${Math.abs(tm.k_vent_window).toFixed(2)} /hr (windows open)` });
   if (tm.k_solar != null) envParamRows.push({ label: 'Solar gain', value: `${tm.k_solar.toFixed(2)} ${unitLabel}/hr·sun` });
   if (tm.avg_r_squared_passive != null && envConf !== 'none') {
     envParamRows.push({ label: 'Avg fit quality', value: `${Math.round(tm.avg_r_squared_passive * 100)}%` });
   }
   const hintDelta = tm.unit === 'celsius' ? 1.7 : 3;
   const envHint = envConf === 'none'
-    ? `<p class="tm-hint">Needs a few hours of HVAC-off time with a ${hintDelta}${unitLabel}+ indoor-outdoor temperature difference.</p>`
+    ? (tm.k_vent_window != null || tm.k_solar != null)
+      ? `<p class="tm-hint">Ventilation data is being used for predictions. House envelope calibration improves with closed-window HVAC-off measurements.</p>`
+      : `<p class="tm-hint">Needs a few hours of HVAC-off time with a ${hintDelta}${unitLabel}+ indoor-outdoor temperature difference.</p>`
     : '';
   const envRail =
     `<section class="tm-rail">` +

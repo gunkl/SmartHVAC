@@ -48,7 +48,7 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     THERMAL_FAN_SAMPLE_INTERVAL_S,
     THERMAL_HVAC_MIN_DECAY_F,
     THERMAL_HVAC_POST_HEAT_SAMPLE_INTERVAL_S,
-    THERMAL_PASSIVE_CONF_LOW,
+    THERMAL_PASSIVE_CONF_HIGH,
     THERMAL_PASSIVE_MIN_SAMPLES,
     THERMAL_PASSIVE_MIN_SIGNAL_F,
     THERMAL_PASSIVE_SAMPLE_INTERVAL_S,
@@ -56,10 +56,11 @@ from custom_components.climate_advisor.const import (  # noqa: E402
     THERMAL_ROLLING_MIN_DELTA_T_F,
     THERMAL_ROLLING_MIN_WINDOW_MINUTES,
     THERMAL_ROLLING_WINDOW_MINUTES,
+    THERMAL_SOLAR_FACTOR_MIN_RANGE,
     THERMAL_VENT_MIN_SAMPLES,
     THERMAL_VENTILATED_MIN_DELTA_F,
 )
-from custom_components.climate_advisor.learning import LearningEngine  # noqa: E402
+from custom_components.climate_advisor.learning import LearningEngine, _grade_passive_confidence  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -1785,8 +1786,8 @@ class TestConfidenceGrading:
     def _ventilated_obs(self, k_passive: float = -0.07) -> dict:
         """Minimal ventilated_decay observation dict accepted by _update_thermal_model_cache.
 
-        Mode "ventilated" bumps observation_count_vent, which _grade_passive_confidence
-        includes in its count (C2 fix).
+        Mode "ventilated" bumps observation_count_vent and updates k_vent_window.
+        Ventilated obs do NOT count toward confidence_k_passive (Phase H fix, D13).
         """
         return {
             "date": "2026-04-28",
@@ -1809,38 +1810,19 @@ class TestConfidenceGrading:
             "confidence_grade": "high",
         }
 
-    def test_confidence_k_passive_grades_from_vent_only_observations(self, tmp_path: Path):
-        """C2 round-trip: ventilated-only observations must lift confidence_k_passive above 'none'.
+    def test_confidence_k_passive_not_lifted_by_vent_only_observations(self, tmp_path: Path):
+        """Phase H D13: ventilated obs must NOT lift confidence_k_passive above 'none'.
 
-        Before the C2 fix, _grade_passive_confidence() only counted heat+cool, so a
-        warm-day-home scenario (zero HVAC cycles, only ventilated_decay observations)
-        always returned "none" for confidence_k_passive regardless of how many
-        ventilated observations were committed.
-
-        Boundary guard: THERMAL_PASSIVE_CONF_LOW - 1 observations must still return "none";
-        exactly THERMAL_PASSIVE_CONF_LOW observations must return "low".
+        Ventilated observations write to k_vent_window, not k_passive (guarded by
+        _envelope_modes at learning.py:676). Counting them toward k_passive confidence
+        was a bug that produced "Calibration: Strong" while k_passive remained None.
         """
-        # --- boundary: one below threshold must remain "none" ---
-        engine_below = self._make_engine(tmp_path / "below")
-        for _ in range(THERMAL_PASSIVE_CONF_LOW - 1):
-            engine_below._update_thermal_model_cache(self._ventilated_obs())
-        model_below = engine_below.get_thermal_model()
-        assert model_below["confidence_k_passive"] == "none", (
-            f"Expected 'none' with {THERMAL_PASSIVE_CONF_LOW - 1} ventilated obs "
-            f"(below threshold), got '{model_below['confidence_k_passive']}'"
-        )
-
-        # --- at threshold: must grade to "low" ---
-        engine_at = self._make_engine(tmp_path / "at")
-        for _ in range(THERMAL_PASSIVE_CONF_LOW):
-            engine_at._update_thermal_model_cache(self._ventilated_obs())
-        model_at = engine_at.get_thermal_model()
-        assert model_at["confidence_k_passive"] == "low", (
-            f"Expected 'low' with {THERMAL_PASSIVE_CONF_LOW} ventilated obs "
-            f"(at threshold), got '{model_at['confidence_k_passive']}'"
-        )
-        assert model_at["confidence_k_passive"] != "none", (
-            "confidence_k_passive must not be 'none' when ventilated obs reach threshold (C2 regression)"
+        engine = self._make_engine(tmp_path / "vent_only")
+        for _ in range(THERMAL_PASSIVE_CONF_HIGH + 10):
+            engine._update_thermal_model_cache(self._ventilated_obs())
+        model = engine.get_thermal_model()
+        assert model["confidence_k_passive"] == "none", (
+            f"confidence_k_passive must stay 'none' with only ventilated obs, got '{model['confidence_k_passive']}'"
         )
 
     def test_confidence_k_hvac_grades_from_heat_observations(self, tmp_path: Path):
@@ -2162,3 +2144,318 @@ class TestAdaptiveVentilatedOLS:
         k_env, k_solar, r2 = compute_k_env_solar(samples)
         assert k_env is None, "k_env should be None when all samples missing solar_factor (treated as 0.0, range=0)"
         assert k_solar is None, "k_solar should be None for old-format samples without solar_factor"
+
+
+# ---------------------------------------------------------------------------
+# TestTwoParamPrimaryPath  (Issue #126 Phase D)
+# ---------------------------------------------------------------------------
+
+
+class TestTwoParamPrimaryPath:
+    """2-param OLS fires as PRIMARY path for ventilated_decay when sf_range ≥ 0.30.
+
+    Before Phase D, a warm sunny day caused ols_wrong_sign rejection in the 1-param
+    path before the 2-param path was ever attempted.  These tests verify that the
+    primary-path restructure fires correctly and that the fall-through behaviour to
+    1-param is intact when 2-param cannot run or fails its guards.
+    """
+
+    _DT_PATCH = "custom_components.climate_advisor.learning.dt_util"
+    _FAKE_DT = datetime(2026, 5, 7, 11, 0, 0, tzinfo=UTC)
+
+    def _make_engine(self, tmp_path: Path) -> LearningEngine:
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        return engine
+
+    @staticmethod
+    def _make_rising_solar_samples() -> list[dict]:
+        """Indoor net-rises over 2 hours despite outdoor cooler: solar gain dominates.
+
+        Uses Euler integration with known physics: k_env=-0.08 (ventilation cooling),
+        k_solar=4.0 (strong solar gain). indoor(72) > outdoor(58), so ventilation
+        tries to cool at rate = -0.08*(72-58)=-1.12°F/hr, but solar gain at sf=0.5
+        adds +4.0*0.5=+2.0°F/hr — net +0.88°F/hr.
+
+        1-param OLS sees: rate > 0, delta > 0 → k_1p > 0 → ols_wrong_sign.
+        2-param OLS recovers k_env ≈ -0.08 (negative) and k_solar ≈ 4.0 (positive).
+
+        sf_range spans 0.05→0.85 (0.80 > 0.30 threshold).
+        16 samples → 15 intervals, well above the min_samples=4 floor.
+        """
+        k_env_true = -0.08  # ventilation cooling rate (hr⁻¹)
+        k_solar_true = 4.0  # solar gain (°F/hr per unit sf)
+        base_indoor = 72.0
+        outdoor = 58.0
+        dt_minutes = 8.0
+        dt_hours = dt_minutes / 60.0
+        n = 16
+        samples = []
+        t_in = base_indoor
+        for i in range(n):
+            sf = 0.05 + (0.80 / (n - 1)) * i  # ramps from 0.05 to 0.85
+            samples.append(
+                {
+                    "indoor_temp_f": round(t_in, 4),
+                    "outdoor_temp_f": outdoor,
+                    "elapsed_minutes": float(i * dt_minutes),
+                    "solar_factor": round(sf, 4),
+                }
+            )
+            rate = k_env_true * (t_in - outdoor) + k_solar_true * sf
+            t_in += rate * dt_hours
+        return samples
+
+    @staticmethod
+    def _make_nighttime_cooling_samples() -> list[dict]:
+        """Indoor falls 2°F overnight, outdoor cooler, solar_factor=0.0 throughout."""
+        samples = []
+        for i in range(12):
+            samples.append(
+                {
+                    "indoor_temp_f": 74.0 - i * 0.18,
+                    "outdoor_temp_f": 60.0,
+                    "elapsed_minutes": float(i * 10),
+                    "solar_factor": 0.0,
+                }
+            )
+        return samples
+
+    def _make_event(self, samples: list[dict]) -> dict:
+        return {"obs_id": "test-2param-primary", "samples": samples}
+
+    # ── test 1: 2-param PRIMARY commits when 1-param would produce wrong_sign ─
+
+    def test_2param_primary_commits_when_wrong_sign_for_1param(self, tmp_path: Path):
+        """Solar gain scenario: indoor rising, outdoor cooler → 1-param sees positive k.
+
+        Before Phase D: _commit_event_from_dict returns (None, 'ols_wrong_sign', ...).
+        After Phase D: 2-param primary path fires, returning obs with two_param=True,
+        k_solar > 0, and k_passive (k_env) < 0.
+        """
+        from custom_components.climate_advisor.learning import compute_k_passive
+
+        engine = self._make_engine(tmp_path)
+        samples = self._make_rising_solar_samples()
+
+        # Confirm the pre-condition: 1-param alone (using the decay min_samples floor)
+        # would give ols_wrong_sign on rising indoor / warmer-than-outdoor data.
+        from custom_components.climate_advisor.const import THERMAL_MIN_DECAY_SAMPLES
+
+        k_1p, _r2_1p, _code_1p = compute_k_passive(samples, min_samples=THERMAL_MIN_DECAY_SAMPLES)
+        assert k_1p is None, (
+            f"Pre-condition failed: 1-param should return None (ols_wrong_sign) for rising solar samples; got k={k_1p}"
+        )
+        assert _code_1p == "ols_wrong_sign", f"Expected ols_wrong_sign reject; got {_code_1p}"
+
+        # Now call the full commit path — 2-param primary should save it.
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with patch(self._DT_PATCH, dt_mock):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        assert obs is not None, f"2-param PRIMARY should have committed; got reject_code={reject_code}"
+        assert obs.get("two_param") is True, "two_param flag must be True for 2-param PRIMARY commit"
+        assert obs.get("k_solar") is not None and obs["k_solar"] > 0, (
+            f"k_solar must be positive for solar-gain obs; got {obs.get('k_solar')}"
+        )
+        assert obs.get("k_passive") is not None and obs["k_passive"] < 0, (
+            f"k_passive (k_env) must be negative (ventilation cooling); got {obs.get('k_passive')}"
+        )
+
+    # ── test 2: 2-param primary skipped when sf_range < threshold ────────────
+
+    def test_2param_primary_skipped_when_sf_range_low(self, tmp_path: Path):
+        """Nighttime samples (sf=0.0): sf_range=0 → falls through to 1-param path."""
+        engine = self._make_engine(tmp_path)
+        samples = self._make_nighttime_cooling_samples()
+
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with patch(self._DT_PATCH, dt_mock):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        # 1-param should commit (indoor cooling, outdoor cooler → k_passive < 0)
+        assert obs is not None, f"1-param fallback should commit nighttime cooling; reject_code={reject_code}"
+        # two_param key absent or False — this was a 1-param commit (or upgrade if
+        # the upgrade block happened to run on the same data, but sf=0 → no upgrade either)
+        assert obs.get("two_param") is not True, (
+            "two_param must NOT be set when sf_range < 0.30 and no sf variation for upgrade path"
+        )
+
+    # ── test 3: falls back to 1-param when 2-param returns None (collinear) ──
+
+    def test_2param_primary_falls_back_to_1param_on_collinear(self, tmp_path: Path):
+        """sf_range ≥ 0.30 but compute_k_env_solar returns (None, None, None).
+
+        This simulates collinearity or a det≈0 failure in the 2-param solver.
+        The fall-through must reach 1-param and commit if 1-param succeeds.
+        """
+        engine = self._make_engine(tmp_path)
+        # Use nighttime cooling samples (1-param valid) but inject sf_range ≥ 0.30
+        # by attaching varying solar_factor values — then mock compute_k_env_solar to None.
+        samples = []
+        for i in range(12):
+            samples.append(
+                {
+                    "indoor_temp_f": 74.0 - i * 0.18,
+                    "outdoor_temp_f": 60.0,
+                    "elapsed_minutes": float(i * 10),
+                    # sf_range = 0.65 — enough to trigger primary path attempt
+                    "solar_factor": 0.05 + i * 0.05,
+                }
+            )
+
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with (
+            patch(self._DT_PATCH, dt_mock),
+            patch(
+                "custom_components.climate_advisor.learning.compute_k_env_solar",
+                return_value=(None, None, None),
+            ),
+        ):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        assert obs is not None, f"1-param fallback should commit when 2-param returns None; reject_code={reject_code}"
+        assert obs.get("two_param") is not True, "two_param must not be set when 2-param returned None"
+
+    # ── test 4: 2-param primary rejected when R² too low ─────────────────────
+
+    def test_2param_primary_respects_r2_guard(self, tmp_path: Path):
+        """sf_range ≥ 0.30 but 2-param returns r² < THERMAL_MIN_R_SQUARED → fall back to 1-param."""
+        engine = self._make_engine(tmp_path)
+        # Nighttime cooling samples with sf_range ≥ 0.30 (so primary path is attempted)
+        samples = []
+        for i in range(12):
+            samples.append(
+                {
+                    "indoor_temp_f": 74.0 - i * 0.18,
+                    "outdoor_temp_f": 60.0,
+                    "elapsed_minutes": float(i * 10),
+                    "solar_factor": 0.05 + i * 0.05,
+                }
+            )
+
+        def _low_r2_2param(s, min_samples=4):
+            # Valid signs/bounds but R² below the 0.20 threshold.
+            return -0.08, 1.2, 0.10
+
+        event = self._make_event(samples)
+        dt_mock = _make_dt_mock(self._FAKE_DT)
+        with (
+            patch(self._DT_PATCH, dt_mock),
+            patch(
+                "custom_components.climate_advisor.learning.compute_k_env_solar",
+                side_effect=_low_r2_2param,
+            ),
+        ):
+            obs, reject_code, _ = engine._commit_event_from_dict(event, force_grade="high", obs_type="ventilated_decay")
+
+        assert obs is not None, (
+            f"1-param fallback should commit when 2-param R² below threshold; reject_code={reject_code}"
+        )
+        assert obs.get("two_param") is not True, "two_param must NOT be set when 2-param was rejected for low R²"
+
+
+# ---------------------------------------------------------------------------
+# TestSolarKeepAliveGuard  (Issue #126 Phase D)
+# ---------------------------------------------------------------------------
+
+
+class TestSolarKeepAliveGuard:
+    """Solar accumulation keep-alive guard in coordinator._sample_all_observations().
+
+    The guard suppresses _vent_signal_sufficient during daytime (8–18h) when
+    sf_range < THERMAL_SOLAR_FACTOR_MIN_RANGE, preventing a 30-min early commit
+    before enough solar variation has accumulated for the 2-param primary path.
+
+    These tests verify the guard logic as a standalone pure-Python helper that
+    replicates the exact coordinator guard condition — no coordinator wiring needed.
+    """
+
+    @staticmethod
+    def _compute_vent_signal_with_guard(
+        samples_list: list[dict],
+        now_hour: int,
+        base_signal_sufficient: bool,
+    ) -> bool:
+        """Replicate the solar keep-alive guard from coordinator._sample_all_observations().
+
+        Returns the effective _vent_signal_sufficient value after applying the guard.
+        """
+        _sf_vals = [s.get("solar_factor", 0.0) for s in samples_list if "solar_factor" in s]
+        _sf_range = max(_sf_vals) - min(_sf_vals) if len(_sf_vals) >= 2 else 0.0
+        _daytime = 8 <= now_hour < 18
+        if _daytime and _sf_range < THERMAL_SOLAR_FACTOR_MIN_RANGE:
+            return False
+        return base_signal_sufficient
+
+    def _make_samples_with_sf(self, sf_vals: list[float]) -> list[dict]:
+        return [
+            {
+                "indoor_temp_f": 72.0,
+                "outdoor_temp_f": 58.0,
+                "elapsed_minutes": float(i * 10),
+                "solar_factor": sf,
+            }
+            for i, sf in enumerate(sf_vals)
+        ]
+
+    # ── test 1: daytime low sf_range → suppress early commit ─────────────────
+
+    def test_early_commit_suppressed_daytime_low_sf_range(self):
+        """hour=9, sf_range=0.10 < 0.30 → guard overrides base=True to False."""
+        samples = self._make_samples_with_sf([0.05, 0.10, 0.12, 0.15])
+        result = self._compute_vent_signal_with_guard(samples, now_hour=9, base_signal_sufficient=True)
+        assert result is False, f"Guard should suppress early commit at 9h with sf_range=0.10; got {result}"
+
+    # ── test 2: daytime sufficient sf_range → allow commit ───────────────────
+
+    def test_early_commit_allowed_when_sf_range_sufficient(self):
+        """hour=11, sf_range=0.55 ≥ 0.30 → guard passes, base=True preserved."""
+        samples = self._make_samples_with_sf([0.10, 0.30, 0.50, 0.65])
+        result = self._compute_vent_signal_with_guard(samples, now_hour=11, base_signal_sufficient=True)
+        assert result is True, f"Guard should allow commit at 11h with sf_range=0.55; got {result}"
+
+    # ── test 3: nighttime → guard inactive, base value unchanged ─────────────
+
+    def test_early_commit_allowed_at_night(self):
+        """hour=22, sf_range=0.0 → guard not daytime, base=True preserved."""
+        samples = self._make_samples_with_sf([0.0, 0.0, 0.0, 0.0])
+        result = self._compute_vent_signal_with_guard(samples, now_hour=22, base_signal_sufficient=True)
+        assert result is True, f"Guard should be inactive at night (hour=22); got {result}"
+
+
+# ---------------------------------------------------------------------------
+# _grade_passive_confidence — observation type routing (Issue #130)
+# ---------------------------------------------------------------------------
+
+
+class TestGradePassiveConfidence:
+    """Verify that only observations that actually write to k_passive count toward its confidence.
+
+    vent obs  → write to k_vent_window only (guarded by _envelope_modes in learning.py)
+    solar obs → write to k_solar only
+    passive/hvac/fan_only obs → count toward k_passive confidence
+    """
+
+    def test_ventilated_obs_excluded(self):
+        """63 ventilated obs — these write to k_vent_window, not k_passive."""
+        cache = {"observation_count_vent": 63}
+        assert _grade_passive_confidence(cache) == "none"
+
+    def test_solar_obs_excluded(self):
+        """solar obs write to k_solar, not k_passive — must not count."""
+        cache = {"observation_count_solar": 20}
+        assert _grade_passive_confidence(cache) == "none"
+
+    def test_passive_obs_count_toward_high(self):
+        """30 passive decay obs ≥ THERMAL_PASSIVE_CONF_HIGH(30) → 'high'."""
+        cache = {"observation_count_passive": 30}
+        assert _grade_passive_confidence(cache) == "high"
+
+    def test_hvac_obs_count(self):
+        """10 heat + 10 cool = 20 ≥ THERMAL_PASSIVE_CONF_MEDIUM(15), < THERMAL_PASSIVE_CONF_HIGH(30) → 'medium'."""
+        cache = {"observation_count_heat": 10, "observation_count_cool": 10}
+        assert _grade_passive_confidence(cache) == "medium"

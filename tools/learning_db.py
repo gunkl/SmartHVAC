@@ -239,9 +239,13 @@ def _print_rejection_log(db: dict, last_n: int) -> None:
             delta_t = entry.get("delta_t_f", entry.get("indoor_delta_f", 0.0))
             r2 = entry.get("r_squared", entry.get("r2"))
             r2_str = f"{r2:.3f}" if isinstance(r2, float) else "None"
+            sf_range_raw = entry.get("sf_range")
+            sf_range_str = f"{sf_range_raw:.2f}" if isinstance(sf_range_raw, (int, float)) else "n/a"
+            indoor_dir = entry.get("indoor_direction", "n/a")
             print(
                 f"  {ts}  {str(reason):<16} n={str(n_samples):<3} "
-                f"elapsed={elapsed:<7} delta_t={float(delta_t) if delta_t is not None else 0.0:.2f}F  r2={r2_str}"
+                f"elapsed={elapsed:<7} delta_t={float(delta_t) if delta_t is not None else 0.0:.2f}F  "
+                f"r2={r2_str}  sf_range={sf_range_str}  indoor={indoor_dir}"
             )
         any_printed = True
 
