@@ -676,6 +676,7 @@ _K_ACTIVE_COOL_MIN = -15.0
 _K_ACTIVE_COOL_MAX = -0.5
 _THERMAL_MIN_POST_HEAT_SAMPLES = 4  # mirrors THERMAL_MIN_POST_HEAT_SAMPLES (Phase B: was 10)
 _THERMAL_HVAC_MIN_DECAY_F = 0.3  # mirrors THERMAL_HVAC_MIN_DECAY_F
+_THERMAL_HVAC_MIN_SIGNAL_F = 0.5  # mirrors THERMAL_HVAC_MIN_SIGNAL_F — min ΔT for single-point
 
 
 def _hvac_category(hvac_str: str | None) -> str:
@@ -862,20 +863,32 @@ def run_hvac_replay_ols(
     # Compute k_passive from post (+ pre) samples
     k_p, r2_p, _reject = compute_k_passive(post_samples, pre_samples if pre_samples else None)
 
+    k_passive_from_proxy = False
     if k_p is None:
         # Bridge proxy: use k_vent_window if caller supplies it
         if k_vent_window_proxy is not None and k_vent_window_proxy < 0:
             k_p = k_vent_window_proxy
+            k_passive_from_proxy = True
             force_grade = "low"
         else:
             return None
     else:
         force_grade = "low"  # all replay obs are low-confidence by policy
 
-    # Compute k_active from active samples
-    if len(active_samples) < 2:
-        return None
-    k_a, _r2_a = _compute_k_active_standalone(active_samples, k_p, mode)
+    # Compute k_active: OLS when ≥ 2 active samples, single-point fallback for n_act=1
+    k_a: float | None = None
+    if len(active_samples) >= 2:
+        k_a, _r2_a = _compute_k_active_standalone(active_samples, k_p, mode)
+
+    if k_a is None:
+        # Try single-point estimator from timestamps (handles n_act=1)
+        k_a = _compute_k_active_single_point_from_cycle(cycle, k_p)
+        if k_a is not None:
+            print(
+                f"  [single-point] k_active={k_a:.3f} "
+                f"(n_act={len(active_samples)}, k_passive={'proxy' if k_passive_from_proxy else 'ols'}={k_p:.4f})"
+            )
+
     if k_a is None:
         return None
 
@@ -883,14 +896,19 @@ def run_hvac_replay_ols(
     ts_str = cycle.get("start_ts", all_entries[0]["ts"])
     date_str = ts_str[:10]
 
+    # When k_passive came from the proxy (not OLS), emit k_passive=None in the obs so
+    # rebuild_model_cache does NOT update the k_passive EWMA with the proxy value.
+    # Only k_active EWMA is updated for these cycles.
+    k_passive_out = None if k_passive_from_proxy else round(k_p, 5)
+
     return {
-        "event_id": str(__import__("uuid").uuid4()),
+        "event_id": str(uuid.uuid4()),
         "timestamp": ts_str,
         "date": date_str,
         "hvac_mode": mode,
-        "k_passive": round(k_p, 5),
+        "k_passive": k_passive_out,
         "k_active": round(k_a, 3),
-        "r_squared_passive": round(r2_p, 3),
+        "r_squared_passive": None if k_passive_from_proxy else (round(r2_p, 3) if r2_p else None),
         "r_squared_active": None,
         "sample_count_pre": len(pre_samples),
         "sample_count_active": len(active_samples),
@@ -899,6 +917,72 @@ def run_hvac_replay_ols(
         "schema_version": 2,
         "source": "replay",
     }
+
+
+def _compute_k_active_single_point_from_cycle(
+    cycle: dict,
+    k_passive: float,
+) -> float | None:
+    """Single-point k_active from chart_log cycle timestamps.
+
+    For n_act=1: uses active[0].ts (HVAC on) and post[0].ts (HVAC off)
+    as the true start/end of the active phase.
+
+    Physics: k_active = (T_peak - T_start) / elapsed_hours - k_passive * avg_delta
+    where avg_delta = avg(T_in - T_out) across all available readings.
+    """
+    active = cycle["active_samples"]
+    pre = cycle["pre_samples"]
+    post = cycle["post_samples"]
+    mode = cycle["mode"]
+
+    if not active:
+        return None
+
+    # T_start: last pre-heat indoor (most recent reading before HVAC on)
+    T_start = pre[-1].get("indoor") if pre else active[0].get("indoor")
+    if T_start is None:
+        return None
+
+    # T_peak: max indoor across active + first two post entries (heat) / min (cool)
+    candidates = active + post[:2]
+    indoors = [e.get("indoor") for e in candidates if e.get("indoor") is not None]
+    if not indoors:
+        return None
+    T_peak = max(indoors) if mode == "heat" else min(indoors)
+
+    # elapsed: HVAC on → off, using exact state-change timestamps
+    start_dt = _parse_ts(active[0]["ts"])
+    end_dt = _parse_ts(post[0]["ts"]) if post else _parse_ts(active[-1]["ts"])
+    if start_dt is None or end_dt is None:
+        return None
+    elapsed_hours = (end_dt - start_dt).total_seconds() / 3600.0
+    if elapsed_hours <= 0 or elapsed_hours > 2.0:
+        return None
+
+    # avg delta_T from available readings (indoor - outdoor)
+    all_entries = (pre[-3:] if pre else []) + active + (post[:2] if post else [])
+    pairs = [
+        (e["indoor"], e["outdoor"]) for e in all_entries if e.get("indoor") is not None and e.get("outdoor") is not None
+    ]
+    if not pairs:
+        return None
+    avg_delta = sum(i - o for i, o in pairs) / len(pairs)
+
+    signal = T_peak - T_start
+    if mode == "heat" and signal < _THERMAL_HVAC_MIN_SIGNAL_F:
+        return None
+    if mode == "cool" and signal > -_THERMAL_HVAC_MIN_SIGNAL_F:
+        return None
+
+    gross_rate = signal / elapsed_hours
+    k_active = gross_rate - k_passive * avg_delta
+
+    if mode == "heat" and not (_K_ACTIVE_HEAT_MIN <= k_active <= _K_ACTIVE_HEAT_MAX):
+        return None
+    if mode == "cool" and not (_K_ACTIVE_COOL_MIN <= k_active <= _K_ACTIVE_COOL_MAX):
+        return None
+    return k_active
 
 
 def _compute_k_active_standalone(
@@ -1040,18 +1124,19 @@ def main() -> None:
         n_cool = sum(1 for c in cycles if c["mode"] == "cool")
         print(f"  Found {len(cycles)} cycles ({n_heat} heat, {n_cool} cool)")
 
-        # Check for bridge proxy: use k_vent_window from existing DB if present
+        # Check for bridge proxy: use k_vent_window from existing DB if present.
+        # Load regardless of --dry-run/--write — proxy is needed for single-point
+        # k_active estimation in both modes (D22).
         k_vent_proxy: float | None = None
-        if args.write:
-            try:
-                db_check = fetch_learning_json_ssh(config)
-                _cache = db_check.get("thermal_model_cache", {})
-                _kv = _cache.get("k_vent_window")
-                if isinstance(_kv, float) and _kv < 0:
-                    k_vent_proxy = _kv
-                    print(f"  Bridge proxy: k_vent_window={k_vent_proxy:.4f} available for fallback")
-            except Exception:
-                pass  # proxy unavailable; not fatal
+        try:
+            db_check = fetch_learning_json_ssh(config)
+            _cache = db_check.get("thermal_model_cache", {})
+            _kv = _cache.get("k_vent_window")
+            if isinstance(_kv, float) and _kv < 0:
+                k_vent_proxy = _kv
+                print(f"  Bridge proxy: k_vent_window={k_vent_proxy:.4f} available for fallback")
+        except Exception:
+            pass  # proxy unavailable; not fatal
 
         print("\nRunning HVAC OLS...")
         obs_list = []
@@ -1065,9 +1150,10 @@ def main() -> None:
             n_act = len(cycle["active_samples"])
             n_post = len(cycle["post_samples"])
             if obs:
-                k_p_str = f"{obs['k_passive']:+.4f}"
+                k_p_str = f"{obs['k_passive']:+.4f}" if obs["k_passive"] is not None else "proxy"
                 k_a_str = f"{obs['k_active']:+.4f}" if obs["k_active"] is not None else "None"
-                r2_str = f"{obs['r_squared_passive']:.3f}"
+                r2_p_val = obs.get("r_squared_passive")
+                r2_str = f"{r2_p_val:.3f}" if r2_p_val is not None else "n/a"
                 print(
                     f"  [{mode_tag}] {ts_short}  "
                     f"n_pre={n_pre} n_act={n_act} n_post={n_post}  "

@@ -3182,3 +3182,277 @@ class TestHvacShortCycle:
         assert result.get("k_passive") == pytest.approx(-0.03, abs=1e-4), (
             f"k_passive in result should be -0.03 (OLS value), got {result.get('k_passive')}"
         )
+
+
+class TestSinglePointKActive:
+    """D19: Single-point k_active estimator for short HVAC cycles (n_active < 2).
+
+    Plan: Issue #130 Phase C Revised — shiny-dreaming-cookie.md
+    Tests the compute_k_active_single_point() function and its fallthrough
+    integration inside _commit_event_from_dict().
+    """
+
+    # ── unit tests for compute_k_active_single_point() ────────────────────────
+
+    def test_single_point_heat_within_bounds(self):
+        """D19: Valid heat cycle produces k_active in [0.5, 15.0].
+
+        May 3 representative cycle: T_start=68, T_peak=69, elapsed=9m42s=0.162hr,
+        k_passive=-0.14 (bridge proxy), avg_delta=14.7°F (indoor-outdoor).
+        gross_rate = 1/0.162 ≈ 6.17°F/hr
+        k_active = 6.17 - (-0.14 × 14.7) = 6.17 + 2.058 ≈ 8.23°F/hr  → in [0.5, 15.0]
+        """
+        from custom_components.climate_advisor.learning import compute_k_active_single_point
+
+        result = compute_k_active_single_point(
+            T_start=68.0,
+            T_peak=69.0,
+            elapsed_hours=0.162,
+            k_passive=-0.14,
+            avg_delta_t=14.7,
+            session_mode="heat",
+        )
+        assert result is not None, (
+            "Valid heat cycle with ΔT=1°F, elapsed=0.162hr, k_passive=-0.14 should return a k_active value, got None"
+        )
+        assert 0.5 <= result <= 15.0, f"k_active should be in [0.5, 15.0], got {result:.3f}"
+
+    def test_single_point_signal_too_small(self):
+        """D19+D23: ΔT < THERMAL_HVAC_MIN_SIGNAL_F (0.5°F) → None (sensor noise floor)."""
+        from custom_components.climate_advisor.learning import compute_k_active_single_point
+
+        result = compute_k_active_single_point(
+            T_start=68.0,
+            T_peak=68.3,  # ΔT = 0.3°F < 0.5 threshold
+            elapsed_hours=0.162,
+            k_passive=-0.14,
+            avg_delta_t=14.7,
+            session_mode="heat",
+        )
+        assert result is None, f"ΔT=0.3°F below THERMAL_HVAC_MIN_SIGNAL_F=0.5 should return None, got {result}"
+
+    def test_single_point_out_of_bounds(self):
+        """D19: k_active > THERMAL_K_ACTIVE_HEAT_MAX (15.0) → None (unphysical result)."""
+        from custom_components.climate_advisor.learning import compute_k_active_single_point
+
+        # With elapsed_hours very small, gross_rate becomes huge → k_active > 15.0
+        # elapsed=0.05hr (3min), ΔT=1°F → gross_rate=20°F/hr → k_active ≈ 22°F/hr > 15
+        result = compute_k_active_single_point(
+            T_start=68.0,
+            T_peak=69.0,
+            elapsed_hours=0.05,  # 3 minutes — yields gross_rate=20°F/hr
+            k_passive=-0.14,
+            avg_delta_t=14.7,
+            session_mode="heat",
+        )
+        assert result is None, f"k_active > 15.0 (out of THERMAL_K_ACTIVE_HEAT_MAX) should return None, got {result}"
+
+    def test_single_point_zero_elapsed(self):
+        """D19: elapsed_hours=0 → None (division by zero guard)."""
+        from custom_components.climate_advisor.learning import compute_k_active_single_point
+
+        result = compute_k_active_single_point(
+            T_start=68.0,
+            T_peak=69.0,
+            elapsed_hours=0.0,
+            k_passive=-0.14,
+            avg_delta_t=14.7,
+            session_mode="heat",
+        )
+        assert result is None, f"elapsed_hours=0 should return None (division-by-zero guard), got {result}"
+
+    def test_single_point_cool_mode(self):
+        """D19: Cool-mode cycle yields negative k_active within [-15.0, -0.5].
+
+        T_start=75, T_peak=73 (ΔT=-2°F), elapsed=0.25hr, k_passive=-0.03, avg_delta=5°F.
+        gross_rate = -2/0.25 = -8°F/hr
+        k_active = -8 - (-0.03 × 5) = -8 + 0.15 = -7.85°F/hr  → in [-15, -0.5]
+        """
+        from custom_components.climate_advisor.learning import compute_k_active_single_point
+
+        result = compute_k_active_single_point(
+            T_start=75.0,
+            T_peak=73.0,
+            elapsed_hours=0.25,
+            k_passive=-0.03,
+            avg_delta_t=5.0,
+            session_mode="cool",
+        )
+        assert result is not None, "Valid cool cycle with ΔT=-2°F should return k_active, got None"
+        assert -15.0 <= result <= -0.5, f"Cool k_active should be in [-15.0, -0.5], got {result:.3f}"
+
+    # ── integration tests: _commit_event_from_dict fallthrough ────────────────
+
+    def _make_n1_event_dict(
+        self,
+        start_f: float = 68.0,
+        peak_f: float = 69.0,
+        session_min: float = 10.0,
+        n_active: int = 1,
+        n_post: int = 4,
+    ) -> dict:
+        """Build a minimal hvac_heat event dict with n_active=1 (short cycle)."""
+        now = _FAKE_NOW
+        active_samples = [
+            {
+                "timestamp": now.isoformat(),
+                "indoor_temp_f": start_f + 0.5,
+                "outdoor_temp_f": 54.0,
+                "elapsed_minutes": 0.0,
+            }
+            for _ in range(n_active)
+        ]
+        post_samples = [
+            {
+                "timestamp": now.isoformat(),
+                "indoor_temp_f": peak_f - i * 0.25,
+                "outdoor_temp_f": 54.0,
+                "elapsed_minutes": float(session_min + i * 5),
+            }
+            for i in range(n_post)
+        ]
+        pre_samples = [
+            {
+                "timestamp": now.isoformat(),
+                "indoor_temp_f": start_f,
+                "outdoor_temp_f": 54.0,
+                "elapsed_minutes": float(-5 + i * 5),
+            }
+            for i in range(2)
+        ]
+        return {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-n1-single-point",
+            "hvac_mode": "heat",
+            "session_mode": "heat",
+            "start_time": now.isoformat(),
+            "active_start": now.isoformat(),
+            "active_end": now.isoformat(),
+            "start_indoor_f": start_f,
+            "peak_indoor_f": peak_f,
+            "end_indoor_f": peak_f - 0.5,
+            "session_minutes": session_min,
+            "pre_heat_samples": pre_samples,
+            "active_samples": active_samples,
+            "post_heat_samples": post_samples,
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+    _FULL_CACHE_TEMPLATE = {
+        "k_passive": None,
+        "k_active_heat": None,
+        "k_active_cool": None,
+        "k_vent": None,
+        "k_vent_window": None,
+        "k_solar": None,
+        "observation_count_heat": 0,
+        "observation_count_cool": 0,
+        "observation_count_passive": 0,
+        "observation_count_fan_only": 0,
+        "observation_count_vent": 0,
+        "observation_count_solar": 0,
+        "last_observation_date": None,
+        "avg_r_squared_passive": None,
+        "confidence_k_passive": "none",
+        "confidence_k_hvac": "none",
+    }
+
+    def _make_engine_with_dt(self, tmp_path):
+        """Build a LearningEngine with dt_util returning a real datetime."""
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        return engine
+
+    def _seed_cache(self, engine, overrides: dict) -> None:
+        """Seed engine cache with full template + overrides."""
+        cache = dict(self._FULL_CACHE_TEMPLATE)
+        cache.update(overrides)
+        engine._state.thermal_model_cache = cache
+
+    def test_commit_falls_through_to_single_point(self, tmp_path):
+        """D19: n_active=1 → OLS returns None → single-point fires → k_active not None.
+
+        Setup: k_passive OLS fails (patched), k_vent_window=-0.14 proxy available.
+        start_indoor_f=68, peak_indoor_f=69, session_minutes=10 (elapsed=0.167hr).
+        Expected: result committed with k_active_heat != None, grade="low".
+        """
+        from custom_components.climate_advisor.const import REJECT_OLS_BAD_FIT
+
+        engine = self._make_engine_with_dt(tmp_path)
+        # Bridge home: k_vent_window available, no envelope k_passive
+        self._seed_cache(engine, {"k_passive": None, "k_vent_window": -0.14})
+
+        event = self._make_n1_event_dict(
+            start_f=68.0,
+            peak_f=69.0,
+            session_min=10.0,
+            n_active=1,
+        )
+
+        dt_mock = _make_dt_mock()
+        with (
+            patch(
+                "custom_components.climate_advisor.learning.compute_k_passive",
+                return_value=(None, 0.05, REJECT_OLS_BAD_FIT),
+            ),
+            patch("custom_components.climate_advisor.learning.dt_util", dt_mock),
+        ):
+            result, reject_code, r2 = engine._commit_event_from_dict(
+                event, force_grade=None, obs_type=OBS_TYPE_HVAC_HEAT
+            )
+
+        assert result is not None, (
+            "n_active=1 with bridge proxy k_vent_window=-0.14 and valid T_start/T_peak/"
+            f"session_minutes should produce a commit via single-point. "
+            f"Got result=None, reject_code={reject_code}"
+        )
+        assert result.get("k_active") is not None, (
+            f"Single-point path should set k_active, got {result.get('k_active')}"
+        )
+        assert result.get("confidence_grade") == "low", (
+            f"Single-point commit must use grade='low', got {result.get('confidence_grade')}"
+        )
+        # D21: proxy used → k_passive and r_squared_passive in obs dict must be None
+        assert result.get("k_passive") is None, (
+            f"When proxy was used for k_p, obs dict k_passive must be None (D21). Got {result.get('k_passive')}"
+        )
+        assert result.get("r_squared_passive") is None, (
+            f"D21: r_squared_passive must be None when proxy used. Got {result.get('r_squared_passive')}"
+        )
+
+    def test_commit_skip_when_no_k_passive_available(self, tmp_path):
+        """D19: n_active=1, no k_passive and no proxy → single-point cannot fire → k_active=None.
+
+        Fresh install: neither OLS k_passive nor k_vent_window proxy is available.
+        Expected: commit returns None (graceful skip, not an error).
+        """
+        from custom_components.climate_advisor.const import REJECT_OLS_BAD_FIT
+
+        engine = self._make_engine_with_dt(tmp_path)
+        # Fresh install: no proxy available
+        self._seed_cache(engine, {"k_passive": None, "k_vent_window": None})
+
+        event = self._make_n1_event_dict(
+            start_f=68.0,
+            peak_f=69.0,
+            session_min=10.0,
+            n_active=1,
+        )
+
+        dt_mock = _make_dt_mock()
+        with (
+            patch(
+                "custom_components.climate_advisor.learning.compute_k_passive",
+                return_value=(None, 0.05, REJECT_OLS_BAD_FIT),
+            ),
+            patch("custom_components.climate_advisor.learning.dt_util", dt_mock),
+        ):
+            result, reject_code, r2 = engine._commit_event_from_dict(
+                event, force_grade=None, obs_type=OBS_TYPE_HVAC_HEAT
+            )
+
+        assert result is None, (
+            "Fresh install (no k_passive, no proxy): single-point must not fire. "
+            f"Expected result=None, got result={result}"
+        )

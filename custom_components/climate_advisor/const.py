@@ -820,6 +820,8 @@ REJECT_ABANDONED = "abandoned"
 
 # Reduced plateau guard (was THERMAL_MIN_DECAY_F = 1.0)
 THERMAL_HVAC_MIN_DECAY_F = 0.3
+# Minimum ΔT for single-point k_active estimate (filters sensor noise / no-effect cycles)
+THERMAL_HVAC_MIN_SIGNAL_F: float = 0.5
 
 # Passive decay observation thresholds
 THERMAL_PASSIVE_MIN_SAMPLES = 30

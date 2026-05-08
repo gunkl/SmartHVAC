@@ -31,6 +31,7 @@ from .const import (
     REJECT_OLS_WRONG_SIGN,
     REJECT_SMALL_DELTA,
     REJECT_TOO_FEW_SAMPLES,
+    THERMAL_HVAC_MIN_SIGNAL_F,
     THERMAL_K_ACTIVE_COOL_MAX,
     THERMAL_K_ACTIVE_COOL_MIN,
     THERMAL_K_ACTIVE_HEAT_MAX,
@@ -395,6 +396,47 @@ def compute_k_active(
     r_squared = max(0.0, r_squared)
 
     return k_active, r_squared
+
+
+def compute_k_active_single_point(
+    T_start: float,
+    T_peak: float,
+    elapsed_hours: float,
+    k_passive: float,
+    avg_delta_t: float,
+    session_mode: str,
+) -> float | None:
+    """Single-point k_active estimate using actual cycle duration and ΔT.
+
+    Used when n_active < 2 (cycle shorter than sampling interval).
+    Physics: k_active = (T_peak - T_start) / elapsed - k_passive * avg(T_in - T_out)
+
+    Args:
+        T_start: Indoor temperature at HVAC start (°F).
+        T_peak: Peak indoor temperature during/after cycle (°F).
+        elapsed_hours: True HVAC-on duration derived from timestamps (hours).
+        k_passive: Envelope or proxy decay rate (hr⁻¹, expected negative).
+        avg_delta_t: Mean (T_indoor - T_outdoor) across available samples (°F).
+        session_mode: "heat" or "cool".
+
+    Returns:
+        k_active (°F/hr) within validated bounds, or None if signal is too small,
+        elapsed is zero, or result falls outside physical bounds.
+    """
+    if elapsed_hours <= 0:
+        return None
+    signal = T_peak - T_start
+    if session_mode == "heat" and signal < THERMAL_HVAC_MIN_SIGNAL_F:
+        return None
+    if session_mode == "cool" and signal > -THERMAL_HVAC_MIN_SIGNAL_F:
+        return None
+    gross_rate = signal / elapsed_hours
+    k_active = gross_rate - k_passive * avg_delta_t
+    if session_mode == "heat" and not (THERMAL_K_ACTIVE_HEAT_MIN <= k_active <= THERMAL_K_ACTIVE_HEAT_MAX):
+        return None
+    if session_mode == "cool" and not (THERMAL_K_ACTIVE_COOL_MIN <= k_active <= THERMAL_K_ACTIVE_COOL_MAX):
+        return None
+    return k_active
 
 
 @dataclass
@@ -1068,6 +1110,7 @@ class LearningEngine:
         session_mode = event.get("session_mode") or event.get("hvac_mode") or "heat"
 
         k_p, r2_p, _reject_code = compute_k_passive(post_samples, pre_samples)
+        _k_p_from_proxy = False  # D21: track whether k_p came from bridge proxy
         if k_p is None:
             _LOGGER.info(
                 "Thermal event commit failed: k_passive rejected (R²=%.3f, post_n=%d)",
@@ -1083,6 +1126,7 @@ class LearningEngine:
             _kv = _cache.get("k_vent_window") if isinstance(_cache, dict) else None
             if _kv is not None and _kv < 0:
                 k_p = _kv
+                _k_p_from_proxy = True
                 force_grade = "low"
                 _LOGGER.debug(
                     "_commit_event_from_dict: k_passive None, using k_vent_window=%.4f as proxy (bridge home)",
@@ -1093,6 +1137,40 @@ class LearningEngine:
 
         k_a, r2_a = compute_k_active(active_samples, k_p, session_mode)
         # k_a may be None for fan_only — that is acceptable
+
+        # Issue #130 D19: Single-point fallthrough when OLS returned None due to n_active < 2.
+        # Uses T_start, T_peak, and session_minutes (true elapsed from timestamps) so one
+        # chart_log entry is sufficient.  Only fires when k_p is available (proxy or real)
+        # so fresh installs (no k_passive estimate yet) skip gracefully.
+        if k_a is None and active_samples:
+            _start_f = event.get("start_indoor_f")
+            _peak_f = event.get("peak_indoor_f")
+            _session_min = event.get("session_minutes", 0.0)
+            _all_samps = (event.get("pre_heat_samples") or []) + list(active_samples)
+            _deltas = [
+                s["indoor_temp_f"] - s["outdoor_temp_f"]
+                for s in _all_samps
+                if s.get("indoor_temp_f") is not None and s.get("outdoor_temp_f") is not None
+            ]
+            _avg_dt = sum(_deltas) / len(_deltas) if _deltas else 0.0
+            if _start_f is not None and _peak_f is not None and _session_min > 0 and k_p is not None:
+                _k_a_sp = compute_k_active_single_point(
+                    T_start=_start_f,
+                    T_peak=_peak_f,
+                    elapsed_hours=_session_min / 60.0,
+                    k_passive=k_p,
+                    avg_delta_t=_avg_dt,
+                    session_mode=session_mode,
+                )
+                if _k_a_sp is not None:
+                    k_a = _k_a_sp
+                    force_grade = "low"
+                    _LOGGER.debug(
+                        "_commit_event_from_dict: single-point k_active=%.3f (n_active=%d elapsed=%.1fmin)",
+                        k_a,
+                        len(active_samples),
+                        _session_min,
+                    )
 
         # Passive baseline rate (mean of pre-heat rates)
         passive_baseline = 0.0
@@ -1160,10 +1238,13 @@ class LearningEngine:
             "start_outdoor_f": start_outdoor,
             "avg_outdoor_f": round(avg_outdoor, 1),
             "delta_t_avg": round(delta_t_avg, 2),
-            "k_passive": round(k_p, 5),
+            # D21: when k_p came from the bridge proxy, write k_passive=None so
+            # _update_thermal_model_cache does NOT update the envelope k_passive EWMA
+            # with a ventilated-decay proxy value.  Only k_active EWMA is updated.
+            "k_passive": None if _k_p_from_proxy else round(k_p, 5),
             "k_active": round(k_a, 3) if k_a is not None else None,
             "passive_baseline_rate": round(passive_baseline, 3),
-            "r_squared_passive": round(r2_p, 3),
+            "r_squared_passive": None if _k_p_from_proxy else round(r2_p, 3),
             "r_squared_active": round(r2_a, 3) if r2_a is not None else None,
             "sample_count_pre": len(pre_samples),
             "sample_count_active": len(active_samples),
