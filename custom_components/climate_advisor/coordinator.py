@@ -271,6 +271,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         # HVAC runtime tracking
         self._hvac_on_since: datetime | None = None
         self._last_outdoor_temp: float | None = None  # most recent outdoor reading for gate checks
+        # Issue #130 D16: fallback outdoor temp when weather entity is temporarily unavailable
+        self._last_known_outdoor_f: float | None = None
+        self._last_known_outdoor_ts: datetime | None = None
         # Thermal observation pipeline (Issue #114)
         self._pending_thermal_event: dict | None = None
         self._pending_observations: dict = {}  # keyed by obs_type string
@@ -2588,6 +2591,23 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         indoor = self._get_indoor_temp()
         outdoor = getattr(self, "_last_outdoor_temp", None)
+
+        # Issue #130 D16: Use last-known outdoor temp if current reading is unavailable.
+        # Outdoor temp changes slowly; a 30-min-stale reading is accurate to ±2°F —
+        # sufficient for trigger gating and OLS.  Better than skipping samples entirely.
+        if outdoor is None:
+            _last_known = getattr(self, "_last_known_outdoor_f", None)
+            _last_known_ts = getattr(self, "_last_known_outdoor_ts", None)
+            if (
+                _last_known is not None
+                and _last_known_ts is not None
+                and (dt_util.now() - _last_known_ts).total_seconds() < 1800  # 30 min
+            ):
+                outdoor = _last_known
+        if outdoor is not None and outdoor != getattr(self, "_last_known_outdoor_f", None):
+            self._last_known_outdoor_f = outdoor
+            self._last_known_outdoor_ts = dt_util.now()
+
         ae = self.automation_engine
 
         now = dt_util.now()
@@ -2930,56 +2950,44 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if len(post_samples) < THERMAL_MIN_POST_HEAT_SAMPLES:
             return
 
-        recent = []
-        now_iso = dt_util.now()
-        for s in reversed(post_samples):
-            try:
-                sample_ts = dt_util.parse_datetime(s["timestamp"])
-                if sample_ts and (now_iso - sample_ts).total_seconds() / 60.0 <= THERMAL_STABILIZATION_WINDOW_MINUTES:
-                    recent.append(s)
-            except Exception:
-                pass
-        recent.reverse()
+        # Issue #130 D15: Remove stabilization-wait gate.  Once min samples are collected,
+        # commit immediately via OLS — the R² already governs quality.  Waiting for ±0.3°F
+        # stability (THERMAL_STABILIZATION_THRESHOLD_F) over the last 5 min is redundant
+        # and systematically blocks short-cycle (5–30 min) observations from ever committing.
+        obs["status"] = "stabilized"
+        obs["stabilized_at"] = dt_util.now().isoformat()
+        obs["end_indoor_f"] = post_samples[-1]["indoor_temp_f"]
 
-        if len(recent) < 2:
+        peak_f = obs.get("peak_indoor_f")
+        end_f = obs["end_indoor_f"]
+        if peak_f is not None and (peak_f - end_f) < THERMAL_HVAC_MIN_DECAY_F:
+            _n_active_pg = len(obs.get("active_samples", []))
+            _n_post_pg = len(obs.get("post_heat_samples", []))
+            _LOGGER.info(
+                "_check_hvac_stabilization: type=%s plateau guard n_active=%d n_post=%d elapsed_post=%.0fmin",
+                obs_type,
+                _n_active_pg,
+                _n_post_pg,
+                elapsed_post,
+            )
+            _LOGGER.info(
+                "Thermal HVAC plateau guard: obs_id=%s peak=%.2f end=%.2f decay=%.2f < %.2f — abandoning",
+                obs.get("obs_id", "?"),
+                peak_f,
+                end_f,
+                peak_f - end_f,
+                THERMAL_HVAC_MIN_DECAY_F,
+            )
+            self._abandon_observation(obs_type, "plateau guard: insufficient post-heat decay")
+            await self._async_save_state()
             return
 
-        indoor_vals = [s["indoor_temp_f"] for s in recent]
-        if max(indoor_vals) - min(indoor_vals) < THERMAL_STABILIZATION_THRESHOLD_F:
-            obs["status"] = "stabilized"
-            obs["stabilized_at"] = dt_util.now().isoformat()
-            obs["end_indoor_f"] = indoor_vals[-1]
-
-            peak_f = obs.get("peak_indoor_f")
-            end_f = indoor_vals[-1]
-            if peak_f is not None and (peak_f - end_f) < THERMAL_HVAC_MIN_DECAY_F:
-                _n_active_pg = len(obs.get("active_samples", []))
-                _n_post_pg = len(obs.get("post_heat_samples", []))
-                _LOGGER.info(
-                    "_check_hvac_stabilization: type=%s plateau guard n_active=%d n_post=%d elapsed_post=%.0fmin",
-                    obs_type,
-                    _n_active_pg,
-                    _n_post_pg,
-                    elapsed_post,
-                )
-                _LOGGER.info(
-                    "Thermal HVAC plateau guard: obs_id=%s peak=%.2f end=%.2f decay=%.2f < %.2f — abandoning",
-                    obs.get("obs_id", "?"),
-                    peak_f,
-                    end_f,
-                    peak_f - end_f,
-                    THERMAL_HVAC_MIN_DECAY_F,
-                )
-                self._abandon_observation(obs_type, "plateau guard: insufficient post-heat decay")
-                await self._async_save_state()
-                return
-
-            _LOGGER.info(
-                "Thermal HVAC observation stabilized: obs_id=%s post_samples=%d",
-                obs.get("obs_id", "?"),
-                len(post_samples),
-            )
-            await self._commit_observation(obs_type)
+        _LOGGER.info(
+            "Thermal HVAC observation min-samples reached: obs_id=%s post_samples=%d — committing",
+            obs.get("obs_id", "?"),
+            len(post_samples),
+        )
+        await self._commit_observation(obs_type)
 
     async def _commit_observation(self, obs_type: str, force_grade: str | None = None) -> None:
         """Commit a pending observation to the learning engine."""

@@ -203,24 +203,52 @@ def _smooth_temps(temps: list[float]) -> list[float]:
     return smoothed
 
 
-def compute_k_passive(samples: list[dict]) -> tuple[float | None, float, str | None]:
-    if len(samples) < _MIN_SAMPLES + 1:
+def compute_k_passive(
+    samples: list[dict],
+    pre_samples: list[dict] | None = None,
+    min_samples: int | None = None,
+) -> tuple[float | None, float, str | None]:
+    """Estimate k_passive from post (and optional pre) HVAC-off sample windows.
+
+    Mirrors learning.py compute_k_passive() exactly, including:
+    - Separate window processing (no rates computed across pre→post boundary)
+    - min_samples override
+    - Same OLS formula and rejection codes
+
+    For the ventilated-decay (single-window) path, call with pre_samples=None.
+    For the HVAC heat/cool path, pass post_samples + pre_samples separately.
+    """
+    _min_s = min_samples if min_samples is not None else _MIN_SAMPLES
+
+    # Build list of windows; process each independently to avoid boundary spikes
+    windows: list[list[dict]] = []
+    if pre_samples:
+        windows.append(list(pre_samples))
+    windows.append(list(samples))
+
+    total = sum(len(w) for w in windows)
+    if total < _min_s + 1:
         return None, 0.0, "too_few_samples"
-    indoor_raw = [s["indoor_temp_f"] for s in samples]
-    outdoor = [s["outdoor_temp_f"] for s in samples]
-    elapsed = [s["elapsed_minutes"] for s in samples]
-    indoor = _smooth_temps(indoor_raw)
+
     rates: list[float] = []
     deltas: list[float] = []
-    for i in range(len(indoor) - 1):
-        dt_h = (elapsed[i + 1] - elapsed[i]) / 60.0
-        if dt_h <= 0:
+    for window in windows:
+        if len(window) < 2:
             continue
-        rate = (indoor[i + 1] - indoor[i]) / dt_h
-        delta = ((indoor[i] + indoor[i + 1]) / 2.0) - ((outdoor[i] + outdoor[i + 1]) / 2.0)
-        rates.append(rate)
-        deltas.append(delta)
-    if len(rates) < _MIN_SAMPLES:
+        indoor_raw = [s["indoor_temp_f"] for s in window]
+        outdoor_w = [s["outdoor_temp_f"] for s in window]
+        elapsed_w = [s["elapsed_minutes"] for s in window]
+        indoor = _smooth_temps(indoor_raw)
+        for i in range(len(indoor) - 1):
+            dt_h = (elapsed_w[i + 1] - elapsed_w[i]) / 60.0
+            if dt_h <= 0:
+                continue
+            rate = (indoor[i + 1] - indoor[i]) / dt_h
+            delta = ((indoor[i] + indoor[i + 1]) / 2.0) - ((outdoor_w[i] + outdoor_w[i + 1]) / 2.0)
+            rates.append(rate)
+            deltas.append(delta)
+
+    if len(rates) < _min_s:
         return None, 0.0, "too_few_samples"
     sum_rd = sum(r * d for r, d in zip(rates, deltas, strict=False))
     sum_d2 = sum(d * d for d in deltas)
@@ -634,6 +662,285 @@ def build_windows_from_chart_log(
 
 
 # ---------------------------------------------------------------------------
+# HVAC cycle detection (--hvac mode, Issue #130 Phase C)
+# ---------------------------------------------------------------------------
+
+_HVAC_HEAT_VALS: frozenset[str] = frozenset({"heating", "heat"})
+_HVAC_COOL_VALS: frozenset[str] = frozenset({"cooling", "cool"})
+_HVAC_IDLE_VALS: frozenset[str | None] = frozenset({"idle", "off", "", None})
+
+# Bounds mirroring const.py (standalone tool — no HA import)
+_K_ACTIVE_HEAT_MIN = 0.5
+_K_ACTIVE_HEAT_MAX = 15.0
+_K_ACTIVE_COOL_MIN = -15.0
+_K_ACTIVE_COOL_MAX = -0.5
+_THERMAL_MIN_POST_HEAT_SAMPLES = 4  # mirrors THERMAL_MIN_POST_HEAT_SAMPLES (Phase B: was 10)
+_THERMAL_HVAC_MIN_DECAY_F = 0.3  # mirrors THERMAL_HVAC_MIN_DECAY_F
+
+
+def _hvac_category(hvac_str: str | None) -> str:
+    """Return 'heat', 'cool', or 'idle' for a chart_log hvac field value."""
+    val = (hvac_str or "").lower().strip()
+    if val in _HVAC_HEAT_VALS:
+        return "heat"
+    if val in _HVAC_COOL_VALS:
+        return "cool"
+    return "idle"
+
+
+def detect_hvac_cycles(
+    entries: list[dict],
+    pre_window_minutes: int = 60,
+    post_window_minutes: int = 90,
+    min_total_samples: int = 4,
+) -> list[dict]:
+    """Scan chart_log entries for HVAC heat/cool cycles.
+
+    Returns a list of cycle dicts, each containing:
+      mode: "heat" or "cool"
+      pre_samples: chart_log entries within pre_window_minutes before HVAC start
+      active_samples: chart_log entries where HVAC was active
+      post_samples: chart_log entries within post_window_minutes after HVAC stop
+      start_ts: ISO timestamp of first active entry
+
+    Entries with outdoor=None are included — outdoor fallback is applied later
+    at OLS time, not during detection.
+    """
+    cycles: list[dict] = []
+    i = 0
+    n = len(entries)
+
+    while i < n:
+        cat = _hvac_category(entries[i].get("hvac"))
+        if cat not in ("heat", "cool"):
+            i += 1
+            continue
+
+        mode = cat
+        active: list[dict] = []
+        while i < n and _hvac_category(entries[i].get("hvac")) in ("heat", "cool"):
+            active.append(entries[i])
+            i += 1
+
+        if not active:
+            continue
+
+        active_start_ts = _parse_ts(active[0]["ts"])
+        active_end_ts = _parse_ts(active[-1]["ts"])
+
+        # post_samples: idle entries within post_window_minutes after last active
+        post: list[dict] = []
+        j = i
+        while j < n:
+            cat_j = _hvac_category(entries[j].get("hvac"))
+            ts_j = _parse_ts(entries[j]["ts"])
+            gap_min = (ts_j - active_end_ts).total_seconds() / 60.0
+            if gap_min > post_window_minutes:
+                break
+            if cat_j == "idle":
+                post.append(entries[j])
+            j += 1
+
+        # pre_samples: idle entries within pre_window_minutes before first active
+        # Walk backwards from the entry just before the active block
+        pre: list[dict] = []
+        k = i - len(active) - 1
+        while k >= 0:
+            cat_k = _hvac_category(entries[k].get("hvac"))
+            ts_k = _parse_ts(entries[k]["ts"])
+            gap_min = (active_start_ts - ts_k).total_seconds() / 60.0
+            if gap_min > pre_window_minutes:
+                break
+            if cat_k == "idle":
+                pre.insert(0, entries[k])
+            k -= 1
+
+        total = len(pre) + len(active) + len(post)
+        if total >= min_total_samples:
+            cycles.append(
+                {
+                    "mode": mode,
+                    "pre_samples": pre,
+                    "active_samples": active,
+                    "post_samples": post,
+                    "start_ts": active[0]["ts"],
+                }
+            )
+
+    return cycles
+
+
+def _chart_entries_to_ols_samples(
+    entries: list[dict],
+    elapsed_start_ts: datetime,
+) -> list[dict]:
+    """Convert chart_log entries to OLS-compatible sample dicts.
+
+    Applies outdoor fallback: when a sample has outdoor=None, propagate the
+    last known valid outdoor value.  Entries where outdoor remains None after
+    fallback (i.e., no prior outdoor ever seen in this sequence) are skipped.
+
+    Returns a list of dicts with keys: indoor_temp_f, outdoor_temp_f,
+    elapsed_minutes, solar_factor, timestamp.
+    """
+    result: list[dict] = []
+    last_outdoor: float | None = None
+    for entry in entries:
+        indoor = entry.get("indoor")
+        if indoor is None:
+            continue
+        outdoor = entry.get("outdoor")
+        if outdoor is not None:
+            last_outdoor = float(outdoor)
+        elif last_outdoor is not None:
+            outdoor = last_outdoor
+        else:
+            continue  # no outdoor at all yet — skip
+
+        ts_str = entry.get("ts", "")
+        entry_dt = _parse_ts(ts_str)
+        elapsed_min = (entry_dt - elapsed_start_ts).total_seconds() / 60.0
+        sf = _solar_factor(entry_dt.hour + entry_dt.minute / 60.0)
+        result.append(
+            {
+                "indoor_temp_f": float(indoor),
+                "outdoor_temp_f": float(outdoor),
+                "elapsed_minutes": elapsed_min,
+                "solar_factor": sf,
+                "timestamp": ts_str,
+            }
+        )
+    return result
+
+
+def run_hvac_replay_ols(
+    cycle: dict,
+    k_vent_window_proxy: float | None = None,
+) -> dict | None:
+    """Run OLS on a detected HVAC cycle and return an observation dict or None.
+
+    Arguments:
+        cycle: dict from detect_hvac_cycles(), with keys:
+               mode, pre_samples, active_samples, post_samples, start_ts
+        k_vent_window_proxy: If not None and k_passive OLS fails, use this
+               value as a proxy (bridge-home path, D17).  Forces grade="low".
+
+    Returns the observation dict on success, None on rejection.
+    The observation dict mirrors the schema used by existing ventilated_decay
+    replay obs so it can be merged into the learning DB directly.
+    """
+    mode = cycle.get("mode", "heat")  # "heat" or "cool"
+
+    # Establish a common elapsed origin from the earliest entry across all phases
+    all_entries = cycle.get("pre_samples", []) + cycle.get("active_samples", []) + cycle.get("post_samples", [])
+    if not all_entries:
+        return None
+    origin_ts = _parse_ts(all_entries[0]["ts"])
+
+    pre_entries = cycle.get("pre_samples", [])
+    active_entries = cycle.get("active_samples", [])
+    post_entries = cycle.get("post_samples", [])
+
+    pre_samples = _chart_entries_to_ols_samples(pre_entries, origin_ts)
+    active_samples = _chart_entries_to_ols_samples(active_entries, origin_ts)
+    post_samples = _chart_entries_to_ols_samples(post_entries, origin_ts)
+
+    # Minimum post samples gate (mirrors THERMAL_MIN_POST_HEAT_SAMPLES)
+    if len(post_samples) < _THERMAL_MIN_POST_HEAT_SAMPLES:
+        return None
+
+    # Plateau guard: reject if post-phase shows essentially no decay
+    if post_samples:
+        post_peak = max(s["indoor_temp_f"] for s in post_samples)
+        post_end = post_samples[-1]["indoor_temp_f"]
+        if (post_peak - post_end) < _THERMAL_HVAC_MIN_DECAY_F and (
+            active_samples and post_samples[0]["indoor_temp_f"] >= active_samples[-1]["indoor_temp_f"]
+        ):
+            # No meaningful decay — skip (plateau guard)
+            return None
+
+    # Compute k_passive from post (+ pre) samples
+    k_p, r2_p, _reject = compute_k_passive(post_samples, pre_samples if pre_samples else None)
+
+    if k_p is None:
+        # Bridge proxy: use k_vent_window if caller supplies it
+        if k_vent_window_proxy is not None and k_vent_window_proxy < 0:
+            k_p = k_vent_window_proxy
+            force_grade = "low"
+        else:
+            return None
+    else:
+        force_grade = "low"  # all replay obs are low-confidence by policy
+
+    # Compute k_active from active samples
+    if len(active_samples) < 2:
+        return None
+    k_a, _r2_a = _compute_k_active_standalone(active_samples, k_p, mode)
+    if k_a is None:
+        return None
+
+    # Build timestamp/date from start_ts
+    ts_str = cycle.get("start_ts", all_entries[0]["ts"])
+    date_str = ts_str[:10]
+
+    return {
+        "event_id": str(__import__("uuid").uuid4()),
+        "timestamp": ts_str,
+        "date": date_str,
+        "hvac_mode": mode,
+        "k_passive": round(k_p, 5),
+        "k_active": round(k_a, 3),
+        "r_squared_passive": round(r2_p, 3),
+        "r_squared_active": None,
+        "sample_count_pre": len(pre_samples),
+        "sample_count_active": len(active_samples),
+        "sample_count_post": len(post_samples),
+        "confidence_grade": force_grade,
+        "schema_version": 2,
+        "source": "replay",
+    }
+
+
+def _compute_k_active_standalone(
+    active_samples: list[dict],
+    k_passive: float,
+    session_mode: str,
+) -> tuple[float | None, float]:
+    """Pure-Python mirror of learning.py compute_k_active() — no HA imports."""
+    if len(active_samples) < 2:
+        return None, 0.0
+
+    indoor_raw = [s["indoor_temp_f"] for s in active_samples]
+    outdoor = [s["outdoor_temp_f"] for s in active_samples]
+    elapsed = [s["elapsed_minutes"] for s in active_samples]
+    indoor = _smooth_temps(indoor_raw)
+
+    k_actives: list[float] = []
+    for i in range(len(indoor) - 1):
+        dt_hours = (elapsed[i + 1] - elapsed[i]) / 60.0
+        if dt_hours <= 0:
+            continue
+        rate = (indoor[i + 1] - indoor[i]) / dt_hours
+        delta = ((indoor[i] + indoor[i + 1]) / 2.0) - ((outdoor[i] + outdoor[i + 1]) / 2.0)
+        k_actives.append(rate - k_passive * delta)
+
+    if not k_actives:
+        return None, 0.0
+
+    k_active = sum(k_actives) / len(k_actives)
+
+    if session_mode == "heat" and not (_K_ACTIVE_HEAT_MIN <= k_active <= _K_ACTIVE_HEAT_MAX):
+        return None, 0.0
+    if session_mode == "cool" and not (_K_ACTIVE_COOL_MIN <= k_active <= _K_ACTIVE_COOL_MAX):
+        return None, 0.0
+
+    var_res = sum((k_a - k_active) ** 2 for k_a in k_actives)
+    var_tot = sum(k_a**2 for k_a in k_actives)
+    r2 = max(0.0, 1.0 - var_res / var_tot) if var_tot > 0 else 0.0
+    return k_active, r2
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -643,6 +950,12 @@ def main() -> None:
         description="Replay historical HA sensor data through the thermal learning OLS.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    parser.add_argument(
+        "--hvac",
+        action="store_true",
+        help="Detect and replay HVAC heat/cool cycles from chart_log (Issue #130 Phase C). "
+        "Requires SSH access (same as --chart-log). Use with --days and --dry-run/--write.",
     )
     parser.add_argument(
         "--chart-log",
@@ -679,8 +992,14 @@ def main() -> None:
     if not args.dry_run and not args.write:
         parser.error("Specify --dry-run to preview or --write to commit. Start with --dry-run.")
 
-    if not args.chart_log and not (args.climate_entity and args.outdoor_entity and args.window_entities):
-        parser.error("Either --chart-log or all of --climate-entity, --outdoor-entity, --window-entities are required.")
+    if (
+        not args.chart_log
+        and not args.hvac
+        and not (args.climate_entity and args.outdoor_entity and args.window_entities)
+    ):
+        parser.error(
+            "Either --chart-log, --hvac, or all of --climate-entity, --outdoor-entity, --window-entities are required."
+        )
 
     config = load_config()
     ha_url = config.get("HA_URL", "").rstrip("/")
@@ -693,6 +1012,130 @@ def main() -> None:
         temp_unit = ha_cfg.get("unit_system", {}).get("temperature", "°F")
         temp_unit = "C" if "C" in temp_unit else "F"
         print(f"HA temperature unit: {temp_unit}")
+
+    if args.hvac:
+        # --- HVAC heat/cool cycle replay path (Issue #130 Phase C) ---
+        print(f"\nFetching chart_log from HA via SSH ({args.days} days) for HVAC replay...")
+        chart_entries = fetch_chart_log_ssh(config)
+        total = len(chart_entries)
+        print(f"  chart_log: {total} total entries")
+
+        # Apply days filter
+        cutoff_dt = datetime.now(UTC) - timedelta(days=args.days)
+        filtered = []
+        for e in chart_entries:
+            ts_str = e.get("ts", "")
+            if not ts_str:
+                continue
+            ts = _parse_ts(ts_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            if ts >= cutoff_dt:
+                filtered.append(e)
+        print(f"  Entries in last {args.days} days: {len(filtered)}")
+
+        print("\nDetecting HVAC heat/cool cycles...")
+        cycles = detect_hvac_cycles(filtered)
+        n_heat = sum(1 for c in cycles if c["mode"] == "heat")
+        n_cool = sum(1 for c in cycles if c["mode"] == "cool")
+        print(f"  Found {len(cycles)} cycles ({n_heat} heat, {n_cool} cool)")
+
+        # Check for bridge proxy: use k_vent_window from existing DB if present
+        k_vent_proxy: float | None = None
+        if args.write:
+            try:
+                db_check = fetch_learning_json_ssh(config)
+                _cache = db_check.get("thermal_model_cache", {})
+                _kv = _cache.get("k_vent_window")
+                if isinstance(_kv, float) and _kv < 0:
+                    k_vent_proxy = _kv
+                    print(f"  Bridge proxy: k_vent_window={k_vent_proxy:.4f} available for fallback")
+            except Exception:
+                pass  # proxy unavailable; not fatal
+
+        print("\nRunning HVAC OLS...")
+        obs_list = []
+        rejected = 0
+        reject_reasons: dict[str, int] = {}
+        for cycle in cycles:
+            obs = run_hvac_replay_ols(cycle, k_vent_window_proxy=k_vent_proxy)
+            mode_tag = cycle["mode"]
+            ts_short = cycle.get("start_ts", "?")[:16].replace("T", " ")
+            n_pre = len(cycle["pre_samples"])
+            n_act = len(cycle["active_samples"])
+            n_post = len(cycle["post_samples"])
+            if obs:
+                k_p_str = f"{obs['k_passive']:+.4f}"
+                k_a_str = f"{obs['k_active']:+.4f}" if obs["k_active"] is not None else "None"
+                r2_str = f"{obs['r_squared_passive']:.3f}"
+                print(
+                    f"  [{mode_tag}] {ts_short}  "
+                    f"n_pre={n_pre} n_act={n_act} n_post={n_post}  "
+                    f"k_passive={k_p_str} k_active={k_a_str} R²={r2_str}  "
+                    f"COMMITTED [low]"
+                )
+                obs_list.append(obs)
+            else:
+                rejected += 1
+                reason = "rejected"
+                print(f"  [{mode_tag}] {ts_short}  n_pre={n_pre} n_act={n_act} n_post={n_post}  rejected")
+                reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
+
+        print(f"\nSummary: {len(obs_list)} committed / {rejected} rejected")
+        if reject_reasons:
+            for reason, count in sorted(reject_reasons.items()):
+                print(f"  {reason}: {count}")
+
+        if not obs_list:
+            print("\nNo HVAC obs to write — done.")
+            return
+
+        if args.dry_run:
+            print("\n(dry-run) Use --write to merge into HA learning DB.")
+            return
+
+        # Write path
+        print("\nFetching current learning DB from HA via SSH...")
+        db = fetch_learning_json_ssh(config)
+        existing_obs: list[dict] = db.get("thermal_observations", [])
+        print(f"  Existing obs: {len(existing_obs)}")
+
+        existing_replay_keys = {
+            (o.get("timestamp"), o.get("hvac_mode")) for o in existing_obs if o.get("source") == "replay"
+        }
+        new_obs = [o for o in obs_list if (o["timestamp"], o["hvac_mode"]) not in existing_replay_keys]
+        print(f"  New HVAC replay obs (after dedup): {len(new_obs)}")
+
+        merged = existing_obs + new_obs
+        merged.sort(key=lambda o: o.get("timestamp", ""))
+
+        cutoff_str = (datetime.now().date() - timedelta(days=90)).isoformat()
+        merged = [o for o in merged if o.get("date", "") >= cutoff_str]
+        if len(merged) > _THERMAL_OBS_CAP:
+            merged = merged[-_THERMAL_OBS_CAP:]
+
+        print("\nRebuilding EWMA model cache from all obs...")
+        new_model = rebuild_model_cache(merged)
+        db["thermal_observations"] = merged
+        db["thermal_model_cache"] = new_model
+
+        print("\nNew model after rebuild:")
+        _hvac_keys = (
+            "k_passive",
+            "k_active_heat",
+            "k_active_cool",
+            "k_vent_window",
+            "confidence_k_passive",
+            "confidence_k_hvac",
+        )
+        for k in _hvac_keys:
+            print(f"  {k}: {new_model.get(k)}")
+
+        print(f"\nWriting {len(merged)} obs to HA learning DB...")
+        write_learning_json_ssh(config, db)
+        print("Done. Restart Climate Advisor integration in HA to activate the updated model.")
+        print("  (HA > Settings > Devices & Services > Climate Advisor > Reload)")
+        return
 
     if args.chart_log:
         # --- Chart-log path (SSH) ---
@@ -767,7 +1210,7 @@ def main() -> None:
 
     # Run OLS on each window
     print("\nRunning OLS...")
-    obs_list: list[dict] = []
+    obs_list = []
     rejected = 0
     for window in windows:
         obs = run_ols_on_window(window)

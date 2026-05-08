@@ -1074,7 +1074,22 @@ class LearningEngine:
                 r2_p,
                 len(post_samples),
             )
-            return None, _reject_code, r2_p
+            # Issue #130 D17: Bridge-home proxy.
+            # If the home has k_vent_window (measured via ventilated_decay obs) but no
+            # envelope-only k_passive (common when windows are always open = no passive obs),
+            # use k_vent_window as a proxy.  k_vent_window overestimates passive loss because
+            # it includes ventilation, so force confidence to "low".
+            _cache = self._state.thermal_model_cache
+            _kv = _cache.get("k_vent_window") if isinstance(_cache, dict) else None
+            if _kv is not None and _kv < 0:
+                k_p = _kv
+                force_grade = "low"
+                _LOGGER.debug(
+                    "_commit_event_from_dict: k_passive None, using k_vent_window=%.4f as proxy (bridge home)",
+                    k_p,
+                )
+            else:
+                return None, _reject_code, r2_p
 
         k_a, r2_a = compute_k_active(active_samples, k_p, session_mode)
         # k_a may be None for fan_only — that is acceptable

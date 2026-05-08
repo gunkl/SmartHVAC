@@ -368,15 +368,15 @@ class TestStabilization:
         assert coord._pending_thermal_event is None
 
     def test_too_few_post_samples_does_not_commit(self):
-        """Below THERMAL_MIN_POST_HEAT_SAMPLES (10) → no commit attempt."""
+        """Below THERMAL_MIN_POST_HEAT_SAMPLES (4 after Issue #130) → no commit attempt."""
         coord = _make_thermal_coord()
         dt_mock = _make_dt_mock()
         with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
             asyncio.run(coord._start_thermal_event("heat"))
             asyncio.run(coord._end_active_phase())
 
-        # Only 5 post samples
-        coord._pending_thermal_event["post_heat_samples"] = self._make_stable_post_samples(5)
+        # Only 3 post samples (< 4 = new threshold)
+        coord._pending_thermal_event["post_heat_samples"] = self._make_stable_post_samples(3)
         coord._pending_thermal_event["active_end"] = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC).isoformat()
 
         dt_mock2 = _make_dt_mock(datetime(2026, 4, 19, 12, 2, 0, tzinfo=UTC))

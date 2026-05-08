@@ -149,8 +149,9 @@ def test_k_passive_with_integer_noise():
 
 
 def test_k_passive_too_few_samples():
-    """Fewer than THERMAL_MIN_POST_HEAT_SAMPLES → returns None."""
-    samples = _make_decay_samples(t_start=75.0, t_outdoor=40.0, k_passive=-0.05, n=5)
+    """Fewer than THERMAL_MIN_POST_HEAT_SAMPLES+1 pairs → returns None (Issue #130: threshold=4)."""
+    # THERMAL_MIN_POST_HEAT_SAMPLES=4 → need >= 5 samples for 4 pairs.  Use 4 → only 3 pairs.
+    samples = _make_decay_samples(t_start=75.0, t_outdoor=40.0, k_passive=-0.05, n=4)
     k_p, r2, _code = compute_k_passive(samples)
     assert k_p is None
 

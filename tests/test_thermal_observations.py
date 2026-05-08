@@ -2712,3 +2712,473 @@ class TestHvacObservationLogging:
         combined = " ".join(pre_abandon_logs)
         # n_post=3 should appear
         assert "3" in combined, f"Expected n_post=3 to appear in pre-abandon log. Got: {combined}"
+
+
+# ---------------------------------------------------------------------------
+# TestHvacShortCycle (Issue #130, Phase B — fixes D14–D17)
+# ---------------------------------------------------------------------------
+
+
+class TestHvacShortCycle:
+    """D14–D17: Allow short HVAC cycles (5–30 min) to commit observations.
+
+    B1: THERMAL_MIN_POST_HEAT_SAMPLES lowered 10 → 4.
+    B2: Stabilization-wait gate removed; commit via OLS when min samples reached.
+    B3: Outdoor temp fallback (_last_known_outdoor_f) when current reading is None.
+    B4: Bridge-home proxy: use k_vent_window as k_passive input when k_passive=None.
+    """
+
+    # ── shared helpers ────────────────────────────────────────────────────────
+
+    def _make_post_heat_obs(
+        self,
+        n_post: int,
+        peak_f: float = 72.0,
+        end_f: float = 71.0,
+        active_elapsed_minutes: int = 60,
+        now: datetime = _FAKE_NOW,
+    ) -> dict:
+        """Build a hvac_heat obs in post_heat phase with n_post samples.
+
+        Samples are spread across the last n_post minutes before *now*.
+        All temps equal end_f (stable decay), unless oscillating=True is used
+        via the caller.
+        """
+        active_end = datetime(
+            now.year,
+            now.month,
+            now.day,
+            now.hour,
+            max(0, now.minute - n_post),
+            now.second,
+            tzinfo=UTC,
+        )
+        samples = []
+        for i in range(n_post):
+            ts = datetime(
+                now.year,
+                now.month,
+                now.day,
+                now.hour,
+                max(0, now.minute - (n_post - 1 - i)),
+                now.second,
+                tzinfo=UTC,
+            )
+            samples.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "indoor_temp_f": end_f,
+                    "outdoor_temp_f": 50.0,
+                    "elapsed_minutes": float(active_elapsed_minutes + i),
+                }
+            )
+        return {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-short-cycle",
+            "start_time": _FAKE_NOW.isoformat(),
+            "active_start": active_end.isoformat(),
+            "active_end": active_end.isoformat(),
+            "status": "monitoring",
+            "_phase": "post_heat",
+            "active_samples": [],
+            "post_heat_samples": samples,
+            "peak_indoor_f": peak_f,
+            "end_indoor_f": end_f,
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+    def _make_oscillating_post_heat_obs(
+        self,
+        n_post: int = 4,
+        peak_f: float = 72.0,
+        now: datetime = _FAKE_NOW,
+    ) -> dict:
+        """Build post_heat obs with oscillating temps — variance > 0.3°F in last 5 min.
+
+        Temperatures alternate ±0.5°F around 71.5, so max-min = 1.0 > 0.3.
+        Currently this prevents stabilization and blocks commit.
+        After B2, OLS runs directly and commits if R² ok.
+        """
+        active_end = datetime(
+            now.year,
+            now.month,
+            now.day,
+            now.hour,
+            max(0, now.minute - n_post),
+            now.second,
+            tzinfo=UTC,
+        )
+        oscillating = [71.5, 72.0, 71.0, 71.5]
+        samples = []
+        for i in range(n_post):
+            ts = datetime(
+                now.year,
+                now.month,
+                now.day,
+                now.hour,
+                max(0, now.minute - (n_post - 1 - i)),
+                now.second,
+                tzinfo=UTC,
+            )
+            samples.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "indoor_temp_f": oscillating[i % len(oscillating)],
+                    "outdoor_temp_f": 50.0,
+                    "elapsed_minutes": float(60 + i),
+                }
+            )
+        return {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-short-cycle-osc",
+            "start_time": _FAKE_NOW.isoformat(),
+            "active_start": active_end.isoformat(),
+            "active_end": active_end.isoformat(),
+            "status": "monitoring",
+            "_phase": "post_heat",
+            "active_samples": [],
+            "post_heat_samples": samples,
+            "peak_indoor_f": peak_f,
+            "end_indoor_f": oscillating[-1],
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+    # ── B1 ────────────────────────────────────────────────────────────────────
+
+    def test_post_heat_min_samples_constant_is_4(self):
+        """D14: THERMAL_MIN_POST_HEAT_SAMPLES must equal 4 after the fix."""
+        from custom_components.climate_advisor.const import THERMAL_MIN_POST_HEAT_SAMPLES
+
+        assert THERMAL_MIN_POST_HEAT_SAMPLES == 4, (
+            f"Expected THERMAL_MIN_POST_HEAT_SAMPLES=4 (D14 fix), got {THERMAL_MIN_POST_HEAT_SAMPLES}"
+        )
+
+    # ── B2 ────────────────────────────────────────────────────────────────────
+
+    def test_post_heat_commits_at_4_samples(self):
+        """D14+D15: 4 post_heat_samples with sufficient decay triggers commit, not wait."""
+
+        coord = _make_obs_coord()
+        # Use exactly THERMAL_MIN_POST_HEAT_SAMPLES samples (should be 4 after fix)
+        obs = self._make_post_heat_obs(n_post=4, peak_f=72.0, end_f=71.0)
+        coord._pending_observations[OBS_TYPE_HVAC_HEAT] = obs
+
+        commit_called = []
+
+        async def _fake_commit(obs_type, force_grade=None):
+            commit_called.append(obs_type)
+            coord._pending_observations.pop(obs_type, None)
+
+        coord._commit_observation = _fake_commit
+
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._check_hvac_stabilization(OBS_TYPE_HVAC_HEAT))
+
+        assert len(commit_called) == 1 and commit_called[0] == OBS_TYPE_HVAC_HEAT, (
+            "4 post_heat_samples with decay=1.0 > 0.3 should have been committed. "
+            f"commit_called={commit_called}, "
+            f"obs still in pending={OBS_TYPE_HVAC_HEAT in coord._pending_observations}"
+        )
+
+    def test_post_heat_abandons_at_3_samples_after_timeout(self):
+        """D15: 3 post_heat_samples + elapsed > 45 min → timeout abandon (not commit)."""
+        coord = _make_obs_coord()
+        # Only 3 samples, active_end set to 46 min ago so timeout fires
+        now = _FAKE_NOW
+        active_end = datetime(now.year, now.month, now.day, max(0, now.hour - 1), now.minute, now.second, tzinfo=UTC)
+        obs = {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-timeout-3",
+            "start_time": _FAKE_NOW.isoformat(),
+            "active_start": active_end.isoformat(),
+            "active_end": active_end.isoformat(),
+            "status": "monitoring",
+            "_phase": "post_heat",
+            "active_samples": [],
+            "post_heat_samples": [
+                {
+                    "timestamp": _FAKE_NOW.isoformat(),
+                    "indoor_temp_f": 71.0,
+                    "outdoor_temp_f": 50.0,
+                    "elapsed_minutes": float(i),
+                }
+                for i in range(3)
+            ],
+            "peak_indoor_f": 72.0,
+            "end_indoor_f": 71.0,
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+        coord._pending_observations[OBS_TYPE_HVAC_HEAT] = obs
+
+        commit_called = []
+
+        async def _fake_commit(obs_type, force_grade=None):
+            commit_called.append(obs_type)
+            coord._pending_observations.pop(obs_type, None)
+
+        coord._commit_observation = _fake_commit
+
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._check_hvac_stabilization(OBS_TYPE_HVAC_HEAT))
+
+        assert OBS_TYPE_HVAC_HEAT not in coord._pending_observations, (
+            "3 samples + 60 min timeout should abandon the observation"
+        )
+        assert len(commit_called) == 0, "Timeout path should abandon (not commit). commit_called={commit_called}"
+
+    def test_stabilization_not_required_for_commit(self):
+        """D15: Oscillating post_heat temps must NOT block commit when min samples reached.
+
+        Currently (pre-B2): variance > 0.3°F → code returns without committing.
+        After B2: OLS runs directly; stabilization wait removed.
+        """
+        coord = _make_obs_coord()
+        obs = self._make_oscillating_post_heat_obs(n_post=4, peak_f=72.0)
+        coord._pending_observations[OBS_TYPE_HVAC_HEAT] = obs
+
+        commit_called = []
+
+        async def _fake_commit(obs_type, force_grade=None):
+            commit_called.append(obs_type)
+            coord._pending_observations.pop(obs_type, None)
+
+        coord._commit_observation = _fake_commit
+
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._check_hvac_stabilization(OBS_TYPE_HVAC_HEAT))
+
+        # After B2: commit should be called (stabilization variance no longer required)
+        assert len(commit_called) == 1, (
+            "Oscillating post_heat temps must NOT block commit after stabilization gate removed. "
+            f"commit_called={commit_called}"
+        )
+
+    # ── B3 ────────────────────────────────────────────────────────────────────
+
+    def test_outdoor_none_uses_last_known_within_30min(self):
+        """D16: When _last_outdoor_temp=None, use _last_known_outdoor_f if < 30 min old."""
+        from datetime import timedelta
+
+        coord = _make_obs_coord(indoor_temp=75.0, outdoor_temp=55.0)
+        # Simulate: weather entity unavailable → outdoor is None at line 2590
+        coord._last_outdoor_temp = None
+        # But we have a recent last-known reading
+        coord._last_known_outdoor_f = 55.0
+        coord._last_known_outdoor_ts = _FAKE_NOW - timedelta(minutes=20)
+
+        # Start a passive_decay trigger so we can observe whether outdoor was used:
+        # passive_decay trigger fires when delta >= THERMAL_PASSIVE_MIN_DELTA_F (3°F)
+        # With outdoor=55, indoor=75: delta=20 → trigger should fire
+        # But first: patch _FAKE_NOW into dt_util so now() returns the right time
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        # If outdoor fallback worked: delta=20 > 3 → passive_decay should have started
+        assert OBS_TYPE_PASSIVE_DECAY in coord._pending_observations, (
+            "With _last_outdoor_temp=None but fresh _last_known_outdoor_f=55.0 (20min ago), "
+            "passive_decay trigger should fire using fallback outdoor=55.0. "
+            f"pending={list(coord._pending_observations.keys())}"
+        )
+
+    def test_outdoor_none_skips_when_stale_beyond_30min(self):
+        """D16: _last_known_outdoor_f older than 30 min must NOT be used as fallback."""
+        from datetime import timedelta
+
+        coord = _make_obs_coord(indoor_temp=75.0, outdoor_temp=55.0)
+        coord._last_outdoor_temp = None
+        # Stale reading: 31 minutes old → should NOT be used
+        coord._last_known_outdoor_f = 55.0
+        coord._last_known_outdoor_ts = _FAKE_NOW - timedelta(minutes=31)
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        # With no valid outdoor, passive_decay trigger should NOT fire
+        assert OBS_TYPE_PASSIVE_DECAY not in coord._pending_observations, (
+            "With _last_known_outdoor_ts=31min ago (stale), outdoor fallback must NOT be used. "
+            f"pending={list(coord._pending_observations.keys())}"
+        )
+
+    def test_outdoor_updates_last_known_on_valid_reading(self):
+        """D16: A valid outdoor reading must update _last_known_outdoor_f and _last_known_outdoor_ts."""
+        coord = _make_obs_coord(indoor_temp=75.0, outdoor_temp=57.0)
+        # Ensure the attribute exists (will be added in B3 __init__ fix, but test sets it)
+        coord._last_known_outdoor_f = None
+        coord._last_known_outdoor_ts = None
+        # _last_outdoor_temp = 57.0 (set by _make_obs_coord via outdoor_temp=57.0)
+
+        dt_mock = _make_dt_mock(_FAKE_NOW)
+
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            coord._sample_all_observations()
+
+        assert coord._last_known_outdoor_f == 57.0, (
+            f"Expected _last_known_outdoor_f=57.0 after valid reading, got {coord._last_known_outdoor_f}"
+        )
+        assert coord._last_known_outdoor_ts is not None, (
+            "_last_known_outdoor_ts must be set after valid outdoor reading"
+        )
+
+    # ── B4 ────────────────────────────────────────────────────────────────────
+
+    def _make_hvac_event_dict(
+        self,
+        n_post: int = 4,
+        n_active: int = 3,
+        peak_f: float = 72.0,
+        end_f: float = 71.0,
+    ) -> dict:
+        """Build a minimal hvac_heat event dict for _commit_event_from_dict."""
+        now = _FAKE_NOW
+        pre_samples = [
+            {
+                "timestamp": now.isoformat(),
+                "indoor_temp_f": 70.0,
+                "outdoor_temp_f": 50.0,
+                "elapsed_minutes": float(-i),
+            }
+            for i in range(2, 0, -1)
+        ]
+        active_samples = [
+            {
+                "timestamp": now.isoformat(),
+                "indoor_temp_f": 70.0 + i * 0.5,
+                "outdoor_temp_f": 50.0,
+                "elapsed_minutes": float(i * 5),
+            }
+            for i in range(n_active)
+        ]
+        post_samples = [
+            {
+                "timestamp": now.isoformat(),
+                "indoor_temp_f": peak_f - i * 0.25,
+                "outdoor_temp_f": 50.0,
+                "elapsed_minutes": float(n_active * 5 + i * 5),
+            }
+            for i in range(n_post)
+        ]
+        return {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-b4",
+            "hvac_mode": "heat",
+            "session_mode": "heat",
+            "start_time": now.isoformat(),
+            "active_start": now.isoformat(),
+            "active_end": now.isoformat(),
+            "start_indoor_f": 70.0,
+            "peak_indoor_f": peak_f,
+            "end_indoor_f": end_f,
+            "session_minutes": float(n_active * 5),
+            "pre_heat_samples": pre_samples,
+            "active_samples": active_samples,
+            "post_heat_samples": post_samples,
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+    _FULL_CACHE_TEMPLATE = {
+        "k_passive": None,
+        "k_active_heat": None,
+        "k_active_cool": None,
+        "k_vent": None,
+        "k_vent_window": None,
+        "k_solar": None,
+        "observation_count_heat": 0,
+        "observation_count_cool": 0,
+        "observation_count_passive": 0,
+        "observation_count_fan_only": 0,
+        "observation_count_vent": 0,
+        "observation_count_solar": 0,
+        "last_observation_date": None,
+        "avg_r_squared_passive": None,
+        "confidence_k_passive": "none",
+        "confidence_k_hvac": "none",
+    }
+
+    def _make_engine_with_dt(self, tmp_path):
+        """Build a LearningEngine with dt_util returning a real datetime."""
+        from custom_components.climate_advisor.learning import LearningEngine
+
+        engine = LearningEngine(tmp_path)
+        engine.load_state()
+        return engine
+
+    def _seed_cache(self, engine, overrides: dict) -> None:
+        """Seed engine cache with full template + overrides."""
+        cache = dict(self._FULL_CACHE_TEMPLATE)
+        cache.update(overrides)
+        engine._state.thermal_model_cache = cache
+
+    def test_bridge_home_uses_k_vent_proxy_when_k_passive_none(self, tmp_path):
+        """D17: When k_passive OLS fails but k_vent_window is available, use it as proxy."""
+        from custom_components.climate_advisor.const import REJECT_OLS_BAD_FIT
+
+        engine = self._make_engine_with_dt(tmp_path)
+        # Seed the cache with k_vent_window (bridge home has ventilated obs but no passive)
+        self._seed_cache(engine, {"k_passive": None, "k_vent_window": -0.15})
+
+        event = self._make_hvac_event_dict(n_post=4, n_active=3)
+
+        # Patch compute_k_passive to return None (simulates short post-heat OLS failure)
+        # Also patch dt_util in learning module so now().date().isoformat() returns a real string
+        dt_mock = _make_dt_mock()
+        with (
+            patch(
+                "custom_components.climate_advisor.learning.compute_k_passive",
+                return_value=(None, 0.08, REJECT_OLS_BAD_FIT),
+            ),
+            patch("custom_components.climate_advisor.learning.dt_util", dt_mock),
+        ):
+            result, reject_code, r2 = engine._commit_event_from_dict(
+                event, force_grade=None, obs_type=OBS_TYPE_HVAC_HEAT
+            )
+
+        assert result is not None, (
+            "Bridge home: k_passive=None but k_vent_window=-0.15 available — "
+            f"should commit using proxy. Got result=None, reject_code={reject_code}"
+        )
+        assert result.get("confidence_grade") == "low", (
+            f"Proxy commit must use confidence_grade='low', got {result.get('confidence_grade')}"
+        )
+
+    def test_normal_home_uses_real_k_passive(self, tmp_path):
+        """D17: When k_passive OLS succeeds, proxy must NOT be used."""
+        engine = self._make_engine_with_dt(tmp_path)
+        self._seed_cache(engine, {"k_passive": -0.03, "k_vent_window": -0.15})
+
+        event = self._make_hvac_event_dict(n_post=4, n_active=3)
+
+        dt_mock = _make_dt_mock()
+        # compute_k_passive returns a real value → proxy path must NOT be taken
+        with (
+            patch(
+                "custom_components.climate_advisor.learning.compute_k_passive",
+                return_value=(-0.03, 0.75, None),
+            ),
+            patch("custom_components.climate_advisor.learning.dt_util", dt_mock),
+        ):
+            result, reject_code, r2 = engine._commit_event_from_dict(
+                event, force_grade=None, obs_type=OBS_TYPE_HVAC_HEAT
+            )
+
+        assert result is not None, (
+            f"Normal home: k_passive OLS succeeded → should commit. Got result=None, reject_code={reject_code}"
+        )
+        # confidence_grade should NOT be forced to "low" by the proxy path
+        assert result.get("confidence_grade") in ("low", "medium", "high"), (
+            f"confidence_grade should be computed normally (not proxy-forced), got {result.get('confidence_grade')}"
+        )
+        # The k_passive in the result should reflect the OLS value, not k_vent_window
+        assert result.get("k_passive") == pytest.approx(-0.03, abs=1e-4), (
+            f"k_passive in result should be -0.03 (OLS value), got {result.get('k_passive')}"
+        )
