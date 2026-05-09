@@ -2947,7 +2947,19 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return
 
         post_samples = obs.get("post_heat_samples", [])
-        if len(post_samples) < THERMAL_MIN_POST_HEAT_SAMPLES:
+
+        # Issue #130 D24: When k_vent_window proxy is available (bridge home), post-heat OLS
+        # is not needed — k_passive comes from the proxy and k_active from single-point
+        # timestamps.  Single-point only needs post[0] for the HVAC-off timestamp, so the
+        # minimum drops from THERMAL_MIN_POST_HEAT_SAMPLES (4) to 1.  Proxy-unaware paths
+        # (normal homes, fresh installs) are unchanged.
+        _cache = getattr(self.learning, "_state", None)
+        _cache = _cache.thermal_model_cache if _cache is not None else None
+        _k_vent_window = _cache.get("k_vent_window") if isinstance(_cache, dict) else None
+        _proxy_available = _k_vent_window is not None and _k_vent_window < 0
+        _min_post = 1 if _proxy_available else THERMAL_MIN_POST_HEAT_SAMPLES
+
+        if len(post_samples) < _min_post:
             return
 
         # Issue #130 D15: Remove stabilization-wait gate.  Once min samples are collected,
@@ -2960,7 +2972,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         peak_f = obs.get("peak_indoor_f")
         end_f = obs["end_indoor_f"]
-        if peak_f is not None and (peak_f - end_f) < THERMAL_HVAC_MIN_DECAY_F:
+
+        # Issue #130 D25: Plateau guard validates post-heat decay quality for k_passive OLS.
+        # When proxy is available, k_passive comes from k_vent_window — no OLS decay needed.
+        # Bypass the guard so short-cycle bridge homes are not incorrectly abandoned.
+        if not _proxy_available and peak_f is not None and (peak_f - end_f) < THERMAL_HVAC_MIN_DECAY_F:
             _n_active_pg = len(obs.get("active_samples", []))
             _n_post_pg = len(obs.get("post_heat_samples", []))
             _LOGGER.info(

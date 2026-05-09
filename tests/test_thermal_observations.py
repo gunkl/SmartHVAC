@@ -3456,3 +3456,112 @@ class TestSinglePointKActive:
             "Fresh install (no k_passive, no proxy): single-point must not fire. "
             f"Expected result=None, got result={result}"
         )
+
+    # ── live coordinator n_post gate (Phase D) ─────────────────────────────
+
+    def _make_stabilization_obs(
+        self,
+        n_post: int,
+        peak_f: float = 69.0,
+        end_f: float = 68.5,
+    ) -> dict:
+        """Build a minimal HVAC_HEAT obs in post_heat phase with n_post post samples."""
+        now = _FAKE_NOW
+        active_end = datetime(now.year, now.month, now.day, now.hour, max(0, now.minute - n_post - 2), tzinfo=UTC)
+        post_samples = [
+            {
+                "timestamp": now.isoformat(),
+                "indoor_temp_f": peak_f - i * 0.1,
+                "outdoor_temp_f": 54.0,
+                "elapsed_minutes": float(i * 5),
+            }
+            for i in range(n_post)
+        ]
+        return {
+            "obs_type": OBS_TYPE_HVAC_HEAT,
+            "obs_id": "test-phase-d-n-post",
+            "start_time": active_end.isoformat(),
+            "active_start": active_end.isoformat(),
+            "active_end": active_end.isoformat(),
+            "status": "monitoring",
+            "_phase": "post_heat",
+            "active_samples": [
+                {
+                    "timestamp": active_end.isoformat(),
+                    "indoor_temp_f": 68.0,
+                    "outdoor_temp_f": 54.0,
+                    "elapsed_minutes": 0.0,
+                }
+            ],
+            "post_heat_samples": post_samples,
+            "peak_indoor_f": peak_f,
+            "start_indoor_f": 68.0,
+            "end_indoor_f": end_f,
+            "session_minutes": 10.0,
+            "flags_at_start": {},
+            "schema_version": 1,
+        }
+
+    def test_live_n_post_1_commits_with_proxy(self):
+        """D24: n_post=1 + k_vent_window proxy available → _check_hvac_stabilization commits.
+
+        Without proxy: n_post=1 < THERMAL_MIN_POST_HEAT_SAMPLES (4) → early return (no commit).
+        With proxy: min drops to 1 → single-post sample clears the gate → commit fires.
+        """
+        coord = _make_obs_coord()
+
+        # Seed proxy: k_vent_window < 0 → proxy available
+        coord.learning._state = MagicMock()
+        coord.learning._state.thermal_model_cache = {"k_vent_window": -0.14}
+
+        obs = self._make_stabilization_obs(n_post=1, peak_f=69.0, end_f=68.5)
+        coord._pending_observations[OBS_TYPE_HVAC_HEAT] = obs
+
+        commit_called = []
+
+        async def _fake_commit(obs_type, force_grade=None):
+            commit_called.append(obs_type)
+            coord._pending_observations.pop(obs_type, None)
+
+        coord._commit_observation = _fake_commit
+
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._check_hvac_stabilization(OBS_TYPE_HVAC_HEAT))
+
+        assert len(commit_called) == 1 and commit_called[0] == OBS_TYPE_HVAC_HEAT, (
+            "D24: n_post=1 with k_vent_window=-0.14 proxy should commit via _check_hvac_stabilization, "
+            f"but commit_called={commit_called}"
+        )
+
+    def test_live_n_post_0_rejects_even_with_proxy(self):
+        """D24: n_post=0 (empty post_heat_samples) → abandoned even when proxy is available.
+
+        n_post=0 means no HVAC-off timestamp exists — single-point can't compute elapsed.
+        The proxy drops the minimum to 1, not 0, so this must still be rejected.
+        """
+        coord = _make_obs_coord()
+
+        # Seed proxy: k_vent_window < 0 → proxy available
+        coord.learning._state = MagicMock()
+        coord.learning._state.thermal_model_cache = {"k_vent_window": -0.14}
+
+        obs = self._make_stabilization_obs(n_post=0, peak_f=69.0, end_f=68.5)
+        coord._pending_observations[OBS_TYPE_HVAC_HEAT] = obs
+
+        commit_called = []
+
+        async def _fake_commit(obs_type, force_grade=None):
+            commit_called.append(obs_type)
+            coord._pending_observations.pop(obs_type, None)
+
+        coord._commit_observation = _fake_commit
+
+        dt_mock = _make_dt_mock()
+        with patch("custom_components.climate_advisor.coordinator.dt_util", dt_mock):
+            asyncio.run(coord._check_hvac_stabilization(OBS_TYPE_HVAC_HEAT))
+
+        assert len(commit_called) == 0, (
+            "D24: n_post=0 should never commit — no HVAC-off timestamp for single-point elapsed. "
+            f"commit_called={commit_called}"
+        )

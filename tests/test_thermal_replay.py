@@ -445,3 +445,90 @@ class TestHvacReplayOls:
         assert result is not None, "Expected non-None result when proxy is supplied for n_act=1 cycle"
         assert result["k_active"] is not None, "k_active must be set when single-point commits"
         assert result["confidence_grade"] == "low"
+
+    # ------------------------------------------------------------------
+    # Proxy-aware n_post gating and plateau guard tests (Issue #130 Phase D)
+    # ------------------------------------------------------------------
+
+    def _make_proxy_cycle(
+        self,
+        n_post: int,
+        post_flat: bool = False,
+        t_start: float = 68.0,
+        t_peak: float = 69.0,
+        outdoor: float = 54.0,
+    ) -> dict:
+        """Build a minimal cycle for proxy-path gating tests.
+
+        n_act=1, timestamps 10 min apart.  If post_flat=True, all post samples
+        hold indoor at t_peak (no decay), triggering the plateau guard.
+        Otherwise post decays linearly from t_peak toward t_start.
+        """
+        active_ts = "2026-05-03T07:14:52+00:00"
+        post_base = datetime(2026, 5, 3, 7, 24, 34, tzinfo=UTC)
+
+        pre_samples = [
+            {"ts": "2026-05-03T07:00:00+00:00", "indoor": t_start, "outdoor": outdoor},
+            {"ts": "2026-05-03T07:07:00+00:00", "indoor": t_start, "outdoor": outdoor},
+        ]
+        active_samples = [
+            {"ts": active_ts, "indoor": t_start, "outdoor": outdoor},
+        ]
+
+        post_samples = []
+        for i in range(n_post):
+            ts_i = (post_base + timedelta(minutes=30 * i)).isoformat()
+            if post_flat:
+                indoor_i = t_peak  # no decay — plateau
+            else:
+                # linear decay from t_peak toward t_start
+                frac = i / max(n_post - 1, 1)
+                indoor_i = t_peak - frac * (t_peak - t_start) * 0.8
+            post_samples.append({"ts": ts_i, "indoor": indoor_i, "outdoor": outdoor})
+
+        return {
+            "mode": "heat",
+            "pre_samples": pre_samples,
+            "active_samples": active_samples,
+            "post_samples": post_samples,
+            "start_ts": active_ts,
+        }
+
+    def test_n_post_1_commits_with_proxy(self):
+        """n_post=1 + proxy supplied → n_post gate drops to 1, single-point fires,
+        result commits with k_active in valid range [0.5, 15.0].
+        Physics: elapsed≈10min, T_start=68, T_peak=69, signal=1°F, outdoor=54."""
+        cycle = self._make_proxy_cycle(n_post=1)
+        result = tr.run_hvac_replay_ols(cycle, k_vent_window_proxy=-0.14)
+        assert result is not None, "Expected commit for n_post=1 with proxy (gate should drop to 1)"
+        assert result["k_active"] is not None
+        assert 0.5 <= result["k_active"] <= 15.0, f"k_active={result['k_active']} out of [0.5, 15.0]"
+
+    def test_n_post_3_commits_with_proxy(self):
+        """n_post=3 with proxy → previously hard-rejected at n_post < 4, should now commit."""
+        cycle = self._make_proxy_cycle(n_post=3)
+        result = tr.run_hvac_replay_ols(cycle, k_vent_window_proxy=-0.14)
+        assert result is not None, "Expected commit for n_post=3 with proxy (was previously gated at < 4)"
+        assert result["k_active"] is not None
+
+    def test_n_post_3_rejects_without_proxy(self):
+        """n_post=3 without proxy → OLS path requires 4 post samples, must return None."""
+        cycle = self._make_proxy_cycle(n_post=3)
+        result = tr.run_hvac_replay_ols(cycle, k_vent_window_proxy=None)
+        assert result is None, "Expected rejection for n_post=3 without proxy (OLS path needs >= 4)"
+
+    def test_plateau_guard_bypassed_with_proxy(self):
+        """Flat post-heat (no decay from peak) + proxy → plateau guard bypassed, cycle commits.
+        T_start=68, T_peak=69 → 1°F signal satisfies single-point; flat post should not gate."""
+        cycle = self._make_proxy_cycle(n_post=4, post_flat=True, t_start=68.0, t_peak=69.0)
+        result = tr.run_hvac_replay_ols(cycle, k_vent_window_proxy=-0.14)
+        assert result is not None, (
+            "Expected commit despite flat post-heat when proxy supplied (plateau guard should be bypassed)"
+        )
+
+    def test_plateau_guard_active_without_proxy(self):
+        """Flat post-heat (no decay) without proxy → plateau guard fires, returns None.
+        n_post=4 to clear the n_post gate; guard is the only rejection path."""
+        cycle = self._make_proxy_cycle(n_post=4, post_flat=True, t_start=68.0, t_peak=69.0)
+        result = tr.run_hvac_replay_ols(cycle, k_vent_window_proxy=None)
+        assert result is None, "Expected rejection due to plateau guard when no proxy (flat post-heat, no OLS)"

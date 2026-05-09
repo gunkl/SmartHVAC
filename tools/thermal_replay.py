@@ -846,12 +846,18 @@ def run_hvac_replay_ols(
     active_samples = _chart_entries_to_ols_samples(active_entries, origin_ts)
     post_samples = _chart_entries_to_ols_samples(post_entries, origin_ts)
 
-    # Minimum post samples gate (mirrors THERMAL_MIN_POST_HEAT_SAMPLES)
-    if len(post_samples) < _THERMAL_MIN_POST_HEAT_SAMPLES:
+    # Minimum post samples gate (mirrors THERMAL_MIN_POST_HEAT_SAMPLES).
+    # When a k_vent_window proxy is available the post-heat OLS path is not used —
+    # k_passive comes from the proxy and k_active from a single-point estimator that
+    # only needs post[0] for the HVAC-off timestamp.  Drop the minimum to 1.
+    _min_post = 1 if k_vent_window_proxy is not None else _THERMAL_MIN_POST_HEAT_SAMPLES
+    if len(post_samples) < _min_post:
         return None
 
-    # Plateau guard: reject if post-phase shows essentially no decay
-    if post_samples:
+    # Plateau guard: reject if post-phase shows essentially no decay.
+    # This guard validates post-heat decay quality for k_passive OLS and is
+    # irrelevant when k_passive comes from the proxy (single-point path).
+    if k_vent_window_proxy is None and post_samples:
         post_peak = max(s["indoor_temp_f"] for s in post_samples)
         post_end = post_samples[-1]["indoor_temp_f"]
         if (post_peak - post_end) < _THERMAL_HVAC_MIN_DECAY_F and (
