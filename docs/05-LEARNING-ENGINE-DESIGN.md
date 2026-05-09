@@ -1,4 +1,12 @@
+<!-- Nav: ← [Architecture Reference](02-ARCHITECTURE-REFERENCE.md) → [Computation Reference](08-COMPUTATION-REFERENCE.md) -->
+
 # Climate Advisor — Learning Engine Design
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Purpose
 
@@ -401,6 +409,44 @@ The 23 remaining rejections are data-quality limits of chart_log 1°F resolution
 The live coordinator reads `sensor.santa_maria_hallway_current_temperature` at 0.18°F
 resolution and samples at the exact HVAC state-change moment — expected to substantially
 exceed the 51% chart_log acceptance rate.
+
+### Thermostat Swing Detection (Issue #102)
+
+**What it measures:** The thermostat's deadband half-amplitude — how many °F the
+indoor temperature overshoots or undershoots the commanded setpoint before HVAC
+fires or shuts off. Heat and cool have independent swing values.
+
+**Formula (setpoint-agnostic):**
+```
+swing_f = abs(T_end - T_start) / 2
+```
+where T_start = indoor temp at HVAC-on event, T_end = indoor temp at HVAC-off event.
+Mathematically equivalent to (undershoot + overshoot) / 2 relative to setpoint.
+No setpoint is required because the two-sided deadband is symmetric around the setpoint.
+
+**Storage:** `swing_heat_f` and `swing_cool_f` in `thermal_model_cache`. Both are
+EWMA-accumulated independently. The alpha weight matches the k_active grade-based
+alpha (high=0.30, medium=0.15, low=0.05).
+
+**Default:** `THERMAL_SWING_DEFAULT_F = 1.5°F` — displayed as "estimated (default)"
+in the dashboard before any observations accumulate.
+
+**Confidence tiers (per mode):**
+| Count | Grade |
+|---|---|
+| 0 | "none" |
+| 1–2 | "low" |
+| 3–9 | "medium" |
+| 10+ | "high" |
+
+**Backfill:** `python tools/thermal_replay.py --hvac --days 60 --write` computes
+swing from chart_log `hvac_action_change` event entries. These entries record indoor
+temp at the exact HVAC state-change moment, giving precise T_start and T_end even
+for short cycles (5–10 min). Swing backfill is more permissive than OLS — cycles
+that fail k_active OLS can still contribute swing observations.
+
+**Decisions:** D27 (setpoint-agnostic formula), D28 (min(active_samples) for cool
+trough), D29 (swing integrated into --hvac mode), D30 (rows hidden until first HVAC obs).
 
 ### `record_thermal_observation(obs: dict) -> None`
 

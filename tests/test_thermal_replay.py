@@ -532,3 +532,74 @@ class TestHvacReplayOls:
         cycle = self._make_proxy_cycle(n_post=4, post_flat=True, t_start=68.0, t_peak=69.0)
         result = tr.run_hvac_replay_ols(cycle, k_vent_window_proxy=None)
         assert result is None, "Expected rejection due to plateau guard when no proxy (flat post-heat, no OLS)"
+
+
+# ===========================================================================
+# TestSwingBackfill
+# ===========================================================================
+
+
+class TestSwingBackfill:
+    """Tests for swing detection in --hvac backfill mode (Issue #130 Phase C0–C4)."""
+
+    def test_swing_heat_from_events(self):
+        """Heat cycle: T_start=66 (on), T_end=70 (off) → swing = |70-66|/2 = 2.0°F."""
+        on_entry = {"indoor": 66.0, "hvac": "heating", "event": "hvac_action_change"}
+        off_entry = {"indoor": 70.0, "hvac": "idle", "event": "hvac_action_change"}
+        result = tr.compute_swing_from_hvac_events(on_entry, off_entry, mode="heat")
+        assert result == 2.0
+
+    def test_swing_cool_from_events(self):
+        """Cool cycle: T_start=78 (on), T_end=74 (off) → swing = |74-78|/2 = 2.0°F."""
+        on_entry = {"indoor": 78.0, "hvac": "cooling", "event": "hvac_action_change"}
+        off_entry = {"indoor": 74.0, "hvac": "idle", "event": "hvac_action_change"}
+        result = tr.compute_swing_from_hvac_events(on_entry, off_entry, mode="cool")
+        assert result == 2.0
+
+    def test_swing_small_delta_skipped(self):
+        """Delta=0.3°F < _THERMAL_HVAC_MIN_SIGNAL_F=0.5 → None (signal too small)."""
+        on_entry = {"indoor": 68.0, "hvac": "heating", "event": "hvac_action_change"}
+        off_entry = {"indoor": 68.3, "hvac": "idle", "event": "hvac_action_change"}
+        result = tr.compute_swing_from_hvac_events(on_entry, off_entry, mode="heat")
+        assert result is None
+
+    def test_swing_bounds_high(self):
+        """Delta=12°F → swing=6.0 > _SWING_MAX_F=5.0 → None (out of bounds)."""
+        on_entry = {"indoor": 60.0, "hvac": "heating", "event": "hvac_action_change"}
+        off_entry = {"indoor": 72.0, "hvac": "idle", "event": "hvac_action_change"}
+        result = tr.compute_swing_from_hvac_events(on_entry, off_entry, mode="heat")
+        assert result is None
+
+    def test_swing_missing_indoor(self):
+        """on_entry missing 'indoor' key → None (cannot compute without T_start)."""
+        on_entry = {"hvac": "heating", "event": "hvac_action_change"}
+        off_entry = {"indoor": 70.0, "hvac": "idle", "event": "hvac_action_change"}
+        result = tr.compute_swing_from_hvac_events(on_entry, off_entry, mode="heat")
+        assert result is None
+
+    def test_rebuild_cache_includes_swing(self):
+        """Two heat obs with swing_f set → cache must accumulate swing_heat_f EWMA
+        and observation_count_swing_heat == 2."""
+        obs_list = [
+            {
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "date": "2026-01-01",
+                "hvac_mode": "heat",
+                "swing_f": 2.0,
+                "confidence_grade": "low",
+                "k_passive": None,
+                "k_active": 5.0,
+            },
+            {
+                "timestamp": "2026-01-02T00:00:00+00:00",
+                "date": "2026-01-02",
+                "hvac_mode": "heat",
+                "swing_f": 3.0,
+                "confidence_grade": "low",
+                "k_passive": None,
+                "k_active": 5.0,
+            },
+        ]
+        cache = tr.rebuild_model_cache(obs_list)
+        assert cache["swing_heat_f"] is not None, "swing_heat_f should be set after 2 heat obs with swing_f"
+        assert cache["observation_count_swing_heat"] == 2

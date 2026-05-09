@@ -1,6 +1,14 @@
+<!-- Nav: ← [Architecture Reference](02-ARCHITECTURE-REFERENCE.md) -->
+
 # Climate Advisor — Home Assistant Automation UI Guide
 
 This document captures the manual automation approach discussed before the integration was built. It's useful as a reference for understanding the logic, for testing individual behaviors, and as a fallback if someone wants to implement pieces without the full integration.
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Building Automations in the HA UI
 

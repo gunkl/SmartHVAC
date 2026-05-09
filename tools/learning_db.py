@@ -188,6 +188,16 @@ def _print_model_summary(db: dict) -> None:
     print(f"k_vent:        {_model_field('k_vent', 'hr^-1', 'n_vent')}")
     print(f"k_vent_window: {_model_field('k_vent_window', 'hr^-1', 'n_vent_window')}")
     print(f"k_solar:       {_model_field('k_solar', 'F/hr', 'n_solar')}")
+
+    def _swing_field(key: str, cnt_key: str) -> str:
+        val = cache.get(key)
+        cnt = cache.get(cnt_key, 0)
+        if val is None:
+            return f"None  ({cnt} obs)"
+        return f"{val:.2f} F  ({cnt} obs)"
+
+    print(f"swing_heat:    {_swing_field('swing_heat_f', 'observation_count_swing_heat')}")
+    print(f"swing_cool:    {_swing_field('swing_cool_f', 'observation_count_swing_cool')}")
     print(f"conf_passive:  {conf_passive}")
     print(f"conf_hvac:     {conf_hvac}")
     print(f"last_obs:      {last_obs}")

@@ -458,6 +458,7 @@
 }
 .tm-param-label { color: var(--text-secondary, #666); }
 .tm-param-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tm-swing-hint { color: var(--text-secondary, #888); font-style: italic; font-size: 0.85em; }
 .tm-hint {
   font-size: .75rem;
   color: var(--text-secondary, #666);
@@ -1641,6 +1642,15 @@
   const hvacParamRows = [];
   if (tm.heating_rate != null) hvacParamRows.push({ label: 'Heating', value: `+${tm.heating_rate.toFixed(1)} ${unitLabel}/hr` });
   if (tm.cooling_rate != null) hvacParamRows.push({ label: 'Cooling', value: `−${tm.cooling_rate.toFixed(1)} ${unitLabel}/hr` });
+  // Swing rows — show only when HVAC has ever been observed
+  if (tm.heating_rate != null || tm.cooling_rate != null || tm.observation_count_swing_heat > 0 || tm.observation_count_swing_cool > 0) {
+    const swHeat = (tm.swing_heat ?? 1.5).toFixed(1);
+    const swCool = (tm.swing_cool ?? 1.5).toFixed(1);
+    const swHeatHint = tm.swing_heat_measured ? '' : ' <span class="tm-swing-hint">(estimated)</span>';
+    const swCoolHint = tm.swing_cool_measured ? '' : ' <span class="tm-swing-hint">(estimated)</span>';
+    hvacParamRows.push({ label: 'Heat swing', value: `±${swHeat} ${unitLabel}${swHeatHint}` });
+    hvacParamRows.push({ label: 'Cool swing', value: `±${swCool} ${unitLabel}${swCoolHint}` });
+  }
   const hvacHint = hvacConf === 'none'
     ? `<p class="tm-hint">Updates each time the system runs a heating or cooling cycle.</p>`
     : '';

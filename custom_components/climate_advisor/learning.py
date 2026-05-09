@@ -47,6 +47,12 @@ from .const import (
     THERMAL_PASSIVE_CONF_LOW,
     THERMAL_PASSIVE_CONF_MEDIUM,
     THERMAL_SOLAR_FACTOR_MIN_RANGE,
+    THERMAL_SWING_CONF_HIGH,
+    THERMAL_SWING_CONF_LOW,
+    THERMAL_SWING_CONF_MEDIUM,
+    THERMAL_SWING_DEFAULT_F,
+    THERMAL_SWING_MAX_F,
+    THERMAL_SWING_MIN_F,
     WEATHER_BIAS_MAX_OBS,
 )
 
@@ -147,6 +153,17 @@ def _grade_passive_confidence(cache: dict) -> str:
     if count < THERMAL_PASSIVE_CONF_MEDIUM:
         return "low"
     if count < THERMAL_PASSIVE_CONF_HIGH:
+        return "medium"
+    return "high"
+
+
+def _grade_swing_confidence(count: int) -> str:
+    """Compute confidence tier for thermostat swing based on observation count."""
+    if count < THERMAL_SWING_CONF_LOW:
+        return "none"
+    if count < THERMAL_SWING_CONF_MEDIUM:
+        return "low"
+    if count < THERMAL_SWING_CONF_HIGH:
         return "medium"
     return "high"
 
@@ -714,6 +731,10 @@ class LearningEngine:
                 "observation_count_fan_only": 0,
                 "observation_count_vent": 0,
                 "observation_count_solar": 0,
+                "swing_heat_f": None,
+                "swing_cool_f": None,
+                "observation_count_swing_heat": 0,
+                "observation_count_swing_cool": 0,
                 "last_observation_date": None,
                 "avg_r_squared_passive": None,
                 "confidence_k_passive": "none",
@@ -788,6 +809,21 @@ class LearningEngine:
                 else:
                     cache["k_solar"] = (1.0 - alpha) * cache["k_solar"] + alpha * k_solar
             cache["observation_count_solar"] = cache.get("observation_count_solar", 0) + 1
+
+        swing_val = obs.get("swing_f")
+        if swing_val is not None:
+            if mode == "heat":
+                _s_key, _s_cnt = "swing_heat_f", "observation_count_swing_heat"
+            elif mode == "cool":
+                _s_key, _s_cnt = "swing_cool_f", "observation_count_swing_cool"
+            else:
+                _s_key = _s_cnt = None
+            if _s_key:
+                if cache.get(_s_key) is None:
+                    cache[_s_key] = swing_val
+                else:
+                    cache[_s_key] = (1.0 - alpha) * cache[_s_key] + alpha * swing_val
+                cache[_s_cnt] = cache.get(_s_cnt, 0) + 1
 
         cache["last_observation_date"] = obs.get("date")
         self._state.thermal_model_cache = cache
@@ -868,6 +904,18 @@ class LearningEngine:
             "confidence_k_hvac": cache.get("confidence", "none"),
             "avg_r_squared_passive": cache.get("avg_r_squared_passive"),
             "last_observation_date": cache.get("last_observation_date"),
+            "swing_heat_f": cache.get("swing_heat_f"),
+            "swing_cool_f": cache.get("swing_cool_f"),
+            "swing_heat_f_display": (
+                cache.get("swing_heat_f") if cache.get("swing_heat_f") is not None else THERMAL_SWING_DEFAULT_F
+            ),
+            "swing_cool_f_display": (
+                cache.get("swing_cool_f") if cache.get("swing_cool_f") is not None else THERMAL_SWING_DEFAULT_F
+            ),
+            "observation_count_swing_heat": cache.get("observation_count_swing_heat", 0),
+            "observation_count_swing_cool": cache.get("observation_count_swing_cool", 0),
+            "confidence_swing_heat": _grade_swing_confidence(cache.get("observation_count_swing_heat", 0)),
+            "confidence_swing_cool": _grade_swing_confidence(cache.get("observation_count_swing_cool", 0)),
             "learning_health": learning_health or {},
         }
 
@@ -1252,6 +1300,27 @@ class LearningEngine:
             "confidence_grade": grade,
             "schema_version": 2,
         }
+
+        # Swing (deadband half-amplitude): setpoint-agnostic formula
+        _start_sw = obs.get("start_indoor_f")
+        _mode_sw = obs.get("hvac_mode", "")
+        _actives_sw = event.get("active_samples", [])
+        if _mode_sw in ("heat", "cool") and _start_sw is not None and _actives_sw:
+            if _mode_sw == "heat":
+                # Use last active sample (HVAC shutoff temp), not global peak which
+                # includes post-heat overshoot and biases swing high
+                _end_sw = _actives_sw[-1].get("indoor_temp_f")
+            else:
+                _end_sw = min(
+                    (s["indoor_temp_f"] for s in _actives_sw if "indoor_temp_f" in s),
+                    default=None,
+                )
+            if _end_sw is not None:
+                _delta_sw = abs(_end_sw - _start_sw)
+                if _delta_sw >= THERMAL_HVAC_MIN_SIGNAL_F:
+                    _swing = _delta_sw / 2.0
+                    if THERMAL_SWING_MIN_F <= _swing <= THERMAL_SWING_MAX_F:
+                        obs["swing_f"] = round(_swing, 2)
 
         _LOGGER.info(
             "Thermal observation committed: mode=%s grade=%s k_passive=%.4f k_active=%s R²_p=%.3f",

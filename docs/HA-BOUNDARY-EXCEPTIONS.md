@@ -1,6 +1,14 @@
+<!-- Nav: ← [Architecture Reference](02-ARCHITECTURE-REFERENCE.md) -->
+
 # Home Assistant Boundary Exceptions
 
 This file tracks approved exceptions where Climate Advisor interacts with Home Assistant outside its own integration directory (`custom_components/climate_advisor/`). Each exception should be periodically reviewed and resolved when possible.
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Active Exceptions
 

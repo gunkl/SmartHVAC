@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.34"
+VERSION = "0.3.35"
 
 RELEASE_NOTES: dict[str, list[str]] = {
     "0.3.31": [
@@ -822,6 +822,14 @@ REJECT_ABANDONED = "abandoned"
 THERMAL_HVAC_MIN_DECAY_F = 0.3
 # Minimum ΔT for single-point k_active estimate (filters sensor noise / no-effect cycles)
 THERMAL_HVAC_MIN_SIGNAL_F: float = 0.5
+
+# Thermostat swing (deadband half-amplitude) detection constants
+THERMAL_SWING_DEFAULT_F: float = 1.5
+THERMAL_SWING_MIN_F: float = 0.1
+THERMAL_SWING_MAX_F: float = 5.0
+THERMAL_SWING_CONF_LOW: int = 1
+THERMAL_SWING_CONF_MEDIUM: int = 3
+THERMAL_SWING_CONF_HIGH: int = 10
 
 # Passive decay observation thresholds
 THERMAL_PASSIVE_MIN_SAMPLES = 30

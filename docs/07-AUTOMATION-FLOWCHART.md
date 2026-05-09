@@ -1,3 +1,5 @@
+<!-- Nav: ← [Architecture Reference](02-ARCHITECTURE-REFERENCE.md) → [Computation Reference](08-COMPUTATION-REFERENCE.md) -->
+
 # Climate Advisor — Automation Flowcharts
 
 This document provides visual decision-path references for every major control flow in the Climate Advisor automation engine. Each diagram reflects the actual source code logic in `coordinator.py`, `automation.py`, and `classifier.py`.
@@ -6,6 +8,12 @@ For data structures and coordinator internals see [docs/02-ARCHITECTURE-REFERENC
 For temperature formulas and threshold values see [docs/08-COMPUTATION-REFERENCE.md](08-COMPUTATION-REFERENCE.md).
 
 ---
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## 1. Main Decision Loop (30-Minute Poll)
 

@@ -1,4 +1,12 @@
+<!-- Nav: ← [Project Instructions](00-PROJECT-INSTRUCTIONS.md) → [Architecture Reference](02-ARCHITECTURE-REFERENCE.md) -->
+
 # Climate Advisor — Strategy & Design Rationale
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## The Problem
 

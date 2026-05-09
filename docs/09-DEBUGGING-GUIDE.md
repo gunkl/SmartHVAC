@@ -1,6 +1,14 @@
+<!-- Nav: ← [Architecture Reference](02-ARCHITECTURE-REFERENCE.md) -->
+
 # Debugging Guide — Climate Advisor
 
 This guide documents debugging strategies, sensor entities, and tooling for diagnosing Climate Advisor issues.
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Primary Debugging Data Sources
 

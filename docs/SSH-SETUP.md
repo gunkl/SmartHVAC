@@ -1,6 +1,14 @@
+<!-- Nav: ← [Development](DEVELOPMENT.md) -->
+
 # SSH Setup for Climate Advisor Deployment
 
 This guide walks through setting up SSH access from your Windows development machine to your Home Assistant OS (HAOS) instance for automated deployments.
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Prerequisites
 

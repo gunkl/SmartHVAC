@@ -2570,6 +2570,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         obs["active_samples"].append(first_sample)
         obs["start_outdoor_f"] = first_sample["outdoor_temp_f"]
 
+        # Capture setpoint for diagnostic storage — not used in swing formula
+        _climate_id = self.config.get("climate_entity", "")
+        _cs_sw = self.hass.states.get(_climate_id) if _climate_id else None
+        if _cs_sw is not None:
+            _sp = _cs_sw.attributes.get("target_temperature")
+            if _sp is None:
+                _sp = _cs_sw.attributes.get("target_temp_low" if session_mode == "heat" else "target_temp_high")
+            if _sp is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    obs["setpoint_f"] = round(float(_sp), 1)
+
         self._pending_observations[obs_type] = obs
         # Keep legacy field in sync for startup recovery compat
         self.learning.set_pending_thermal_event(obs)
@@ -3742,6 +3753,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 "observation_count_fan_only": thermal_model.get("observation_count_fan_only", 0),
                 "observation_count_vent": thermal_model.get("observation_count_vent", 0),
                 "observation_count_solar": thermal_model.get("observation_count_solar", 0),
+                "swing_heat": round(convert_delta(thermal_model.get("swing_heat_f_display", 1.5), unit), 2),
+                "swing_cool": round(convert_delta(thermal_model.get("swing_cool_f_display", 1.5), unit), 2),
+                "swing_heat_measured": thermal_model.get("swing_heat_f") is not None,
+                "swing_cool_measured": thermal_model.get("swing_cool_f") is not None,
+                "observation_count_swing_heat": thermal_model.get("observation_count_swing_heat", 0),
+                "observation_count_swing_cool": thermal_model.get("observation_count_swing_cool", 0),
+                "confidence_swing_heat": thermal_model.get("confidence_swing_heat", "none"),
+                "confidence_swing_cool": thermal_model.get("confidence_swing_cool", "none"),
             },
             "state_log": log_entries,
             "target_band": [

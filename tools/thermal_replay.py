@@ -456,6 +456,10 @@ def rebuild_model_cache(all_obs: list[dict]) -> dict:
         "observation_count_fan_only": 0,
         "observation_count_vent": 0,
         "observation_count_solar": 0,
+        "swing_heat_f": None,
+        "swing_cool_f": None,
+        "observation_count_swing_heat": 0,
+        "observation_count_swing_cool": 0,
         "avg_r_squared_passive": None,
         "last_observation_date": None,
         "confidence_k_passive": "none",
@@ -501,6 +505,16 @@ def rebuild_model_cache(all_obs: list[dict]) -> dict:
                 cache["k_solar"] = _ewma(cache["k_solar"], k_sol, alpha)
             cache["observation_count_solar"] += 1
 
+        # Swing EWMA — update alongside the k_active EWMA for heat/cool obs
+        swing_val = obs.get("swing_f")
+        if swing_val is not None:
+            if mode == "heat":
+                cache["swing_heat_f"] = _ewma(cache["swing_heat_f"], swing_val, alpha)
+                cache["observation_count_swing_heat"] += 1
+            elif mode == "cool":
+                cache["swing_cool_f"] = _ewma(cache["swing_cool_f"], swing_val, alpha)
+                cache["observation_count_swing_cool"] += 1
+
         cache["last_observation_date"] = obs.get("date")
 
     # Confidence grades
@@ -521,6 +535,8 @@ def rebuild_model_cache(all_obs: list[dict]) -> dict:
         "k_vent",
         "k_vent_window",
         "k_solar",
+        "swing_heat_f",
+        "swing_cool_f",
         "avg_r_squared_passive",
     ):
         if cache[k] is not None:
@@ -677,6 +693,9 @@ _K_ACTIVE_COOL_MAX = -0.5
 _THERMAL_MIN_POST_HEAT_SAMPLES = 4  # mirrors THERMAL_MIN_POST_HEAT_SAMPLES (Phase B: was 10)
 _THERMAL_HVAC_MIN_DECAY_F = 0.3  # mirrors THERMAL_HVAC_MIN_DECAY_F
 _THERMAL_HVAC_MIN_SIGNAL_F = 0.5  # mirrors THERMAL_HVAC_MIN_SIGNAL_F — min ΔT for single-point
+_SWING_DEFAULT_F = 1.5  # default thermostat swing when no observations available
+_SWING_MIN_F = 0.1  # minimum plausible swing (°F)
+_SWING_MAX_F = 5.0  # maximum plausible swing (°F)
 
 
 def _hvac_category(hvac_str: str | None) -> str:
@@ -812,6 +831,32 @@ def _chart_entries_to_ols_samples(
             }
         )
     return result
+
+
+def compute_swing_from_hvac_events(
+    on_entry: dict,
+    off_entry: dict,
+    mode: str,
+) -> float | None:
+    """Compute thermostat swing from a chart_log hvac_action_change event pair.
+
+    on_entry: chart_log entry when HVAC turned ON (indoor = T_start)
+    off_entry: chart_log entry when HVAC turned OFF (indoor = T_end)
+    mode: "heat" or "cool"
+
+    Returns swing in °F or None if signal insufficient or bounds fail.
+    """
+    t_start = on_entry.get("indoor")
+    t_end = off_entry.get("indoor")
+    if t_start is None or t_end is None:
+        return None
+    delta = abs(t_end - t_start)
+    if delta < _THERMAL_HVAC_MIN_SIGNAL_F:
+        return None
+    swing = delta / 2.0
+    if not (_SWING_MIN_F <= swing <= _SWING_MAX_F):
+        return None
+    return round(swing, 2)
 
 
 def run_hvac_replay_ols(
@@ -1156,15 +1201,26 @@ def main() -> None:
             n_act = len(cycle["active_samples"])
             n_post = len(cycle["post_samples"])
             if obs:
+                # Compute thermostat swing from the on/off event entries.
+                # on_entry = first active sample (indoor at HVAC-on transition)
+                # off_entry = first post sample (indoor at HVAC-off transition)
+                _active = cycle["active_samples"]
+                _post = cycle["post_samples"]
+                if _active and _post:
+                    swing_val = compute_swing_from_hvac_events(_active[0], _post[0], mode=mode_tag)
+                    if swing_val is not None:
+                        obs["swing_f"] = swing_val
+
                 k_p_str = f"{obs['k_passive']:+.4f}" if obs["k_passive"] is not None else "proxy"
                 k_a_str = f"{obs['k_active']:+.4f}" if obs["k_active"] is not None else "None"
                 r2_p_val = obs.get("r_squared_passive")
                 r2_str = f"{r2_p_val:.3f}" if r2_p_val is not None else "n/a"
+                swing_str = f"{obs['swing_f']:.2f}°F" if obs.get("swing_f") is not None else "n/a"
                 print(
                     f"  [{mode_tag}] {ts_short}  "
                     f"n_pre={n_pre} n_act={n_act} n_post={n_post}  "
                     f"k_passive={k_p_str} k_active={k_a_str} R²={r2_str}  "
-                    f"COMMITTED [low]"
+                    f"swing={swing_str}  COMMITTED [low]"
                 )
                 obs_list.append(obs)
             else:
@@ -1192,9 +1248,26 @@ def main() -> None:
         existing_obs: list[dict] = db.get("thermal_observations", [])
         print(f"  Existing obs: {len(existing_obs)}")
 
+        # Build index of swing_f values from chart_log-computed obs so we can patch DB
+        # copies that were stored before swing detection was implemented.
+        computed_swing: dict[tuple[str, str], float] = {
+            (o["timestamp"], o["hvac_mode"]): o["swing_f"] for o in obs_list if o.get("swing_f") is not None
+        }
+
         existing_replay_keys = {
             (o.get("timestamp"), o.get("hvac_mode")) for o in existing_obs if o.get("source") == "replay"
         }
+
+        # Patch existing obs missing swing_f with values computed from chart_log.
+        patched = 0
+        for obs in existing_obs:
+            key = (obs.get("timestamp", ""), obs.get("hvac_mode", ""))
+            if key in computed_swing and obs.get("swing_f") is None:
+                obs["swing_f"] = computed_swing[key]
+                patched += 1
+        if patched:
+            print(f"  Patched {patched} existing obs with swing_f from chart_log")
+
         new_obs = [o for o in obs_list if (o["timestamp"], o["hvac_mode"]) not in existing_replay_keys]
         print(f"  New HVAC replay obs (after dedup): {len(new_obs)}")
 

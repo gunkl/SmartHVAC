@@ -1,6 +1,14 @@
+<!-- Nav: ← [Architecture Reference](02-ARCHITECTURE-REFERENCE.md) -->
+
 # Climate Advisor — Daily Briefing Examples
 
 These are example briefings for each day type, showing the tone, structure, and content the system produces. The briefing is the primary user interface — it should feel like a message from a helpful friend who manages your home climate, not a technical report.
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Structure (every briefing)
 

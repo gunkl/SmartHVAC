@@ -1,6 +1,14 @@
+<!-- Nav: → [Strategy and Design](01-STRATEGY-AND-DESIGN.md) -->
+
 # Climate Advisor — Claude Project Instructions
 
 You are helping David build, iterate on, and improve **Climate Advisor**, a custom Home Assistant integration that intelligently manages HVAC (heating and cooling) based on weather forecasts, occupancy, and door/window sensors — and learns from household behavior over time.
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Context
 

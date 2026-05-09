@@ -1,6 +1,14 @@
+<!-- Nav: ← [Project Instructions](00-PROJECT-INSTRUCTIONS.md) → [SSH Setup](SSH-SETUP.md) -->
+
 # Development Guide
 
 How to set up your local environment, run tests, and lint the Climate Advisor codebase.
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## Prerequisites
 

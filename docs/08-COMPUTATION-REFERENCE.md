@@ -1,3 +1,5 @@
+<!-- Nav: ← [Learning Engine Design](05-LEARNING-ENGINE-DESIGN.md) -->
+
 # Climate Advisor — Computation Reference
 
 This document is the authoritative reference for every formula, threshold, and decision table used by Climate Advisor to automate HVAC control. It covers day classification, trend analysis, temperature setpoints, occupancy logic, window management, the economizer, fan control, door/window pausing, grace periods, and all configurable defaults.
@@ -15,6 +17,12 @@ For structural context — how these computations fit into the coordinator, auto
 The automation logic table and all threshold constants in this document are expressed in °F. The unit conversion layer is transparent to all downstream logic — automation behavior is identical regardless of which display unit the user has selected.
 
 ---
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## 1. Day Classification
 
@@ -430,6 +438,36 @@ python tools/thermal_replay.py --hvac --days 60             # commit to learning
 | Single-point fallthrough in `_commit_event_from_dict()` | `learning.py` ~line 1145 |
 | Proxy-aware gate in `_check_hvac_stabilization()` | `coordinator.py` ~line 2951 |
 | `run_hvac_replay_ols()` | `tools/thermal_replay.py` ~line 817 |
+
+#### 5e-vii. Thermostat Swing — Deadband Auto-Detection (Issue #102)
+
+**Formula:** `swing_f = abs(T_end - T_start) / 2`
+
+**Bounds:**
+| Parameter | Min | Max | Notes |
+|---|---|---|---|
+| `swing_heat_f` | 0.1°F | 5.0°F | `THERMAL_SWING_MIN_F` / `THERMAL_SWING_MAX_F` |
+| `swing_cool_f` | 0.1°F | 5.0°F | Same bounds, independent EWMA |
+
+**Minimum signal:** `abs(T_end - T_start) >= THERMAL_HVAC_MIN_SIGNAL_F` (0.5°F).
+Cycles below this produce no swing observation.
+
+**Unit conversion:** Swing is a temperature delta — use `convert_delta()` (multiply
+by 5/9 for Celsius), never `from_fahrenheit()`. The +32 offset does not apply.
+
+**Display rule:**
+- `swing_heat_f is None` → show `±1.5°F (estimated)` in gray italic
+- `swing_heat_f is not None` → show `±X.X°F` with no hint
+
+**Constants:**
+| Constant | Value | Purpose |
+|---|---|---|
+| `THERMAL_SWING_DEFAULT_F` | 1.5 | Default before any learning |
+| `THERMAL_SWING_MIN_F` | 0.1 | Sanity lower bound |
+| `THERMAL_SWING_MAX_F` | 5.0 | Sanity upper bound (rejects multi-cycle blur) |
+| `THERMAL_SWING_CONF_LOW` | 1 | none → low threshold |
+| `THERMAL_SWING_CONF_MEDIUM` | 3 | low → medium threshold |
+| `THERMAL_SWING_CONF_HIGH` | 10 | medium → high threshold |
 
 ---
 

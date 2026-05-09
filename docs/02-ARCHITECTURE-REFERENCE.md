@@ -1,4 +1,12 @@
+<!-- Nav: ← [Strategy and Design](01-STRATEGY-AND-DESIGN.md) → [Learning Engine Design](05-LEARNING-ENGINE-DESIGN.md) -->
+
 # Climate Advisor — Architecture Reference
+
+## Anchors
+<!-- TODO: populate once doc sections stabilize -->
+| Question | Short answer | → Full answer |
+|---|---|---|
+| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
 
 ## File Structure
 
@@ -20,6 +28,8 @@ custom_components/climate_advisor/
 ├── ai_skills.py         # AI skills framework: lightweight registry for pluggable AI analysis capabilities. Skills register a context builder, response parser, and optional fallback.
 ├── ai_skills_activity.py  # Activity Report skill (first AI skill): gathers system state, sends to Claude for analysis, returns structured report with timeline, decisions, anomalies, diagnostics.
 ├── chart_log.py         # Chart state log: persistent 1-year ring buffer of HVAC/fan/temp data points and event markers, used by the Temperature Forecast chart.
+├── repairs.py           # HA Repairs integration: surfaces actionable fix prompts when CA detects config or data problems.
+├── ai_skills_investigator.py  # AI Investigator skill: structured internal-state context builder for the Claude investigator.
 └── frontend/            # Dashboard panel (iframe): index.html + locally bundled Chart.js v4 + zoom plugin + HammerJS
 ```
 
@@ -275,3 +285,20 @@ Guards are placed at the 3 thermostat primitives (`_set_hvac_mode`, `_set_temper
 Priority enforcement lives in `_async_occupancy_changed` (coordinator): it reads all three toggle states, resolves the winner using Guest > Vacation > Home/Away > default, and dispatches to the appropriate handler above.
 
 The toggle state is persisted via `StatePersistence` and survives HA restarts. It is also exposed in the dashboard API (`/api/climate_advisor/status`) and debug state.
+
+### repairs.py — HA Repair Issues
+
+Integrates with Home Assistant's Repairs framework to surface actionable fix prompts
+when Climate Advisor detects a configuration or data problem (e.g., a missing entity,
+expired token, or learning DB schema mismatch). When a repair issue is raised, the
+user sees a "Fix" button in the HA Settings → Repairs UI. Resolving the repair
+dismisses it from the queue.
+
+### ai_skills_investigator.py — AI Investigator Skill
+
+Provides the Claude investigator with structured context about Climate Advisor's
+internal state: sensor values, HVAC session history, thermal model parameters,
+fan status, occupancy mode, and diagnostic guidance. This module knows the
+thermostat's deadband behavior (swing) and explains it to the AI so it does not
+misinterpret normal deadband oscillation as a CA fault. See
+[Learning Engine Design](05-LEARNING-ENGINE-DESIGN.md) for swing detection details.
