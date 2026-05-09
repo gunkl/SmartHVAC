@@ -5,10 +5,13 @@
 Standards for log statements across all Climate Advisor modules.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What formatting rules apply to all log messages? | Use %-style formatting (never f-strings), em dash `—` to separate event from detail context, past tense for completed actions, and always include units (°F, seconds, minutes). | [§Format Rules](06-LOGGING-GUIDELINES.md#format-rules) |
+| What log level should a thermostat mode change use, and what must the message include? | `INFO`, via the `_set_hvac_mode` / `_set_temperature` primitives which emit a single consolidated line with a mandatory `reason` keyword argument. No call site may omit the reason. | [§Thermostat Adjustment Logging](06-LOGGING-GUIDELINES.md#thermostat-adjustment-logging) |
+| What is the reason string convention for thermostat adjustment log messages? | `trigger — context` pattern using em dash: e.g., `"daily classification — hot day, trend warming 8°F"` or `"bedtime — heat setback (comfort 70 - 4 + modifier 2)"`. | [§Reason string convention](06-LOGGING-GUIDELINES.md#reason-string-convention) |
+| How are skipped actions logged when automation is disabled (observe-only mode)? | With a `[DRY RUN]` prefix at INFO level, e.g., `"[DRY RUN] Would set HVAC mode to cool — daily classification — hot day"`. Easily grep'd to distinguish from real actions. | [§Dry-run prefix convention](06-LOGGING-GUIDELINES.md#dry-run-prefix-convention) |
+| What distinguishes DEBUG from INFO level? | DEBUG: high-frequency or transient events (threshold calculations, debounce timers, per-classification details). INFO: lifecycle milestones and meaningful state transitions (HVAC mode changes, briefings sent, records saved). | [§Level Semantics](06-LOGGING-GUIDELINES.md#level-semantics) |
 
 ## Logger Setup
 

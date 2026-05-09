@@ -5,10 +5,12 @@
 You are helping David build, iterate on, and improve **Climate Advisor**, a custom Home Assistant integration that intelligently manages HVAC (heating and cooling) based on weather forecasts, occupancy, and door/window sensors — and learns from household behavior over time.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What problem does Climate Advisor solve? | The user frequently forgets the heater is on. CA automates HVAC management using weather forecasts, occupancy, and door/window sensors, and sends a daily briefing with any required human actions. | [§Context](00-PROJECT-INSTRUCTIONS.md#context) |
+| What modules make up the v0.1 integration? | Nine modules: classifier, coordinator, automation, briefing, learning, sensor, config_flow, const, and __init__ — each with a single, non-overlapping responsibility. | [§Project State](00-PROJECT-INSTRUCTIONS.md#project-state) |
+| What are the five guiding principles for all changes? | Maintain modular architecture, keep the briefing friendly, make automations invisible, feed the learning engine, and follow HA conventions. | [§How to Help](00-PROJECT-INSTRUCTIONS.md#how-to-help) |
+| What is on the v0.2 and v0.3 roadmap? | v0.2: learning suggestions in briefings, accept/dismiss actions, setpoint adaptation, compliance refinement. v0.3: multi-zone, energy cost, weekly summary, humidity, solar gain modeling. | [§Roadmap Reference](00-PROJECT-INSTRUCTIONS.md#roadmap-reference) |
 
 ## Context
 

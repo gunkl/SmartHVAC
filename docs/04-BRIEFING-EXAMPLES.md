@@ -5,10 +5,13 @@
 These are example briefings for each day type, showing the tone, structure, and content the system produces. The briefing is the primary user interface — it should feel like a message from a helpful friend who manages your home climate, not a technical report.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What sections appear in every briefing and in what order? | Header (temps + day type + trend) → TLDR table → conversational day plan → "If you head out" → "Fresh air" → grace period status (if active) → "Looking ahead" → learning suggestions (if available). | [§Structure (every briefing)](04-BRIEFING-EXAMPLES.md#structure-every-briefing) |
+| When does the grace period paragraph appear in a briefing, and what language does it use? | Only when a grace period is active at send time. Manual grace uses "hands-off window"; automation grace uses "settling period". The word "grace period" is never used in the body text. | [§Example: Active Automation Grace Period](04-BRIEFING-EXAMPLES.md#example-active-automation-grace-period) |
+| What triggers the adaptive thermal timing sentence in the briefing footer? | `adaptive_thermal_active=True` in coordinator data — set when thermal model confidence is "low" or better for both heat and cool rates. The sentence is absent while the model is still collecting data. | [§Example: Adaptive Thermal Timing Active](04-BRIEFING-EXAMPLES.md#example-adaptive-thermal-timing-active) |
+| What are the key voice rules for briefing text? | First person from the system ("I'll…"), affirm user choices first then explain system response, cause-and-effect framing, numerals for all temps/times, no emoji in the conversational body, scannable in 30 seconds. | [§Voice Rules](04-BRIEFING-EXAMPLES.md#voice-rules) |
+| How does the fresh air paragraph differ by HVAC mode? | When HVAC is off: "no energy impact at all". When HVAC is heating or cooling: explains the debounce duration, says the system will pause after that time, and suggests minimizing impact (shorter bursts, close other windows). | [§Example: Mild Day with Warming Trend](04-BRIEFING-EXAMPLES.md#example-mild-day-with-warming-trend) |
 
 ## Structure (every briefing)
 

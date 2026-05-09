@@ -5,10 +5,12 @@
 How to set up your local environment, run tests, and lint the Climate Advisor codebase.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| How do I set up the local dev environment without a running Home Assistant? | Clone the repo, create a venv, `pip install -r requirements_test.txt`. HA is not required — `conftest.py` mocks all HA modules so Climate Advisor modules import standalone. | [§Setup](DEVELOPMENT.md#setup) |
+| How do I run the full test suite and check coverage? | `pytest tests/ -v` for all tests; add `--cov=custom_components/climate_advisor` for coverage; `--cov-report=html` for an HTML report in `htmlcov/`. | [§Running Tests](DEVELOPMENT.md#running-tests) |
+| What linting commands must pass before submitting a change? | `ruff check custom_components/ tests/` (check), `ruff check --fix` (auto-fix), `ruff format` (format). All three should be clean — the pre-commit hook enforces the same settings. | [§Linting](DEVELOPMENT.md#linting) |
+| What is the correct sequence for adding a new module? | Create the module in `custom_components/climate_advisor/`, create a matching `tests/test_<module>.py`, add any new HA submodule imports to `_HA_MODULES` in `conftest.py`, then run the full suite. | [§Adding a New Module](DEVELOPMENT.md#adding-a-new-module) |
 
 ## Prerequisites
 

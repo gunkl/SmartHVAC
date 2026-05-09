@@ -5,10 +5,11 @@
 This file tracks approved exceptions where Climate Advisor interacts with Home Assistant outside its own integration directory (`custom_components/climate_advisor/`). Each exception should be periodically reviewed and resolved when possible.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What is the one approved exception to the HA boundary rule and why? | Climate Advisor writes `climate_advisor_learning.json` to the HA config root. This is the standard persistent storage location for custom integrations; the file is owned entirely by CA and deleting it resets learning gracefully. | [§1. Learning Engine Database File](HA-BOUNDARY-EXCEPTIONS.md#1-learning-engine-database-file) |
+| What is the resolution plan for the learning DB file exception? | Migrate to HA's `hass.helpers.storage.Store` API (stores under `.storage/` with versioning and atomic writes). Targeted for v0.2.0. | [§1. Learning Engine Database File](HA-BOUNDARY-EXCEPTIONS.md#1-learning-engine-database-file) |
+| How often should active exceptions be reviewed? | Quarterly or before each minor version release. For each exception: is it still necessary, has HA added a better-supported alternative, can it move inside the integration's scope, what is the current risk level? | [§Review Schedule](HA-BOUNDARY-EXCEPTIONS.md#review-schedule) |
 
 ## Active Exceptions
 

@@ -3,10 +3,15 @@
 # Climate Advisor — Learning Engine Design
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What are the six parallel observation types and what does each measure? | `hvac_heat` → k_active_heat; `hvac_cool` → k_active_cool; `passive_decay` → k_passive; `fan_only_decay` → k_vent; `ventilated_decay` → k_vent_window; `solar_gain` → k_solar. All six can run concurrently. | [§v3 Parallel Observation Architecture](05-LEARNING-ENGINE-DESIGN.md#v3-parallel-observation-architecture-issue-121) |
+| What is the v3 ODE formula and what does each parameter mean? | `dT/dt = (k_passive + k_vent_eff)*(T_out − T_in) + k_solar*solar_factor + Q_hvac`; k_passive (hr⁻¹, negative) is envelope decay rate, k_active is HVAC contribution (°F/hr), k_vent_eff switches between fan and window ventilation rates. | [§Physics Model](05-LEARNING-ENGINE-DESIGN.md#physics-model-issue-114-v2--issue-121-v3) |
+| How are k_passive and k_active extracted from observations? | OLS regression over post-heat decay samples: `rate_i = k_passive × delta_i`; k_active is then `rate_i − k_passive × delta_i` averaged across active-phase samples. Minimum R² 0.2; minimum 4 post-heat samples (reduced from 10 in Issue #130). | [§Parameter Extraction](05-LEARNING-ENGINE-DESIGN.md#parameter-extraction) |
+| What does `get_thermal_model()` return and how is confidence graded? | Returns k_passive, k_active_heat, k_active_cool, k_vent, k_vent_window, k_solar, plus confidence grades ("none"/"low"/"medium"/"high") graded independently for HVAC (heat+cool count) and passive obs. Physics activates when either > "none". | [§get_thermal_model() → dict](05-LEARNING-ENGINE-DESIGN.md#get_thermal_model---dict) |
+| What is the gate bridge self-healing mechanism and which homes need it? | Homes with only ventilated observations (no HVAC/passive cycles) get `k_vent_window` promoted as a proxy `k_passive` when `confidence_k_passive == "none"`, bypassing the physics eligibility guard without data loss. | [§Adaptive 2-Param Ventilated OLS — Gate Bridge Self-Healing](05-LEARNING-ENGINE-DESIGN.md#adaptive-2-param-ventilated-ols-issue-126) |
+| What patterns trigger learning suggestions and how many days of data are required? | Six patterns (low window compliance, frequent overrides, high runtime, short departures, comfort violations, frequent door pauses) are evaluated after 14+ days; suggestions repeat unless dismissed, with a 7-day cooldown. | [§Suggestion Generation](05-LEARNING-ENGINE-DESIGN.md#suggestion-generation) |
+| Where is the full Tier 3 spec for the v3 thermal model — pre/post/invariants, OLS contracts, EWMA table? | The Territory spec covers all six observation lifecycles, both OLS solvers, commit routing, EWMA alpha table, rolling window constraints, gate bridge, and swing detection. | [Thermal Model v3 — Territory Spec](thermal-model-v3-spec.md) |
 
 ## Purpose
 

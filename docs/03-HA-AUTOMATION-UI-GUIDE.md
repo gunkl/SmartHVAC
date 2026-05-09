@@ -5,10 +5,12 @@
 This document captures the manual automation approach discussed before the integration was built. It's useful as a reference for understanding the logic, for testing individual behaviors, and as a fallback if someone wants to implement pieces without the full integration.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What is this document's purpose — is it the live implementation? | No. This guide documents the manual HA automation approach explored before the integration was built. Use it for understanding the logic, testing individual behaviors, or implementing pieces without the full integration. | [§Building Automations in the HA UI](03-HA-AUTOMATION-UI-GUIDE.md#building-automations-in-the-ha-ui) |
+| How do you implement a door/window pause automation in the HA UI? | Trigger: contact sensor open "For" 2–3 min. Condition: thermostat in heat mode. Action: set hvac_mode to "off". Companion: trigger on closed (For 30s) with "all sensors closed" condition before resuming. | [§Automation 3: Door/Window Open — Pause Heating](03-HA-AUTOMATION-UI-GUIDE.md#automation-3-doorwindow-open--pause-heating) |
+| How do you implement forecast-based conditions in the HA UI? | Use the Template condition type with expressions against `state_attr('weather.your_entity', 'forecast')[0]` — e.g., tomorrow_high vs today temp. Test expressions first in Developer Tools → Template. | [§Forecast-Based Automations (Template Conditions)](03-HA-AUTOMATION-UI-GUIDE.md#forecast-based-automations-template-conditions) |
+| How do you debug why an automation did or did not trigger? | Use the Traces tab on the automation's page after each run. For template conditions, test the expression in Developer Tools → Template before wiring it into the automation. | [§UI Tips](03-HA-AUTOMATION-UI-GUIDE.md#ui-tips) |
 
 ## Building Automations in the HA UI
 

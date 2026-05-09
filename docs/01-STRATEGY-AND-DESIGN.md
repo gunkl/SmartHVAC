@@ -3,10 +3,13 @@
 # Climate Advisor — Strategy & Design Rationale
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What are the five automation layers and what does each add? | Layer 1: temperature-aware shutoff; Layer 2: occupancy setback; Layer 3: door/window pause; Layer 4: runaway runtime protection; Layer 5: smart scheduling. Each layer adds intelligence on top of the last. | [§Layered Approach](01-STRATEGY-AND-DESIGN.md#layered-approach) |
+| How does trend direction change automation behavior? | Warming trend → more aggressive overnight setback; cooling trend → pre-heat in the evening, less aggressive setback; significant cold front (≥ 10°F drop) → setback modifier +3, pre-heat at 7 PM. | [§Forecast as a Decision Engine](01-STRATEGY-AND-DESIGN.md#forecast-as-a-decision-engine) |
+| What are the occupancy toggle priority rules? | Guest (highest) → Vacation → Away → default home. Each toggle has an `*_inverted` option for reversed-polarity sensors. All three toggles are optional. | [§Occupancy Awareness](01-STRATEGY-AND-DESIGN.md#occupancy-awareness) |
+| What is the learning engine's core principle and when does it trigger? | If the system recommends a behavior users rarely perform, compute a better alternative and ask. Requires 14+ days of data; suggestions follow a 7-day cooldown after dismiss. | [§The Learning Engine](01-STRATEGY-AND-DESIGN.md#the-learning-engine) |
+| What are the two grace period types and why do both exist? | Automation grace (default 5 min): after CA resumes, prevents rapid cycling. Manual grace (default 30 min): after user override, prevents CA from overriding the user back. Both are configurable to 0 to disable. | [§Layered Approach](01-STRATEGY-AND-DESIGN.md#layered-approach) |
 
 ## The Problem
 

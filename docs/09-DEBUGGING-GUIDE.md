@@ -5,10 +5,13 @@
 This guide documents debugging strategies, sensor entities, and tooling for diagnosing Climate Advisor issues.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What is the recommended first debugging step for any unexpected HVAC behavior? | Check the four key sensor entities in order: `sensor.climate_advisor_day_type` (classification), `sensor.climate_advisor_last_action_reason` (why), `sensor.climate_advisor_contact_status` (door/window pause), `sensor.climate_advisor_occupancy_mode`. | [§Common Debugging Scenarios](09-DEBUGGING-GUIDE.md#common-debugging-scenarios) |
+| How do you pull Climate Advisor logs and filter for thermal activity? | `python3 tools/ha_logs.py --thermal` for last 2000 thermal-relevant lines; `--lines 5000` for deeper history. Docker log files on HAOS persist for days — do not assume rotation without checking. | [§3. Container Logs (Real-Time)](09-DEBUGGING-GUIDE.md#3-container-logs-real-time) |
+| What is the step-by-step diagnostic sequence for "thermal model confidence is none"? | 1. `python3 tools/learning_db.py --rejections` (structured rejection log, no token needed). 2. `python3 tools/thermal_health.py` (active observations, needs HA_TOKEN). 3. `python3 tools/ha_logs.py --thermal`. | [§Debugging Thermal Model Learning](09-DEBUGGING-GUIDE.md#debugging-thermal-model-learning) |
+| What does the Temperature Forecast chart show and how do you use it for diagnosis? | Four activity bars (HVAC, Fan, Windows Recommended, Windows Open) plus indoor/outdoor temperature lines, predicted curves, and target band shading. Drag-to-zoom any region; 1-year data in chart_log survives HA restarts. | [§2. Temperature Forecast Chart (Visual History)](09-DEBUGGING-GUIDE.md#2-temperature-forecast-chart-visual-history) |
+| How do you diagnose AI feature failures? | Check `sensor.climate_advisor_ai_status` first: active/inactive/error/disabled/circuit_open. Circuit breaker trips after 5 consecutive failures, auto-resets after 5 minutes. `monthly_cost_estimate` attribute tracks spending. | [§Debugging AI Features](09-DEBUGGING-GUIDE.md#debugging-ai-features) |
 
 ## Primary Debugging Data Sources
 

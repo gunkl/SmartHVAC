@@ -10,10 +10,15 @@ For temperature formulas and threshold values see [docs/08-COMPUTATION-REFERENCE
 ---
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What gate conditions can block the 30-minute poll from applying a classification? | Two gates: `_manual_override_active` (user changed thermostat) and `_first_run` with HVAC already running (treated as manual override). Both cause `apply_classification()` to skip the HVAC mode change. | [§1. Main Decision Loop](07-AUTOMATION-FLOWCHART.md#1-main-decision-loop-30-minute-poll) |
+| How does the door/window pause flow work from sensor open to HVAC off? | Sensor open → debounce timer (default 5 min) → verify still open → check grace, planned window period, existing pause → set `_hvac_command_pending` → HVAC off + notification. | [§4. Door/Window Pause Flow](07-AUTOMATION-FLOWCHART.md#4-doorwindow-pause-flow) |
+| When a grace period expires, what prevents it from blindly restoring HVAC? | `_grace_expired()` calls `_re_pause_for_open_sensor()`, which checks `_is_within_planned_window_period()` before re-pausing — sensors open in a recommended window period are not re-paused. | [§4b. Grace Expiry with Planned Window Period Check](07-AUTOMATION-FLOWCHART.md#4b-grace-expiry-with-planned-window-period-check) |
+| How does manual override protection work — what sets it and what clears it? | `_async_thermostat_changed()` detects mode changes not preceded by `_hvac_command_pending`; sets `_manual_override_active = True`. Cleared at next wakeup or bedtime schedule boundary. | [§5. Manual Override Protection](07-AUTOMATION-FLOWCHART.md#5-manual-override-protection) |
+| What are the natural ventilation exit conditions and in what order are they checked? | Priority order: all sensors closed → comfort floor exit (indoor ≤ comfort_heat) → outdoor-rise exit (outdoor ≥ indoor) → ceiling threshold exit (outdoor > comfort_cool + delta). First match wins. | [§12b. Continuous Monitoring](07-AUTOMATION-FLOWCHART.md#12b-continuous-monitoring-check_natural_vent_conditions) |
+| How does occupancy priority resolve when multiple toggles are active? | Guest > Vacation > Home/Away > default (home). `_compute_occupancy_mode()` in the coordinator reads all three toggle states and dispatches to the matching handler. | [§9. Occupancy State Machine](07-AUTOMATION-FLOWCHART.md#9-occupancy-state-machine) |
+| Where is the full Tier 3 spec for grace periods — state transitions, timer lifecycle, invariants, HA-restart behavior? | The Territory spec covers both grace types, the 12-row transition table, pre-pause mode storage/restoration, occupancy interaction, and error conditions including sensor-unavailable-during-pause. | [Grace Period State Machine — Territory Spec](grace-periods-spec.md) |
 
 ## 1. Main Decision Loop (30-Minute Poll)
 

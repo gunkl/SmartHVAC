@@ -3,10 +3,16 @@
 # Climate Advisor — Architecture Reference
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What are the 16 source files and what does each own? | Every module has a single responsibility: `coordinator.py` orchestrates, `classifier.py` classifies, `automation.py` executes HVAC calls, `learning.py` persists and analyses behavior, etc. | [§File Structure](02-ARCHITECTURE-REFERENCE.md#file-structure) |
+| How does data flow from the weather entity to an HVAC service call? | Weather entity → coordinator (every 30 min) → `classify_day()` → `DayClassification` → `apply_classification()` in the automation engine → `climate.set_temperature` / `climate.set_hvac_mode`. | [§Data Flow](02-ARCHITECTURE-REFERENCE.md#data-flow) |
+| What are the five coordinator-scheduled daily events and when do they fire? | Briefing (default 6:00 AM), morning wakeup (6:30 AM), bedtime setback (10:30 PM), end-of-day save (11:59 PM), and the 30-minute forecast refresh loop. | [§Coordinator Scheduled Events](02-ARCHITECTURE-REFERENCE.md#coordinator-scheduled-events) |
+| What is the debounce / grace period system and how do the three timers interact? | Debounce delays a pause until a sensor stays open for the configured time. Manual grace (default 30 min) blocks new pauses after a user override. Automation grace (default 5 min) blocks re-pause after system resumes. Manual override always wins. | [§Debounce and Grace Period System](02-ARCHITECTURE-REFERENCE.md#debounce-and-grace-period-system) |
+| What sensors does Climate Advisor expose and what do their attributes carry? | Eight sensor entities: day type, trend, next action, daily briefing, comfort score, status, occupancy mode, and AI status — each with diagnostic attributes. | [§Sensors Exposed](02-ARCHITECTURE-REFERENCE.md#sensors-exposed) |
+| How does the thermal state machine (v3) work and which methods own each phase? | Seven coordinator methods drive six concurrent observation types in `_pending_observations`; HVAC observations survive HA restarts via `LearningState.pending_thermal_event`. | [§Coordinator Thermal State Machine Methods](02-ARCHITECTURE-REFERENCE.md#coordinator-thermal-state-machine-methods) |
+| How does state persistence work — what is stored, where, and in what format? | Two JSON files: `climate_advisor_state.json` (runtime coordinator state, atomic write) and `climate_advisor_learning.json` (thermal model + observation history). State version mismatch discards and resets; no migration chain. | [§State Persistence Brief](state-persistence.md) |
+| How does unit conversion work between °F and °C? | `from_fahrenheit()` for absolute temperatures (subtracts 32, ×5/9); `convert_delta()` for differences and rates (×5/9 only, no offset). Unit is user-selected in config flow, not auto-detected from HA. | [§Temperature Conversion Brief](temperature-conversion.md) |
 
 ## File Structure
 

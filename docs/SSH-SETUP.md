@@ -5,10 +5,12 @@
 This guide walks through setting up SSH access from your Windows development machine to your Home Assistant OS (HAOS) instance for automated deployments.
 
 ## Anchors
-<!-- TODO: populate once doc sections stabilize -->
 | Question | Short answer | → Full answer |
 |---|---|---|
-| _(placeholder)_ | _(placeholder)_ | _(placeholder)_ |
+| What are the four required `.deploy.env` values for SSH deployment? | `HA_HOST` (hostname or IP), `HA_SSH_PORT` (default 22), `HA_SSH_USER` (default `hassio`), `HA_CONFIG_PATH` (default `/config`). Add `HA_SSH_KEY` for a dedicated key. | [§Step 3: Create the Deploy Configuration](SSH-SETUP.md#step-3-create-the-deploy-configuration) |
+| How do you do a dry-run deploy to verify SSH connectivity without making changes? | `python tools/deploy.py --dry-run` — runs validation only and shows what would be deployed. | [§Step 4: Test the Deploy Script](SSH-SETUP.md#step-4-test-the-deploy-script) |
+| What is the daily deployment workflow once SSH is set up? | `python tools/deploy.py` (full: validate → backup → copy → restart → verify); `--skip-restart` for file changes only; `--rollback` to revert to the previous version. | [§Daily Usage](SSH-SETUP.md#daily-usage) |
+| How do you fix "Permission denied (publickey)" during SSH connection? | Verify the public key is in the add-on's Authorized Keys config, confirm you are pointing to the correct private key file, and check the key wasn't accidentally modified. | [§Troubleshooting](SSH-SETUP.md#troubleshooting) |
 
 ## Prerequisites
 
