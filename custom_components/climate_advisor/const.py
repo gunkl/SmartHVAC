@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.35"
+VERSION = "0.3.36"
 
 RELEASE_NOTES: dict[str, list[str]] = {
     "0.3.31": [
@@ -768,11 +768,11 @@ THERMAL_POST_HEAT_TIMEOUT_MINUTES = 45  # abandon post_heat phase after this lon
 THERMAL_STABILIZATION_THRESHOLD_F = 0.3  # |dT| < this over window → stabilized
 THERMAL_STABILIZATION_WINDOW_MINUTES = 5  # window length for stabilization check
 THERMAL_K_PASSIVE_MIN = -0.5  # reject k_passive outside this range (hr⁻¹)
-THERMAL_K_PASSIVE_MAX = -0.001
+THERMAL_K_PASSIVE_MAX = -0.001  # upper bound: near-zero decay (extremely well-insulated house)
 THERMAL_K_ACTIVE_HEAT_MIN = 0.5  # reject k_active_heat outside this range (°F/hr)
-THERMAL_K_ACTIVE_HEAT_MAX = 15.0
+THERMAL_K_ACTIVE_HEAT_MAX = 15.0  # upper bound: physically implausible heating rate
 THERMAL_K_ACTIVE_COOL_MIN = -15.0  # reject k_active_cool outside this range (°F/hr)
-THERMAL_K_ACTIVE_COOL_MAX = -0.5
+THERMAL_K_ACTIVE_COOL_MAX = -0.5  # upper bound (least negative): minimal cooling effect
 THERMAL_MIN_R_SQUARED = 0.2  # reject observation if R² below this
 THERMAL_MIN_POST_HEAT_SAMPLES = 4  # min post-heat samples to commit (Issue #130: lowered from 10, enables short cycles)
 THERMAL_PRE_HEAT_BUFFER_MINUTES = 15  # rolling pre-heat buffer length

@@ -1298,19 +1298,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     "chart log: indoor_temp unavailable — skipping pred_indoor write"
                     " (thermostat may be unknown/unavailable)"
                 )
-            if self._current_classification:
-                _pred_out, _pred_in = compute_predicted_temps(
-                    self._current_classification,
-                    self.config,
-                    self._hourly_forecast_temps,
-                    thermal_model=getattr(self.automation_engine, "_thermal_model", None),
-                    thermal_factors=self._thermal_factors,
-                )
-                _now_h = dt_util.now().hour
-                if _pred_out and _now_h < len(_pred_out) and indoor_temp is not None:
-                    _pred_outdoor_val = _pred_out[_now_h]["temp"]
-                if _pred_in and _now_h < len(_pred_in) and indoor_temp is not None:
-                    _pred_indoor_val = _pred_in[_now_h]["temp"]
+            if self._current_classification and indoor_temp is not None:
+                _now_dt = dt_util.now()
+                _pred_outdoor_val = _extract_current_hour_forecast_temp(self._hourly_forecast_temps, _now_dt)
+                if _pred_outdoor_val is not None:
+                    _pred_indoor_val = _ode_single_step(
+                        indoor_temp,
+                        _pred_outdoor_val,
+                        thermal_model=getattr(self.automation_engine, "_thermal_model", None),
+                    )
             _chart_hvac_poll = self._read_chart_hvac_action()
             _LOGGER.debug(
                 "chart_log append: event=30min_poll hvac=%r fan=%s",
@@ -3702,7 +3698,10 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         forecast_outdoor = [
             {"ts": p["ts"], "temp": _conv(p["temp"])}
-            for p in _build_future_forecast_outdoor(self._hourly_forecast_temps)
+            for p in _build_future_forecast_outdoor(
+                self._hourly_forecast_temps,
+                classification=self._current_classification,
+            )
         ]
 
         # Build timestamp list for _compute_target_band_schedule — same parse pattern
@@ -4265,8 +4264,31 @@ def _build_predicted_indoor_future(
     Returns list of {"ts": ISO_str, "temp": float} for hours strictly after now.
     """
     if not hourly_forecast:
-        _LOGGER.debug("_build_predicted_indoor_future: no hourly_forecast — returning empty")
-        return []
+        if classification is not None:
+            _LOGGER.debug("_build_predicted_indoor_future: no hourly_forecast — using cosine fallback")
+            # Build synthetic hourly list from cosine model so the function can proceed normally
+            now_local = dt_util.as_local(dt_util.now())
+            cosine = _build_outdoor_curve(
+                high=classification.today_high,
+                low=classification.today_low,
+                hourly_forecast=None,
+            )
+            synthetic = []
+            for entry in cosine:
+                h = entry["hour"]
+                future_dt = now_local.replace(hour=h, minute=0, second=0, microsecond=0)
+                if future_dt <= now_local:
+                    future_dt += timedelta(days=1)
+                synthetic.append(
+                    {
+                        "datetime": future_dt.isoformat(),
+                        "temperature": entry["temp"],
+                    }
+                )
+            hourly_forecast = synthetic
+        else:
+            _LOGGER.debug("_build_predicted_indoor_future: no hourly_forecast — returning empty")
+            return []
 
     _LOGGER.debug(
         "_build_predicted_indoor_future: %d forecast entries, now=%s",
@@ -4793,6 +4815,7 @@ def _build_outdoor_curve(
 
 def _build_future_forecast_outdoor(
     hourly_forecast: list[dict] | None,
+    classification: Any | None = None,
 ) -> list[dict]:
     """Extract future hourly outdoor temps from the weather forecast.
 
@@ -4800,11 +4823,53 @@ def _build_future_forecast_outdoor(
     Covers all available forecast days (2-10+), not just today.
     Unlike _build_outdoor_curve, values are NOT normalised to daily high/low —
     the raw forecast temperatures are used directly.
+
+    If hourly_forecast is empty or yields no future entries and classification
+    is provided, falls back to a cosine curve using today's high/low so the
+    chart future region is never blank on daily-only weather integrations.
     """
-    if not hourly_forecast:
-        return []
     now = dt_util.now()
     result = []
+    if hourly_forecast:
+        for entry in hourly_forecast:
+            dt_str = entry.get("datetime") or entry.get("time")
+            temp = entry.get("temperature") if entry.get("temperature") is not None else entry.get("temp")
+            if dt_str is None or temp is None:
+                continue
+            try:
+                dt_obj = datetime.fromisoformat(dt_str)
+                local_dt = dt_util.as_local(dt_obj) if dt_obj.tzinfo else dt_obj
+                if local_dt < now:
+                    continue
+                result.append({"ts": local_dt.isoformat(), "temp": round(float(temp), 1)})
+            except (ValueError, TypeError):
+                continue
+    if not result and classification is not None:
+        # Hourly forecast unavailable — build cosine curve for display
+        cosine = _cosine_outdoor_curve(classification.today_high, classification.today_low)
+        for entry in cosine:
+            h = entry["hour"]
+            future_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=h)
+            if future_dt < now:
+                future_dt += timedelta(days=1)
+            result.append({"ts": future_dt.isoformat(), "temp": round(float(entry["temp"]), 1)})
+    result.sort(key=lambda x: x["ts"])
+    return result
+
+
+def _extract_current_hour_forecast_temp(
+    hourly_forecast: list[dict] | None,
+    now: datetime,
+) -> float | None:
+    """Return the raw forecast temp for the current local hour, or None.
+
+    Uses the same field names and timezone handling as _build_future_forecast_outdoor
+    so past and future predicted outdoor come from the same data source.
+    """
+    if not hourly_forecast:
+        return None
+    today = dt_util.as_local(now).date()
+    target_hour = dt_util.as_local(now).hour
     for entry in hourly_forecast:
         dt_str = entry.get("datetime") or entry.get("time")
         temp = entry.get("temperature") if entry.get("temperature") is not None else entry.get("temp")
@@ -4813,13 +4878,31 @@ def _build_future_forecast_outdoor(
         try:
             dt_obj = datetime.fromisoformat(dt_str)
             local_dt = dt_util.as_local(dt_obj) if dt_obj.tzinfo else dt_obj
-            if local_dt < now:
-                continue
-            result.append({"ts": local_dt.isoformat(), "temp": round(float(temp), 1)})
+            if local_dt.date() == today and local_dt.hour == target_hour:
+                return round(float(temp), 1)
         except (ValueError, TypeError):
             continue
-    result.sort(key=lambda x: x["ts"])
-    return result
+    return None
+
+
+def _ode_single_step(
+    t_in: float,
+    t_out: float,
+    thermal_model: dict | None,
+    dt_hours: float = 0.5,
+) -> float:
+    """One physics ODE step: T_in_next = T_in + k_passive*(T_in - T_out)*dt.
+
+    Matches the per-step logic in _build_predicted_indoor_future.
+    Falls back to a conservative k_passive=-0.05 if thermal model is not trained.
+    k_passive is always negative: indoor decays toward outdoor.
+    """
+    k_passive = (thermal_model or {}).get("k_passive")
+    if k_passive is not None and k_passive < 0:
+        delta = k_passive * (t_in - t_out) * dt_hours
+    else:
+        delta = -0.05 * (t_in - t_out) * dt_hours
+    return round(t_in + delta, 2)
 
 
 def _parse_time(time_str: str) -> time:

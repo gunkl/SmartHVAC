@@ -1090,16 +1090,16 @@
     const _nowMs = Date.now();
     const histPredOutdoorPts = (chartData.state_log || [])
       .map(e => ({ x: _parseTs(e.ts), y: e.pred_outdoor != null ? e.pred_outdoor : e.pred_outdoor_avg != null ? e.pred_outdoor_avg : null }))
-      .filter(p => p.y != null);
+      .filter(p => p.y != null && p.x <= _nowMs);
     const histPredIndoorPts = (chartData.state_log || [])
       .map(e => ({ x: _parseTs(e.ts), y: e.pred_indoor != null ? e.pred_indoor : e.pred_indoor_avg != null ? e.pred_indoor_avg : null }))
-      .filter(p => p.y != null);
+      .filter(p => p.y != null && p.x <= _nowMs);
 
     // Multi-day forecast outdoor (absolute timestamps, all entries >= now from API)
-    const forecastOutdoorPts = (chartData.forecast_outdoor || []).map(p => ({ x: _parseTs(p.ts), y: p.temp }));
+    const forecastOutdoorPts = (chartData.forecast_outdoor || []).map(p => ({ x: _parseTs(p.ts), y: p.temp })).filter(p => p.x > _nowMs);
 
     // Multi-day predicted indoor: automation-plan-based, future-only, ts-keyed
-    const predIndoorFuturePts = (chartData.predicted_indoor || []).map(p => ({ x: _parseTs(p.ts), y: p.temp }));
+    const predIndoorFuturePts = (chartData.predicted_indoor || []).map(p => ({ x: _parseTs(p.ts), y: p.temp })).filter(p => p.x > _nowMs);
 
     // Merge: historical snapshots (past) + multi-day future forecast
     const mergedPredOutdoor = [...histPredOutdoorPts, ...forecastOutdoorPts].sort((a, b) => a.x - b.x);

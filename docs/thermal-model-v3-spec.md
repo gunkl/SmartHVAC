@@ -250,6 +250,24 @@ Called by `record_thermal_observation()` on every successful commit. Applies one
 | `"low"` | 0.05 |
 | (unknown) | 0.05 |
 
+**Confidence grade thresholds — `confidence_k_passive`** (counts from `observation_count_passive` + `observation_count_heat` + `observation_count_cool`):
+
+| Observation count | Grade |
+|---|---|
+| < 5 | `"none"` |
+| 5 – 14 | `"low"` |
+| 15 – 29 | `"medium"` |
+| ≥ 30 | `"high"` |
+
+**Confidence grade thresholds — `confidence` (HVAC)** (counts from `observation_count_heat` + `observation_count_cool`):
+
+| Observation count | Grade |
+|---|---|
+| < 5 | `"none"` |
+| 5 – 9 | `"low"` |
+| 10 – 19 | `"medium"` |
+| ≥ 20 | `"high"` |
+
 **EWMA formula for all continuous parameters:**
 ```
 new_value = (1 − alpha) × old_value + alpha × observed_value

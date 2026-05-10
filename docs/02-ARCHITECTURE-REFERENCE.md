@@ -10,7 +10,7 @@
 | What are the five coordinator-scheduled daily events and when do they fire? | Briefing (default 6:00 AM), morning wakeup (6:30 AM), bedtime setback (10:30 PM), end-of-day save (11:59 PM), and the 30-minute forecast refresh loop. | [§Coordinator Scheduled Events](02-ARCHITECTURE-REFERENCE.md#coordinator-scheduled-events) |
 | What is the debounce / grace period system and how do the three timers interact? | Debounce delays a pause until a sensor stays open for the configured time. Manual grace (default 30 min) blocks new pauses after a user override. Automation grace (default 5 min) blocks re-pause after system resumes. Manual override always wins. | [§Debounce and Grace Period System](02-ARCHITECTURE-REFERENCE.md#debounce-and-grace-period-system) |
 | What sensors does Climate Advisor expose and what do their attributes carry? | Eight sensor entities: day type, trend, next action, daily briefing, comfort score, status, occupancy mode, and AI status — each with diagnostic attributes. | [§Sensors Exposed](02-ARCHITECTURE-REFERENCE.md#sensors-exposed) |
-| How does the thermal state machine (v3) work and which methods own each phase? | Seven coordinator methods drive six concurrent observation types in `_pending_observations`; HVAC observations survive HA restarts via `LearningState.pending_thermal_event`. | [§Coordinator Thermal State Machine Methods](02-ARCHITECTURE-REFERENCE.md#coordinator-thermal-state-machine-methods) |
+| How does the thermal state machine (v3) work and which methods own each phase? | Ten coordinator methods drive six concurrent observation types in `_pending_observations` (Issue #121); HVAC observations survive HA restarts via `LearningState.pending_thermal_event`. | [§Coordinator Thermal State Machine Methods](02-ARCHITECTURE-REFERENCE.md#coordinator-thermal-state-machine-methods) |
 | How does state persistence work — what is stored, where, and in what format? | Two JSON files: `climate_advisor_state.json` (runtime coordinator state, atomic write) and `climate_advisor_learning.json` (thermal model + observation history). State version mismatch discards and resets; no migration chain. | [§State Persistence Brief](state-persistence.md) |
 | How does unit conversion work between °F and °C? | `from_fahrenheit()` for absolute temperatures (subtracts 32, ×5/9); `convert_delta()` for differences and rates (×5/9 only, no offset). Unit is user-selected in config flow, not auto-detected from HA. | [§Temperature Conversion Brief](temperature-conversion.md) |
 | How does the REST API work — endpoints, auth, and data access pattern? | 19 views, all requiring a HA long-lived token. GETs read from `coordinator.data`; POSTs delegate to the coordinator or automation engine. Two config fields are redacted; out-of-range numerics are silently clamped. | [§REST API Brief](rest-api.md) |
@@ -101,19 +101,24 @@ One day's tracked data: what was recommended, what actually happened, outcomes (
 
 ## Coordinator Thermal State Machine Methods
 
-These methods on `ClimateAdvisorCoordinator` implement the Issue #114 two-parameter physics observation pipeline. They are driven by thermostat state changes detected in `_async_thermostat_changed`.
+These methods on `ClimateAdvisorCoordinator` implement the Issue #121 v3 concurrent-observation pipeline. They are driven by thermostat state changes detected in `_async_thermostat_changed` and by the 30-minute coordinator tick.
 
 | Method | Role |
 |--------|------|
-| `_start_thermal_event(session_mode)` | Begins a new observation window; sets state to `active` |
-| `_sample_thermal_event()` | Records a sample during the active (HVAC-on) phase |
-| `_end_active_phase()` | Transitions from `active` to `post_heat` when HVAC stops |
-| `_check_stabilization()` | Tests for post-heat temperature stabilization; triggers commit or continues polling |
-| `_commit_thermal_event()` | Calls `learning.commit_thermal_event()` to extract k_passive/k_active and persist |
-| `_abandon_thermal_event(reason)` | Discards the event (timeout or bad data); logs a WARNING |
-| `_update_pre_heat_buffer()` | Maintains the 15-min rolling pre-HVAC sample buffer for richer regression |
+| `_start_hvac_observation(session_mode)` | Begins an HVAC (heat or cool) observation; pre-loads the pre-heat buffer |
+| `_start_decay_observation(obs_type)` | Begins one of the four rolling-decay observation types |
+| `_sample_all_observations()` | Per-tick: samples all active observations in `_pending_observations`; starts new decay types when trigger conditions first become true |
+| `_end_hvac_active_phase(obs_type)` | Transitions HVAC obs from `active` to `post_heat` when HVAC stops |
+| `_check_hvac_stabilization(obs_type)` | Tests for post-heat stabilization; triggers commit or continues polling |
+| `_evaluate_rolling_window(obs_type)` | Commit/keep-alive decision for rolling-window decay types (30-min min, 240-min cap) |
+| `_commit_rolling_window_obs(obs_type)` | Calls `_commit_observation()` for a rolling obs that has passed the signal check |
+| `_commit_observation_if_sufficient(obs_type)` | Commits if `len(samples) >= min_samples`, else abandons — used on HVAC-start contamination flush |
+| `_abandon_observation(obs_type, reason)` | Removes obs from `_pending_observations`; appends to rejection log; logs WARNING |
+| `_commit_observation(obs_type)` | Calls `learning.record_thermal_observation()` and pops obs from `_pending_observations` |
 
-The pending event is serialised in `LearningState.pending_thermal_event` (persisted to disk) so a mid-event HA restart can recover the post-heat phase.
+All six concurrent types are tracked in `_pending_observations: dict[str, PendingObservation]`. The pending HVAC event is serialised in `LearningState.pending_thermal_event` so a mid-event HA restart can recover the post-heat phase. See [Thermal Model v3 Spec](thermal-model-v3-spec.md) for the full observation-type matrix and lifecycle.
+
+> **v2 pipeline coexistence note:** The v2 HVAC-specific methods (`_start_thermal_event`, `_sample_thermal_event`, `_end_active_phase`, `_check_stabilization`, `_commit_thermal_event`, `_abandon_thermal_event`, `_update_pre_heat_buffer`) remain in the codebase as a **parallel, independent pipeline** — they are not internal helpers of the v3 methods. On every HVAC start, `_async_thermostat_changed` calls both `_start_thermal_event` and `_start_hvac_observation`, and the 30-minute tick calls both `_sample_thermal_event`/`_check_stabilization` (v2) and `_sample_all_observations`/`_check_hvac_stabilization` (v3). The v2 pipeline has not been retired. `_update_pre_heat_buffer` is shared infrastructure used by both paths.
 
 ## Coordinator Chart Helper Functions
 
@@ -250,7 +255,7 @@ Note: `config_flow.VERSION` (config entry schema) and `state.STATE_VERSION` (sta
 - Sample interval: 60 seconds (`THERMAL_SAMPLE_INTERVAL_SECONDS`)
 - Pre-heat buffer window: 15 min / max 15 entries (`THERMAL_PRE_HEAT_BUFFER_MINUTES`)
 - Minimum R² for k_passive acceptance: 0.2 (`THERMAL_MIN_R_SQUARED`)
-- Minimum post-heat samples for regression: 10 (`THERMAL_MIN_POST_HEAT_SAMPLES`)
+- Minimum post-heat samples for regression: 4 (`THERMAL_MIN_POST_HEAT_SAMPLES`)
 - k_passive sanity bounds: −0.5 to −0.001 hr⁻¹
 - k_active_heat sanity bounds: 0.5 to 15.0 °F/hr
 - k_active_cool sanity bounds: −15.0 to −0.5 °F/hr

@@ -856,6 +856,8 @@ class LearningEngine:
         count_cool = cache.get("observation_count_cool", 0)
         total = count_heat + count_cool
 
+        # TODO: replace magic numbers 10/20 with named constants (e.g. THERMAL_HVAC_CONF_LOW/MEDIUM)
+        #       to mirror the THERMAL_PASSIVE_CONF_* pattern in const.py.
         if total < MIN_THERMAL_OBSERVATIONS:
             confidence = "none"
         elif total < 10:
@@ -1265,6 +1267,8 @@ class LearningEngine:
             r2_thresh_med = 0.4
             r2_ok_active = (r2_a is not None and r2_a >= r2_thresh_high) or session_mode == "fan_only"
             r2_ok_active_med = (r2_a is not None and r2_a >= r2_thresh_med) or session_mode == "fan_only"
+            # TODO: 10/5 are separate grade thresholds distinct from THERMAL_MIN_POST_HEAT_SAMPLES (4).
+            #       Consider naming them (e.g. THERMAL_HVAC_GRADE_HIGH_SAMPLES / _MED_SAMPLES) in const.py.
             if r2_p >= r2_thresh_high and r2_ok_active and n_post >= 10:
                 grade = "high"
             elif r2_p >= r2_thresh_med and r2_ok_active_med and n_post >= 5:

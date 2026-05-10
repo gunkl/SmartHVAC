@@ -11,6 +11,10 @@
 | What does `get_entries()` return when the log is empty or the range produces no matches? | An empty list `[]`. No error is raised. Downsampling buckets that receive zero entries simply produce no output rows. | [Query Contract](#query-contract) |
 | What downsampling tier applies for each `range_str` value? | `6h`/`12h`/`24h`/`3d` → raw entries. `7d`/`30d` → hourly averages. `1y` → daily summaries. An unrecognised range string defaults to `24h` (1-day raw). | [Downsampling Rules](#downsampling-rules) |
 | What fields does a raw entry always carry, and which are optional? | Nine core fields always present: `ts`, `hvac`, `fan`, `indoor`, `outdoor`, `windows_open`, `windows_recommended`, `pred_outdoor`, `pred_indoor`. The `event` field is only present when the marker argument is non-None. | [Entry Schema](#entry-schema) |
+| How is `pred_outdoor` populated in each chart log entry? | Raw hourly forecast temperature for the current local hour, extracted by `_extract_current_hour_forecast_temp()` — no normalisation. `null` when hourly forecast has no entry for the current hour. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
+| How is `pred_indoor` populated in each chart log entry? | One physics ODE step from current indoor temperature and the raw `pred_outdoor` value, computed by `_ode_single_step()`. Only written when `pred_outdoor` is non-null. `null` if indoor temp is unavailable or `pred_outdoor` is null. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
+| What fallback does `_build_future_forecast_outdoor()` use when hourly forecast is empty? | When hourly forecast is empty or yields no future entries and a `classification` is provided, generates a cosine curve using `classification.today_high`/`classification.today_low`. Returns `[]` only if no classification is provided. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
+| What fallback does `_build_predicted_indoor_future()` use when hourly forecast is empty? | When `classification` is provided, synthesises a cosine-based hourly list from `classification.today_high`/`classification.today_low` and proceeds normally. Returns `[]` only if no classification is provided. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
 | What happens when `load()` finds a missing, corrupt, or structurally wrong file? | Any of these three error paths resets `_entries` to `[]` and logs a WARNING. The coordinator continues with an empty log; no exception propagates to the caller. | [Load Contract](#load-contract) |
 | What is the atomic write contract for `save()`? | Serializes to a temp file in the same directory, then `os.replace()` into the final path. On non-Windows the final file is `chmod`-ed to `0o600`. The original file is never touched until `os.replace()` succeeds. | [Save / Persistence Contract](#save--persistence-contract) |
 | How do daily summary buckets differ from raw and hourly entries in their field names? | Daily summaries use `indoor_avg`/`indoor_min`/`indoor_max`, `outdoor_avg`/`outdoor_min`/`outdoor_max`, `fan_minutes`, and `events` (plural list). Raw and hourly entries use `indoor`, `outdoor`, `fan` (bool), and `event` (singular string). | [Downsampled Entry Schemas](#downsampled-entry-schemas) |
@@ -25,10 +29,11 @@ This spec covers the `ChartStateLog` class in its entirety: construction, `load(
 
 **Out of scope:**
 
-- When the coordinator calls `append()` (wiring lives in `coordinator.py`)
-- How `get_chart_data()` in `coordinator.py` assembles the full dashboard payload from `get_entries()` output, target-band schedule, and prediction curve — see [Architecture Reference §Coordinator Chart Helper Functions](02-ARCHITECTURE-REFERENCE.md#coordinator-chart-helper-functions)
+- Full `get_chart_data()` payload assembly (target-band schedule, actual temperature series) — see [Architecture Reference §Coordinator Chart Helper Functions](02-ARCHITECTURE-REFERENCE.md#coordinator-chart-helper-functions)
 - State persistence for the coordinator's own state — see [State Persistence](state-persistence.md)
-- Thermal model parameters referenced in `pred_indoor`/`pred_outdoor` values — see [Thermal Model v3](thermal-model-v3-spec.md)
+- Thermal model parameters and ODE derivation — see [Thermal Model v3](thermal-model-v3-spec.md)
+
+**In scope (coordinator wiring):** How `pred_outdoor` and `pred_indoor` are computed before `append()` is called, and the fallback behavior of `_build_future_forecast_outdoor()` and `_build_predicted_indoor_future()` — see [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) at the end of this file.
 
 ## Pre-conditions
 
@@ -115,8 +120,8 @@ Entries with unparseable `ts` fields are treated differently in the two prune co
 | `outdoor` | `float \| null` | Always | Outdoor temperature; `null` if unavailable |
 | `windows_open` | `bool` | Always | Whether any window/door sensor reports open |
 | `windows_recommended` | `bool` | Always | Whether natural ventilation was recommended at this tick |
-| `pred_outdoor` | `float \| null` | Always | Forecast outdoor temperature for this timestamp; `null` if not computed |
-| `pred_indoor` | `float \| null` | Always | Predicted indoor temperature for this timestamp; `null` if not computed |
+| `pred_outdoor` | `float \| null` | Always | Raw hourly forecast temperature for the current local hour, extracted by `_extract_current_hour_forecast_temp()`. No normalisation is applied. `null` when the hourly forecast has no entry matching the current hour, or when hourly forecast is unavailable. (Fixed in Issue #132: previously stored a normalised value from `_build_outdoor_curve()`, which caused spikes at classification boundaries.) |
+| `pred_indoor` | `float \| null` | Always | Predicted indoor temperature: one ODE step from current indoor temp and the raw `pred_outdoor` value, computed by `_ode_single_step()`. Only written when `pred_outdoor` is non-null and indoor temp is available; otherwise `null`. |
 | `event` | `str` | Optional | Event marker label (e.g., `"hvac_mode_changed"`, `"windows_opened"`). Present only when `event` argument was non-None. |
 
 **Invariant:** `ts` is always present and always a string. Monotonic non-decrease of `ts` values is the caller's responsibility — the class does not enforce it.
@@ -286,3 +291,72 @@ In all error paths `load()` returns `None` and does not raise. The coordinator r
 - [`ChartStateLog._bucket_hourly`](../custom_components/climate_advisor/chart_log.py#L234) — 1-hour average bucketing
 - [`ChartStateLog._bucket_daily`](../custom_components/climate_advisor/chart_log.py#L274) — daily summary bucketing
 - [`_parse_ts`](../custom_components/climate_advisor/chart_log.py#L31) — ISO-8601 parse helper; returns `None` on failure
+
+## Coordinator Chart Log Wiring
+
+This section covers the coordinator-side logic that computes `pred_outdoor` and `pred_indoor` before calling `ChartStateLog.append()`, and the helper functions used for the future predicted lines in `get_chart_data()`.
+
+**Covered functions:** `_extract_current_hour_forecast_temp`, `_ode_single_step`, `_build_future_forecast_outdoor`, `_build_predicted_indoor_future` — all in `coordinator.py`.
+
+### `pred_outdoor` and `pred_indoor` at append time
+
+Located in `coordinator.py` inside `_async_update_data()` at the chart log append block.
+
+**`pred_outdoor`** is the raw hourly forecast temperature for the current local hour:
+
+```python
+_pred_outdoor_val = _extract_current_hour_forecast_temp(self._hourly_forecast_temps, now_dt)
+```
+
+- `_extract_current_hour_forecast_temp()` scans `self._hourly_forecast_temps` for an entry whose local datetime matches today's date and the current local hour.
+- Returns the raw `temperature` field (rounded to 1 decimal), not a normalised value.
+- Returns `None` if hourly forecast is absent or has no entry for the current hour.
+- Uses the same field name and timezone handling as `_build_future_forecast_outdoor()` so past and future predicted outdoor values come from the same data source.
+
+**`pred_indoor`** is one ODE step forward from the current indoor temperature:
+
+```python
+_pred_indoor_val = _ode_single_step(indoor_temp, _pred_outdoor_val, thermal_model=...)
+```
+
+- Only computed when `_pred_outdoor_val` is non-None.
+- `_ode_single_step(t_in, t_out, thermal_model, dt_hours=0.5)`: computes `T_in + k_passive * (T_out - T_in) * dt`.
+- Uses `thermal_model["k_passive"]` if present and negative; falls back to `k_passive = -0.05` (conservative default).
+- Returns a `float`; result is rounded to 2 decimal places.
+- Both `_pred_outdoor_val` and `_pred_indoor_val` are written as `None` if indoor temp is unavailable (`self._current_classification` gate also applies).
+
+**Guard:** the entire block is wrapped in `contextlib.suppress(Exception)` — any failure silently writes `null` for both fields rather than crashing the coordinator tick.
+
+### `_build_future_forecast_outdoor(hourly_forecast, classification=None)`
+
+Used by `get_chart_data()` to build the `forecast_outdoor` time series for the chart (future region only).
+
+- Iterates `hourly_forecast`; for each entry whose local datetime is at or after `now`, appends `{"ts": local_dt.isoformat(), "temp": round(float(temp), 1)}`.
+- Raw forecast temperatures — no normalisation.
+- Covers all available forecast days (typically 2–10+), not just today.
+
+**Fallback (Issue #132):** when `hourly_forecast` is empty or yields no future entries:
+- If `classification` is provided: generates a cosine curve using `_cosine_outdoor_curve(classification.today_high, classification.today_low)`. Each hour is projected to the next future occurrence from `now`. Result is sorted by `ts`.
+- If `classification` is `None`: returns `[]` (chart future outdoor region is blank).
+
+### `_build_predicted_indoor_future(hourly_forecast, config, now, current_indoor_temp, thermal_model, occupancy_mode, classification=None)`
+
+Used by `get_chart_data()` to build the `predicted_indoor` time series for the chart (future region only).
+
+- Runs a per-hour physics ODE (or setpoint-schedule fallback) over all future forecast hours to produce `{"ts": ISO_str, "temp": float}` entries.
+- When `thermal_model` has "low" confidence or above, uses the full ODE with `k_passive`, `k_active_heat`/`k_active_cool`, `k_vent`, `k_solar`. Falls back to setpoint-schedule interpolation otherwise.
+
+**Fallback (Issue #132):** when `hourly_forecast` is empty:
+- If `classification` is provided: synthesises a cosine-based hourly list using `_build_outdoor_curve(high=classification.today_high, low=classification.today_low, hourly_forecast=None)`. Future datetimes are assigned hour-by-hour from `now_local`; the resulting synthetic list is used as `hourly_forecast` and the function proceeds normally.
+- If `classification` is `None`: logs a debug message and returns `[]`.
+
+**Important distinction:** the cosine fallback in `_build_future_forecast_outdoor` uses `_cosine_outdoor_curve()` (pure cosine, no normalisation). The cosine fallback in `_build_predicted_indoor_future` uses `_build_outdoor_curve(hourly_forecast=None)`, which returns a cosine via `_cosine_outdoor_curve()` as well (same underlying function; no hourly data to blend when `hourly_forecast` is None).
+
+### Frontend "Now" cutoff (Issue #132)
+
+The frontend enforces a strict cutoff at the current time:
+
+- **Past predicted** (`pred_outdoor`, `pred_indoor` in chart log snapshots): only chart log entries with `ts ≤ now` are used.
+- **Future predicted** (`forecast_outdoor`, `predicted_indoor` from `get_chart_data()`): only entries with `ts > now` are rendered.
+
+This prevents the prior spike artifact where normalised values from past snapshots were blended with raw future forecast values across the classification boundary.
