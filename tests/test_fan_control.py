@@ -1396,3 +1396,146 @@ class TestSetHvacModeOffFanAssert:
         assert fan_calls[0][0][2]["fan_mode"] == "auto"
         assert fan_calls[1][0][2]["fan_mode"] == "on"
         assert engine._fan_active is True
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 (Issue #134): _set_hvac_mode("off") must not clobber active nat-vent
+# ---------------------------------------------------------------------------
+
+
+class TestSetHvacModeOffNatVentGuard:
+    """When nat-vent is already active, _set_hvac_mode("off") must NOT assert
+    fan_mode=auto — doing so silently stops the fan while CA believes it's on."""
+
+    def _make_engine_nat_vent_active(self, fan_mode: str) -> AutomationEngine:
+        engine = _make_automation_engine(
+            config_overrides={
+                CONF_FAN_MODE: fan_mode,
+                "climate_entity": "climate.thermostat",
+            }
+        )
+        engine.climate_entity = "climate.thermostat"
+        engine._natural_vent_active = True
+        engine._fan_active = True
+        return engine
+
+    def test_nat_vent_active_hvac_off_does_not_assert_fan_auto(self):
+        """nat-vent active + _set_hvac_mode('off') → NO set_fan_mode call (Issue #134)."""
+        engine = self._make_engine_nat_vent_active(FAN_MODE_HVAC)
+        asyncio.run(engine._set_hvac_mode("off", reason="daily classification"))
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 0, (
+            f"_set_hvac_mode('off') must not assert fan_mode=auto when nat-vent is active; got {fan_calls}"
+        )
+        assert engine._natural_vent_active is True
+
+    def test_nat_vent_active_fan_mode_both_no_clobber(self):
+        """nat-vent active + fan_mode=both + hvac_mode=off → no set_fan_mode call."""
+        engine = self._make_engine_nat_vent_active(FAN_MODE_BOTH)
+        asyncio.run(engine._set_hvac_mode("off", reason="daily classification"))
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 0
+        assert engine._natural_vent_active is True
+
+    def test_nat_vent_inactive_hvac_off_still_asserts_fan_auto(self):
+        """nat-vent NOT active + _set_hvac_mode('off') → set_fan_mode('auto') fires as before."""
+        engine = _make_automation_engine(
+            config_overrides={
+                CONF_FAN_MODE: FAN_MODE_HVAC,
+                "climate_entity": "climate.thermostat",
+            }
+        )
+        engine.climate_entity = "climate.thermostat"
+        engine._natural_vent_active = False
+
+        asyncio.run(engine._set_hvac_mode("off", reason="daily classification"))
+
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert len(fan_calls) == 1
+        assert fan_calls[0][0][2]["fan_mode"] == "auto"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 (Issue #134): comfort-ceiling override in check_natural_vent_conditions
+# ---------------------------------------------------------------------------
+
+
+def _make_grace_nat_vent_engine(indoor_temp: float, grace_active: bool = True) -> AutomationEngine:
+    """Engine with both nat-vent flags False (fan exited at comfort floor) and grace active."""
+    engine = _make_automation_engine({CONF_FAN_MODE: FAN_MODE_HVAC})
+    engine._natural_vent_active = False
+    engine._paused_by_door = False
+    engine._grace_active = grace_active
+    engine._fan_active = False
+    engine._fan_override_active = False
+    engine._last_outdoor_temp = 65.0  # cool enough for nat-vent (< comfort_cool + delta)
+
+    mock_cs = MagicMock()
+    mock_cs.attributes = {"current_temperature": indoor_temp}
+    mock_cs.state = "off"
+    engine.hass.states.get.return_value = mock_cs
+
+    return engine
+
+
+class TestCheckNatVentGraceComfortCeiling:
+    """Fix 2: grace period must not block nat-vent re-evaluation when indoor > comfort_cool.
+
+    Before the fix, check_natural_vent_conditions() returned immediately when both
+    _paused_by_door and _natural_vent_active were False — even if indoor was overheating.
+    """
+
+    def test_grace_active_indoor_above_comfort_cool_allows_nat_vent(self):
+        """grace=True, indoor=76 > comfort_cool=75, outdoor cool → nat-vent activates, HVAC set off first."""
+        engine = _make_grace_nat_vent_engine(indoor_temp=76.0, grace_active=True)
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is True, (
+            "check_natural_vent_conditions() should fall through grace when indoor > comfort_cool"
+        )
+        # HVAC must be set off before fan activates (thermostat may be in heat mode from prior exit)
+        hvac_calls = _get_service_calls(engine, "climate", "set_hvac_mode")
+        assert len(hvac_calls) == 1
+        assert hvac_calls[0][0][2]["hvac_mode"] == "off"
+        # Fan must end up on (set_fan_mode=auto from _set_hvac_mode, then =on from _activate_fan)
+        fan_calls = _get_service_calls(engine, "climate", "set_fan_mode")
+        assert fan_calls[-1][0][2]["fan_mode"] == "on"
+
+    def test_grace_active_outdoor_too_warm_no_nat_vent(self):
+        """grace=True, indoor=76 > comfort_cool, but outdoor=74 is above threshold (75+3=78) — activates."""
+        engine = _make_grace_nat_vent_engine(indoor_temp=76.0, grace_active=True)
+        engine._last_outdoor_temp = 79.0  # above threshold — nat-vent should not fire
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is False
+
+    def test_grace_active_indoor_at_comfort_cool_no_nat_vent(self):
+        """grace=True, indoor=75 == comfort_cool=75 → comfort ceiling not breached → no nat-vent."""
+        engine = _make_grace_nat_vent_engine(indoor_temp=75.0, grace_active=True)
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is False, (
+            "Comfort ceiling is not breached at exactly comfort_cool — grace should hold"
+        )
+
+    def test_grace_active_indoor_below_comfort_cool_no_nat_vent(self):
+        """grace=True, indoor=73 < comfort_cool=75 → comfort ceiling not breached → no nat-vent."""
+        engine = _make_grace_nat_vent_engine(indoor_temp=73.0, grace_active=True)
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        assert engine._natural_vent_active is False
+
+    def test_no_grace_indoor_above_comfort_cool_no_fallthrough(self):
+        """grace=False, indoor=76 — no grace, so normal early-return applies → no nat-vent."""
+        engine = _make_grace_nat_vent_engine(indoor_temp=76.0, grace_active=False)
+        with patch(_PATCH_CALL_LATER):
+            asyncio.run(engine.check_natural_vent_conditions())
+
+        # Without grace the early-return fires normally (neither flag is True)
+        assert engine._natural_vent_active is False

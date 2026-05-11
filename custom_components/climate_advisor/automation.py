@@ -832,11 +832,10 @@ class AutomationEngine:
             )
             _LOGGER.warning("Set HVAC mode to %s — %s", mode, reason)
             self._record_action(f"Set HVAC to {mode}", reason)
-            # When taking HVAC offline, also assert fan_mode=auto so any post-heat
-            # blowdown fan doesn't linger in "running (untracked)" state. Natural
-            # ventilation calls _activate_fan() immediately after this and overrides
-            # to fan_mode=on — the two calls don't conflict.
-            if mode == "off":
+            # When taking HVAC offline, assert fan_mode=auto to clear any post-heat
+            # blowdown state. Skip if nat-vent is active — clobbering fan_mode=on
+            # while nat-vent is running silently stops cooling (Issue #134).
+            if mode == "off" and not self._natural_vent_active:
                 _fan_cfg = self.config.get(CONF_FAN_MODE, FAN_MODE_DISABLED)
                 if _fan_cfg in (FAN_MODE_HVAC, FAN_MODE_BOTH):
                     try:
@@ -1238,12 +1237,48 @@ class AutomationEngine:
         Mirrors the monitoring logic in tools/simulate.py ClimateSimulator.
         """
         if not (self._paused_by_door or self._natural_vent_active):
-            return
+            # Comfort-ceiling override (Issue #134): if grace is active and indoor has
+            # risen above comfort_cool, allow re-evaluation so nat-vent can engage.
+            # Grace still blocks rapid door-open/close cycling below the comfort ceiling.
+            _indoor = self._get_indoor_temp_f()
+            _cool = float(self.config.get("comfort_cool", 75))
+            if not (self._grace_active and _indoor is not None and _indoor > _cool):
+                return
 
         outdoor = self._last_outdoor_temp
         comfort_cool = float(self.config.get("comfort_cool", 75))
         nat_vent_delta = float(self.config.get(CONF_NATURAL_VENT_DELTA, DEFAULT_NATURAL_VENT_DELTA))
         threshold = comfort_cool + nat_vent_delta
+
+        # Issue #134: comfort-ceiling re-entry during grace — neither flag is True but
+        # indoor has risen above comfort_cool. Check nat-vent conditions directly.
+        if not (self._paused_by_door or self._natural_vent_active):
+            _indoor = self._get_indoor_temp_f()
+            _comfort_heat = float(self.config.get("comfort_heat", 70))
+            _hysteresis = float(self.config.get(CONF_NAT_VENT_HYSTERESIS_F, NAT_VENT_HYSTERESIS_F))
+            if (
+                outdoor is not None
+                and _indoor is not None
+                and outdoor < _indoor - _hysteresis
+                and _indoor > _comfort_heat
+                and outdoor < threshold
+            ):
+                # Turn HVAC off first (may be in heat mode from comfort-floor exit) before
+                # running the fan. _natural_vent_active is still False here, so Fix 1's guard
+                # allows fan_mode=auto — _activate_fan immediately overrides to fan_mode=on.
+                await self._set_hvac_mode(
+                    "off",
+                    reason=f"nat vent grace re-entry: indoor {_indoor:.1f}°F > comfort_cool",
+                )
+                await self._activate_fan(
+                    reason=(
+                        f"nat vent grace re-entry: indoor {_indoor:.1f}°F"
+                        f" > comfort_cool {comfort_cool:.1f}°F,"
+                        f" outdoor {outdoor:.1f}°F cool"
+                    )
+                )
+                self._natural_vent_active = True
+            return
 
         # Issue #99: Comfort-floor exit — check BEFORE outdoor warmth to avoid conflicting
         # transitions. If indoor drops to comfort_heat, stop fan and restore heat.
