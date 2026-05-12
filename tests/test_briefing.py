@@ -7,11 +7,11 @@ action items) rather than exact formatting, so they survive tone rewrites.
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 
-from custom_components.climate_advisor.briefing import _generate_tldr_table, generate_briefing
+from custom_components.climate_advisor.briefing import _derive_warm_day_events, _generate_tldr_table, generate_briefing
 from custom_components.climate_advisor.classifier import DayClassification
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,27 @@ def _generate(classification: DayClassification, **kwargs) -> str:
         learning_suggestions=kwargs.get("learning_suggestions"),
         bedtime_setback_heat=kwargs.get("bedtime_setback_heat"),
         occupancy_mode=kwargs.get("occupancy_mode", "home"),
+        predicted_indoor_future=kwargs.get("predicted_indoor_future"),
+        predicted_outdoor_future=kwargs.get("predicted_outdoor_future"),
     )
+
+
+def _make_indoor_curve(
+    temps: list[float],
+    start_hour_utc: int = 8,
+) -> list[dict]:
+    """Build a predicted_indoor curve (UTC ISO timestamps)."""
+    base = datetime(2026, 5, 11, start_hour_utc, 0, 0, tzinfo=UTC)
+    return [{"ts": (base + timedelta(hours=i)).isoformat(), "temp": t} for i, t in enumerate(temps)]
+
+
+def _make_outdoor_curve(
+    temps: list[float],
+    start_hour_utc: int = 8,
+) -> list[dict]:
+    """Build a predicted_outdoor curve (UTC ISO timestamps)."""
+    base = datetime(2026, 5, 11, start_hour_utc, 0, 0, tzinfo=UTC)
+    return [{"ts": (base + timedelta(hours=i)).isoformat(), "temp": t} for i, t in enumerate(temps)]
 
 
 # ---------------------------------------------------------------------------
@@ -1432,3 +1452,131 @@ class TestCelsiusBriefing:
             temp_unit="celsius",
         )
         assert "°C" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: ODE warm-day event derivation tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveWarmDayEvents:
+    """Tests for _derive_warm_day_events() helper."""
+
+    def test_nat_vent_cutoff_when_outdoor_crosses_indoor(self):
+        """First hour outdoor >= indoor-1 F is the nat-vent cutoff."""
+        # indoor: 72, 73, 74, 75 (hour 8-11 UTC)
+        # outdoor: 65, 68, 73.0, 76 — outdoor crosses (74-1=73) at index 2 (UTC hour 10)
+        indoor = _make_indoor_curve([72.0, 73.0, 74.0, 75.0], start_hour_utc=8)
+        outdoor = _make_outdoor_curve([65.0, 68.0, 73.0, 76.0], start_hour_utc=8)
+        events = _derive_warm_day_events(
+            predicted_indoor=indoor,
+            predicted_outdoor=outdoor,
+            comfort_cool=75.0,
+        )
+        # outdoor[2]=73.0 >= indoor[2](74.0)-1.0=73.0 -> cutoff at UTC hour 10
+        assert events["nat_vent_cutoff"] is not None
+        assert events["nat_vent_cutoff"].hour == 10
+
+    def test_ceiling_breach_detected(self):
+        """ceiling_breach_time is first indoor > comfort_cool."""
+        indoor = _make_indoor_curve([72.0, 73.0, 75.5], start_hour_utc=8)
+        outdoor = _make_outdoor_curve([65.0, 70.0, 76.0], start_hour_utc=8)
+        events = _derive_warm_day_events(
+            predicted_indoor=indoor,
+            predicted_outdoor=outdoor,
+            comfort_cool=75.0,
+        )
+        # breach at hour 10 UTC (index 2, temp 75.5 > 75.0)
+        assert events["ceiling_breach_time"] is not None
+        assert events["ceiling_breach_time"].hour == 10
+
+    def test_returns_none_fields_when_no_data(self):
+        """Empty or None curves return None for all fields."""
+        events = _derive_warm_day_events(
+            predicted_indoor=None,
+            predicted_outdoor=None,
+            comfort_cool=75.0,
+        )
+        assert events["nat_vent_cutoff"] is None
+        assert events["ceiling_breach_time"] is None
+        assert events["precool_start_time"] is None
+        assert events["nat_vent_recovers"] is False
+
+    def test_nat_vent_recovers_when_outdoor_drops_back(self):
+        """nat_vent_recovers True when outdoor drops below indoor after cutoff."""
+        indoor = _make_indoor_curve([72.0, 73.0, 75.0, 74.0, 71.0], start_hour_utc=8)
+        outdoor = _make_outdoor_curve([65.0, 73.0, 76.0, 73.0, 68.0], start_hour_utc=8)
+        events = _derive_warm_day_events(
+            predicted_indoor=indoor,
+            predicted_outdoor=outdoor,
+            comfort_cool=75.0,
+        )
+        # outdoor drops below indoor in evening -> nat_vent_recovers=True
+        assert events["nat_vent_recovers"] is True
+
+    def test_precool_start_uses_fallback_when_k_active_cool_none(self):
+        """precool_start_time = ceiling_breach_time - 120 min when k_active_cool=None."""
+        # breach at hour 14 UTC (start_hour=10, index 4 => temp 75.5 > 75)
+        indoor = _make_indoor_curve([72.0, 72.5, 73.0, 74.0, 75.5], start_hour_utc=10)
+        outdoor = _make_outdoor_curve([75.0, 76.0, 77.0, 78.0, 79.0], start_hour_utc=10)
+        events = _derive_warm_day_events(
+            predicted_indoor=indoor,
+            predicted_outdoor=outdoor,
+            comfort_cool=75.0,
+            k_active_cool=None,
+        )
+        breach = events["ceiling_breach_time"]
+        precool = events["precool_start_time"]
+        assert breach is not None
+        assert precool is not None
+        # fallback = 120 min -> precool = breach - 2h
+        assert abs((breach - precool).total_seconds() - 7200) < 60  # within 1 min
+
+
+class TestWarmDayBriefWithPrediction:
+    """Enriched warm-day brief includes action/consequence language."""
+
+    def test_includes_window_close_instruction_with_time(self):
+        """With predicted data, brief says 'Close up at HH AM/PM'."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        # nat-vent cutoff at hour 9 UTC (outdoor crosses indoor-1 at index 1)
+        indoor = _make_indoor_curve([72.0, 73.0, 74.0, 75.5], start_hour_utc=8)
+        outdoor = _make_outdoor_curve([65.0, 72.0, 75.0, 77.0], start_hour_utc=8)
+        result = _generate(c, predicted_indoor_future=indoor, predicted_outdoor_future=outdoor)
+        # Should mention closing windows (no jargon like "nat-vent")
+        assert "close" in result.lower() or "Close" in result
+        assert "nat-vent" not in result
+
+    def test_includes_ac_notice_when_breach_predicted(self):
+        """With breach in curve, brief mentions AC running (action + consequence)."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        indoor = _make_indoor_curve([72.0, 73.0, 74.0, 75.5], start_hour_utc=8)
+        outdoor = _make_outdoor_curve([73.0, 74.0, 76.0, 78.0], start_hour_utc=8)
+        result = _generate(c, predicted_indoor_future=indoor, predicted_outdoor_future=outdoor, comfort_cool=75.0)
+        # Should mention the AC will run
+        assert "AC" in result or "ac" in result.lower() or "cool" in result.lower()
+        assert "nat-vent" not in result
+
+    def test_no_model_fallback_to_generic_language(self):
+        """No predicted data -> brief falls back to current generic language (no regression)."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        result = _generate(c)
+        # Generic warm-day language must still be present
+        assert "75" in result  # comfort_cool mentioned
+
+    def test_no_nat_vent_jargon_in_any_warm_day_brief(self):
+        """The phrase 'nat-vent' must never appear in a user-facing briefing."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        indoor = _make_indoor_curve([72.0, 73.0, 74.5], start_hour_utc=8)
+        outdoor = _make_outdoor_curve([73.0, 75.0, 77.0], start_hour_utc=8)
+        result = _generate(c, predicted_indoor_future=indoor, predicted_outdoor_future=outdoor)
+        assert "nat-vent" not in result
+        assert "nat_vent" not in result
+
+    def test_no_bold_markers_with_prediction(self):
+        """Enriched warm-day brief with prediction data must not contain markdown bold markers."""
+        c = _make_classification("warm", today_high=80, today_low=60)
+        indoor = _make_indoor_curve([72.0, 73.0, 74.0, 75.5], start_hour_utc=8)
+        outdoor = _make_outdoor_curve([65.0, 73.0, 75.0, 77.0], start_hour_utc=8)
+        result = _generate(c, predicted_indoor_future=indoor, predicted_outdoor_future=outdoor)
+        assert "**" not in result, f"Bold markers found in enriched warm-day brief: {result}"

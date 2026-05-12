@@ -20,6 +20,7 @@ For temperature formulas and threshold values see [docs/08-COMPUTATION-REFERENCE
 | How does occupancy priority resolve when multiple toggles are active? | Guest > Vacation > Home/Away > default (home). `_compute_occupancy_mode()` in the coordinator reads all three toggle states and dispatches to the matching handler. | [§9. Occupancy State Machine](07-AUTOMATION-FLOWCHART.md#9-occupancy-state-machine) |
 | Where is the full Tier 3 spec for grace periods — state transitions, timer lifecycle, invariants, HA-restart behavior? | The Territory spec covers both grace types, the 12-row transition table, pre-pause mode storage/restoration, occupancy interaction, and error conditions including sensor-unavailable-during-pause. | [Grace Period State Machine — Territory Spec](grace-periods-spec.md) |
 | Where is the full Tier 3 spec for the occupancy dispatch state machine — priority, handlers, setback formulas, persistence? | The Territory spec covers priority resolution (GUEST > VACATION > HOME/AWAY), all four toggle-entity handlers, the 7-row state transition table, setback formula derivation, and the interaction with manual override and grace periods. | [Occupancy Dispatch State Machine — Territory Spec](occupancy-dispatch-spec.md) |
+| What is the decision sequence inside apply_classification() for a warm or mild day, and when does the ODE ceiling guard fire? | Two sequential guards run before the HVAC-off action: (1) comfort-floor guard fires if indoor < comfort_heat; (2) ODE ceiling guard fires if a predicted breach is within the computed lead time and outdoor > indoor. Stateless — re-evaluated every 30-min cycle. | [§13. Warm-Day apply_classification() Guard Sequence](07-AUTOMATION-FLOWCHART.md#13-warm-day-apply_classification-guard-sequence) |
 
 ## 1. Main Decision Loop (30-Minute Poll)
 
@@ -458,4 +459,36 @@ flowchart TD
 
 ---
 
-*Last Updated: 2026-04-20*
+## 13. Warm-Day `apply_classification()` Guard Sequence
+
+On every 30-minute coordinator update, `apply_classification()` runs two sequential guards before executing the `warm` or `mild` classification's default HVAC-off action. The guards run in order; the second guard only evaluates if the first does not fire.
+
+```mermaid
+flowchart TD
+    A["apply_classification() called\nday_type = warm or mild\nclassification.hvac_mode = off"] --> B{Comfort-floor guard\n§6b: indoor_temp < comfort_heat?}
+    B -->|Yes| C[Set HVAC heat\ntarget = comfort_heat\nEmit warm_day_comfort_gap]
+    B -->|No or temp unavailable| E[Set HVAC off\nor setback as per classification]
+    C --> D
+    E --> D
+    D{ODE ceiling guard §6c:\npredicted_indoor available\nAND k_passive < 0\nAND confidence != none OR bridge\nAND outdoor > indoor?} -->|Any condition false| Z[Guard dormant\nno further HVAC action]
+    D -->|All conditions true| F{Find first breach:\npredicted temp > comfort_cool + tolerance?}
+    F -->|None found| Z
+    F -->|Breach found at T_breach| G["Compute lead_time_min:\nif k_active_cool known:\n  ((comfort_cool − indoor) / |k_active_cool|) × 60 × 1.3\nelse: 120 min fallback\nclamp [30, 240]"]
+    G --> H{"hours_to_breach\n≤ lead_time_min / 60?"}
+    H -->|No — too far away| I[Standing by\nLog breach time + lead window\nno HVAC change]
+    H -->|Yes — within lead window| J[ODE ceiling guard fires\nSet HVAC cool\ntarget = comfort_cool\nEmit ceiling_guard_fired]
+```
+
+**Guard order:** The comfort-floor guard runs first inside the `hvac_mode == "off"` branch. The ceiling guard runs afterward as a separate block, still gated by `classification.hvac_mode == "off"`. In practice the two guards do not conflict: if indoor is below `comfort_heat` (floor guard fires), outdoor is typically also cool, so `outdoor <= indoor` causes the ceiling guard to go dormant on the same cycle.
+
+**Stateless design:** Neither guard uses a flag or scheduled callback. Each 30-min cycle re-evaluates from the latest ODE curve and current sensor readings. If the forecast improves (predicted breach disappears), the ceiling guard goes dormant automatically on the next cycle without any cancellation logic.
+
+**Bridge homes** (`k_passive_via_bridge=True`): the ceiling guard scans for `temp > comfort_cool + 1.0°F` (tolerance = `CEILING_BRIDGE_TOLERANCE_F`). Standard homes use tolerance = 0.0.
+
+**`k_active_cool = None`** (first cooling season, any home): the 120-min fallback replaces the lead-time formula. This is the normal case for new installs and all homes before their first cooling cycle is learned.
+
+For the complete guard condition table, lead-time formula derivation, and bridge/occupancy interactions, see [§6c in the Computation Reference](08-COMPUTATION-REFERENCE.md#6c-warm-day-ode-ceiling-guard-issue-136).
+
+---
+
+*Last Updated: 2026-05-11*

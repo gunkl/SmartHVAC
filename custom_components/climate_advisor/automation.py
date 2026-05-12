@@ -6,6 +6,7 @@ based on the day classification and learning state.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -16,6 +17,8 @@ from homeassistant.util import dt as dt_util
 
 from .classifier import DayClassification
 from .const import (
+    CEILING_BRIDGE_TOLERANCE_F,
+    CEILING_PRECOOL_FALLBACK_MIN,
     CONF_ADAPTIVE_PREHEAT,
     CONF_ADAPTIVE_SETBACK,
     CONF_AUTOMATION_GRACE_NOTIFY,
@@ -650,11 +653,22 @@ class AutomationEngine:
         )
         self._start_grace_period("manual")
 
-    async def apply_classification(self, classification: DayClassification) -> None:
+    async def apply_classification(
+        self,
+        classification: DayClassification,
+        predicted_indoor: list[dict] | None = None,
+    ) -> None:
         """Apply a new day classification — adjust HVAC behavior accordingly.
 
         This is called once in the morning and can be called again if
         conditions change significantly mid-day.
+
+        Args:
+            classification: The day classification to apply.
+            predicted_indoor: Optional ODE-predicted indoor temperature curve
+                (list of {"ts": ISO str, "temp": float} entries). When provided
+                and the model is calibrated, the ceiling guard evaluates whether
+                to pre-cool before comfort_cool is breached.
         """
         self._current_classification = classification
 
@@ -801,6 +815,128 @@ class AutomationEngine:
                         "warm_day_setback_applied",
                         {"day_type": classification.day_type, "thermostat_mode": _current_mode},
                     )
+
+        # ODE ceiling guard (Issue #136): if thermal model predicts indoor will breach
+        # comfort_cool within lead_time AND outdoor is already warmer than indoor
+        # (nat-vent unavailable), set HVAC to cool proactively.
+        # Re-evaluated on every 30-min cycle — no flag needed; adapts to forecast changes.
+        if predicted_indoor and classification.hvac_mode == "off":
+            _thermal = self._thermal_model or {}
+            _k_passive = _thermal.get("k_passive")
+            _conf = _thermal.get("confidence_k_passive") or _thermal.get("confidence", "none")
+            _k_via_bridge = bool(_thermal.get("k_passive_via_bridge"))
+            _k_active_cool = _thermal.get("k_active_cool")
+            _comfort_cool_cg = self.config.get("comfort_cool")
+            _tolerance = CEILING_BRIDGE_TOLERANCE_F if _k_via_bridge else 0.0
+
+            _model_eligible = (
+                _k_passive is not None
+                and _k_passive < 0
+                and (_conf != "none" or _k_via_bridge)
+                and _comfort_cool_cg is not None
+            )
+
+            _outdoor = self._last_outdoor_temp
+            _indoor_cg = self._get_indoor_temp_f()
+
+            _LOGGER.debug(
+                "ODE ceiling guard eval: %d points, comfort_cool=%s, outdoor=%s, indoor=%s,"
+                " k_passive=%s, conf=%s, bridge=%s",
+                len(predicted_indoor),
+                _comfort_cool_cg,
+                _outdoor,
+                _indoor_cg,
+                _k_passive,
+                _conf,
+                _k_via_bridge,
+            )
+
+            if not _model_eligible:
+                _LOGGER.debug("ODE ceiling guard: skipped — k_passive=%s, conf=%s", _k_passive, _conf)
+            elif _outdoor is None or _indoor_cg is None:
+                _LOGGER.debug("ODE ceiling guard: skipped — missing outdoor/indoor temps")
+            elif _outdoor <= _indoor_cg:
+                _LOGGER.debug(
+                    "ODE ceiling guard: dormant — outdoor %.1f <= indoor %.1f (nat-vent eligible)",
+                    _outdoor,
+                    _indoor_cg,
+                )
+            else:
+                # Nat-vent unavailable; scan predicted curve for ceiling breach.
+                # Inline equivalent of _find_ceiling_breach_time() — avoids circular import.
+                _breach_ts: datetime | None = None
+                _threshold = _comfort_cool_cg + _tolerance
+                for _entry in predicted_indoor:
+                    _t = _entry.get("temp")
+                    if _t is not None and _t > _threshold:
+                        with contextlib.suppress(KeyError, ValueError, TypeError):
+                            _breach_ts = datetime.fromisoformat(_entry["ts"])
+                        break
+
+                if _breach_ts is None:
+                    _LOGGER.debug(
+                        "ODE ceiling guard: dormant — no breach above %.1f°F predicted",
+                        _threshold,
+                    )
+                else:
+                    _now_cg = dt_util.now()
+                    # Normalize both to UTC for reliable subtraction
+                    _now_utc = (
+                        _now_cg.astimezone(UTC)
+                        if getattr(_now_cg, "tzinfo", None) is not None
+                        else _now_cg.replace(tzinfo=UTC)
+                    )
+                    _breach_utc = (
+                        _breach_ts.astimezone(UTC) if _breach_ts.tzinfo is not None else _breach_ts.replace(tzinfo=UTC)
+                    )
+                    _hours_to_breach = (_breach_utc - _now_utc).total_seconds() / 3600
+
+                    if _k_active_cool is not None and abs(_k_active_cool) > 0:
+                        _lead_min = ((_comfort_cool_cg - _indoor_cg) / abs(_k_active_cool)) * 60 * 1.3
+                    else:
+                        _lead_min = float(CEILING_PRECOOL_FALLBACK_MIN)
+                    _lead_min = max(30.0, min(240.0, _lead_min))
+
+                    _LOGGER.info(
+                        "ODE ceiling guard: breach predicted at %s (%.1fh away), outdoor=%.1f > indoor=%.1f",
+                        _breach_ts.strftime("%H:%M"),
+                        _hours_to_breach,
+                        _outdoor,
+                        _indoor_cg,
+                    )
+
+                    if _hours_to_breach <= _lead_min / 60:
+                        _LOGGER.info(
+                            "ODE ceiling guard: active — setting HVAC cool, target=%.1f"
+                            " (breach %.1fh, lead=%.0fmin, k_cool=%s)",
+                            _comfort_cool_cg,
+                            _hours_to_breach,
+                            _lead_min,
+                            _k_active_cool,
+                        )
+                        await self._set_hvac_mode(
+                            "cool",
+                            reason=(f"ODE ceiling guard — breach predicted at {_breach_ts.strftime('%H:%M')}"),
+                        )
+                        await self._set_temperature(
+                            _comfort_cool_cg,
+                            reason="ODE ceiling guard — target comfort_cool",
+                        )
+                        if self._emit_event_callback:
+                            self._emit_event_callback(
+                                "ceiling_guard_fired",
+                                {
+                                    "breach_time": _breach_ts.isoformat(),
+                                    "hours_to_breach": round(_hours_to_breach, 1),
+                                    "lead_time_min": round(_lead_min),
+                                },
+                            )
+                    else:
+                        _LOGGER.debug(
+                            "ODE ceiling guard: standing by — breach %.1fh away, need %.0fmin lead time",
+                            _hours_to_breach,
+                            _lead_min,
+                        )
 
         # Handle pre-conditioning
         if classification.pre_condition and classification.pre_condition_target:

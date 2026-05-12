@@ -4,9 +4,16 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.36"
+VERSION = "0.3.37"
 
 RELEASE_NOTES: dict[str, list[str]] = {
+    "0.3.37": [
+        "Fix #135: Chart log pred_indoor/pred_outdoor now non-null —"
+        " hourly forecast nearest-entry lookup replaces exact-hour match"
+        " (HA returns future-only entries; exact match always failed)",
+        "Fix #134: nat-vent fan no longer clobbered by daily classification HVAC-off",
+        "Fix #134: Grace period now allows nat-vent re-entry when indoor exceeds comfort_cool",
+    ],
     "0.3.31": [
         "Fix #121: Thermal model v3 — parallel multi-type observation collection",
         "PassiveDecay, FanOnlyDecay, VentilatedDecay, SolarGain observation types added",
@@ -891,6 +898,13 @@ DEFAULT_SLEEP_COOL = 78.0  # comfort_cool(75) + DEFAULT_SETBACK_DEPTH_COOL_F(3)
 MAX_SETBACK_DEPTH_F = 8.0  # never set back more than this
 SETBACK_RECOVERY_BUFFER_MINUTES = 30  # pre-heat leads wake_time by this much
 THERMAL_OBS_CAP = 200  # max observations in LearningState
+
+# ---------------------------------------------------------------------------
+# ODE Ceiling Guard (Issue #136)
+# ---------------------------------------------------------------------------
+CEILING_PRECOOL_FALLBACK_MIN: int = 120  # fallback lead time when k_active_cool not learned
+CEILING_BRIDGE_TOLERANCE_F: float = 1.0  # bridge homes: require breach > comfort_cool + this
+
 ATTR_THERMAL_HEATING_RATE = "thermal_heating_rate"
 ATTR_THERMAL_COOLING_RATE = "thermal_cooling_rate"
 ATTR_THERMAL_CONFIDENCE = "thermal_confidence"

@@ -22,6 +22,8 @@ from custom_components.climate_advisor.coordinator import (
     _compute_ramp_hours,
     _compute_thermal_factors,
     _cosine_outdoor_curve,
+    _extract_current_hour_forecast_temp,
+    _find_ceiling_breach_time,
     compute_predicted_temps,
 )
 
@@ -1221,6 +1223,48 @@ class TestBuildPredictedIndoorFuture:
         )
 
 
+class TestFindCeilingBreachTime:
+    """Tests for _find_ceiling_breach_time() helper."""
+
+    def _make_curve(self, temps: list[float], start_hour: int = 10) -> list[dict]:
+        """Build a predicted_indoor curve list from a list of hourly temps."""
+        base = datetime(2026, 5, 11, start_hour, 0, 0, tzinfo=UTC)
+        return [{"ts": (base + timedelta(hours=i)).isoformat(), "temp": t} for i, t in enumerate(temps)]
+
+    def test_returns_breach_ts_when_curve_crosses_comfort_cool(self):
+        """First entry above comfort_cool is returned."""
+        curve = self._make_curve([72.0, 73.0, 74.5, 75.5], start_hour=10)
+        # comfort_cool = 74.0; breach at hour 12 (74.5 > 74.0)
+        result = _find_ceiling_breach_time(curve, comfort_cool=74.0)
+        expected = datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC)
+        assert result == expected
+
+    def test_returns_none_when_no_breach(self):
+        """Returns None when all temps are below or equal to comfort_cool."""
+        curve = self._make_curve([70.0, 71.0, 72.0, 73.0])
+        assert _find_ceiling_breach_time(curve, comfort_cool=74.0) is None
+
+    def test_returns_none_for_empty_curve(self):
+        """Returns None for empty or None curve."""
+        assert _find_ceiling_breach_time([], comfort_cool=74.0) is None
+        assert _find_ceiling_breach_time(None, comfort_cool=74.0) is None
+
+    def test_tolerance_shifts_threshold(self):
+        """With tolerance=1.0 (bridge home), threshold is comfort_cool + 1.0.
+        temp=74.5 is above comfort_cool=74.0 but below 74.0+1.0=75.0 → None.
+        temp=75.5 is above 75.0 → breach returned.
+        """
+        # Only 74.5 and 75.5 exceed comfort_cool=74.0
+        # With tolerance=1.0, only 75.5 exceeds 75.0
+        curve_no_bridge = self._make_curve([72.0, 74.5])
+        curve_with_bridge = self._make_curve([72.0, 74.5, 75.5])
+        assert _find_ceiling_breach_time(curve_no_bridge, comfort_cool=74.0, tolerance=1.0) is None
+        result = _find_ceiling_breach_time(curve_with_bridge, comfort_cool=74.0, tolerance=1.0)
+        assert result is not None
+        expected = datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC)  # hour 12 = index 2
+        assert result == expected
+
+
 class TestBuildPredictedIndoorFutureOccupancy:
     """Tests for occupancy-aware setpoint threading in _build_predicted_indoor_future."""
 
@@ -1461,3 +1505,62 @@ class TestGetChartDataShape:
 
         assert "comfort_heat" not in chart, "Legacy comfort_heat scalar must not appear in chart data"
         assert "comfort_cool" not in chart, "Legacy comfort_cool scalar must not appear in chart data"
+
+
+class TestExtractCurrentHourForecastTemp:
+    """Tests for _extract_current_hour_forecast_temp nearest-entry logic.
+
+    HA's hourly forecast returns entries starting at the NEXT full hour
+    (e.g., at 12:27 the first entry is 13:00, not 12:00). The function
+    must find the nearest entry within ±2 hours rather than requiring an
+    exact hour match.
+    """
+
+    _TZ = UTC
+
+    def _entry(self, dt: datetime, temp: float) -> dict:
+        return {"datetime": dt.isoformat(), "temperature": temp}
+
+    def test_next_hour_entry_returned_when_current_hour_absent(self):
+        """At 12:27 UTC, forecast starts at 13:00 — must return 13:00 temp."""
+        now = datetime(2026, 5, 11, 12, 27, 0, tzinfo=UTC)
+        entries = [self._entry(datetime(2026, 5, 11, h, 0, 0, tzinfo=UTC), 70.0 + h) for h in range(13, 19)]
+        result = _extract_current_hour_forecast_temp(entries, now)
+        assert result == 83.0  # temp for hour 13
+
+    def test_exact_hour_entry_returned(self):
+        """When a forecast entry exists exactly at the current hour, return it."""
+        now = datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC)
+        entries = [self._entry(datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC), 68.5)]
+        result = _extract_current_hour_forecast_temp(entries, now)
+        assert result == 68.5
+
+    def test_past_entry_within_2h_returned(self):
+        """Entry 45 minutes in the past is within the ±2h window and should be returned."""
+        now = datetime(2026, 5, 11, 12, 45, 0, tzinfo=UTC)
+        entries = [self._entry(datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC), 65.0)]
+        result = _extract_current_hour_forecast_temp(entries, now)
+        assert result == 65.0
+
+    def test_entry_beyond_2h_ignored(self):
+        """Entry more than 2 hours away returns None — too stale to use."""
+        now = datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC)
+        entries = [self._entry(datetime(2026, 5, 11, 15, 0, 0, tzinfo=UTC), 80.0)]
+        result = _extract_current_hour_forecast_temp(entries, now)
+        assert result is None
+
+    def test_empty_list_returns_none(self):
+        now = datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC)
+        assert _extract_current_hour_forecast_temp([], now) is None
+        assert _extract_current_hour_forecast_temp(None, now) is None
+
+    def test_nearest_entry_chosen_among_multiple(self):
+        """When multiple entries are within 2h, the one nearest to now wins."""
+        now = datetime(2026, 5, 11, 12, 30, 0, tzinfo=UTC)
+        entries = [
+            self._entry(datetime(2026, 5, 11, 11, 0, 0, tzinfo=UTC), 60.0),  # 90 min ago
+            self._entry(datetime(2026, 5, 11, 13, 0, 0, tzinfo=UTC), 70.0),  # 30 min ahead
+            self._entry(datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC), 75.0),  # 90 min ahead
+        ]
+        result = _extract_current_hour_forecast_temp(entries, now)
+        assert result == 70.0  # 13:00 is closest (30 min vs 90 min)

@@ -360,6 +360,12 @@ class TestBriefingNotificationSplit:
         coord._get_forecast = AsyncMock(return_value=MagicMock())
         coord._get_hourly_forecast_data = AsyncMock(return_value=[])
 
+        # Stubs for Phase 2 ceiling guard (not under test here)
+        coord._get_indoor_temp = MagicMock(return_value=None)
+        coord._occupancy_mode = "home"
+        coord._apply_outdoor_windows_gate = MagicMock()
+        coord._last_predicted_indoor = []
+
         # Bind the real methods to our mock
         coord._async_send_briefing = types.MethodType(ClimateAdvisorCoordinator._async_send_briefing, coord)
         coord._build_briefing_text = types.MethodType(ClimateAdvisorCoordinator._build_briefing_text, coord)
@@ -367,11 +373,19 @@ class TestBriefingNotificationSplit:
         return coord
 
     @patch(
+        "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+        return_value=[],
+    )
+    @patch(
+        "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+        return_value=[],
+    )
+    @patch(
         "custom_components.climate_advisor.coordinator.generate_briefing",
         side_effect=_side_effect_generate_briefing,
     )
     @patch("custom_components.climate_advisor.coordinator.classify_day")
-    def test_push_gets_tldr_email_gets_full(self, mock_classify, mock_gen):
+    def test_push_gets_tldr_email_gets_full(self, mock_classify, mock_gen, mock_pred, mock_outdoor):
         """Push notification receives short TLDR; email receives full briefing."""
         mock_classify.return_value = _make_classification()
 
@@ -393,11 +407,19 @@ class TestBriefingNotificationSplit:
         assert email_msg == FULL_BRIEFING
 
     @patch(
+        "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+        return_value=[],
+    )
+    @patch(
+        "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+        return_value=[],
+    )
+    @patch(
         "custom_components.climate_advisor.coordinator.generate_briefing",
         side_effect=_side_effect_generate_briefing,
     )
     @patch("custom_components.climate_advisor.coordinator.classify_day")
-    def test_email_disabled_only_push(self, mock_classify, mock_gen):
+    def test_email_disabled_only_push(self, mock_classify, mock_gen, mock_pred, mock_outdoor):
         """When email is disabled, only push notification is sent."""
         mock_classify.return_value = _make_classification()
 
@@ -412,11 +434,19 @@ class TestBriefingNotificationSplit:
         assert notify_calls[0][0][2]["message"] == SHORT_BRIEFING
 
     @patch(
+        "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+        return_value=[],
+    )
+    @patch(
+        "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+        return_value=[],
+    )
+    @patch(
         "custom_components.climate_advisor.coordinator.generate_briefing",
         side_effect=_side_effect_generate_briefing,
     )
     @patch("custom_components.climate_advisor.coordinator.classify_day")
-    def test_last_briefing_stores_full_version(self, mock_classify, mock_gen):
+    def test_last_briefing_stores_full_version(self, mock_classify, mock_gen, mock_pred, mock_outdoor):
         """_last_briefing should contain the full briefing, not the TLDR."""
         mock_classify.return_value = _make_classification()
 
@@ -428,11 +458,19 @@ class TestBriefingNotificationSplit:
         assert coord._last_briefing == FULL_BRIEFING
 
     @patch(
+        "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+        return_value=[],
+    )
+    @patch(
+        "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+        return_value=[],
+    )
+    @patch(
         "custom_components.climate_advisor.coordinator.generate_briefing",
         side_effect=_side_effect_generate_briefing,
     )
     @patch("custom_components.climate_advisor.coordinator.classify_day")
-    def test_dry_run_skips_notifications(self, mock_classify, mock_gen):
+    def test_dry_run_skips_notifications(self, mock_classify, mock_gen, mock_pred, mock_outdoor):
         """In observe-only mode, no notifications are sent."""
         mock_classify.return_value = _make_classification()
 
@@ -446,11 +484,19 @@ class TestBriefingNotificationSplit:
         assert coord._last_briefing == FULL_BRIEFING
 
     @patch(
+        "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+        return_value=[],
+    )
+    @patch(
+        "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+        return_value=[],
+    )
+    @patch(
         "custom_components.climate_advisor.coordinator.generate_briefing",
         side_effect=_side_effect_generate_briefing,
     )
     @patch("custom_components.climate_advisor.coordinator.classify_day")
-    def test_last_briefing_short_populated_and_shorter(self, mock_classify, mock_gen):
+    def test_last_briefing_short_populated_and_shorter(self, mock_classify, mock_gen, mock_pred, mock_outdoor):
         """_last_briefing_short is populated after _async_send_briefing and shorter than _last_briefing."""
         mock_classify.return_value = _make_classification()
 
@@ -701,15 +747,30 @@ class TestBriefingRegeneration:
 
         coord._async_save_state = AsyncMock()
 
+        # Stubs for Phase 2 ceiling guard (not under test here)
+        coord._get_indoor_temp = MagicMock(return_value=None)
+        coord._occupancy_mode = "home"
+        coord._apply_outdoor_windows_gate = MagicMock()
+        coord._last_predicted_indoor = []
+        coord._current_classification = None
+
         coord._build_briefing_text = types.MethodType(ClimateAdvisorCoordinator._build_briefing_text, coord)
 
         return coord
 
     @patch(
+        "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+        return_value=[],
+    )
+    @patch(
+        "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+        return_value=[],
+    )
+    @patch(
         "custom_components.climate_advisor.coordinator.generate_briefing",
         side_effect=_side_effect_regen,
     )
-    def test_regenerated_on_day_type_change(self, mock_gen):
+    def test_regenerated_on_day_type_change(self, mock_gen, mock_pred, mock_outdoor):
         """When day_type changes and briefing was already sent, text is regenerated."""
         coord = self._make_coord()
         new_classification = _make_classification(day_type=DAY_TYPE_HOT)
@@ -788,16 +849,32 @@ class TestBriefingRegeneration:
                 "custom_components.climate_advisor.coordinator.generate_briefing",
                 side_effect=_side_effect_regen,
             ),
+            patch(
+                "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+                return_value=[],
+            ),
+            patch(
+                "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+                return_value=[],
+            ),
         ):
             asyncio.run(coord._async_send_briefing(MagicMock()))
 
         assert coord._briefing_day_type == DAY_TYPE_HOT
 
     @patch(
+        "custom_components.climate_advisor.coordinator._build_future_forecast_outdoor",
+        return_value=[],
+    )
+    @patch(
+        "custom_components.climate_advisor.coordinator._build_predicted_indoor_future",
+        return_value=[],
+    )
+    @patch(
         "custom_components.climate_advisor.coordinator.generate_briefing",
         side_effect=_side_effect_regen,
     )
-    def test_regeneration_does_not_send_notifications(self, mock_gen):
+    def test_regeneration_does_not_send_notifications(self, mock_gen, mock_pred, mock_outdoor):
         """Regeneration updates cached text but does NOT call notify services."""
         coord = self._make_coord()
         new_classification = _make_classification(day_type=DAY_TYPE_HOT)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -259,6 +259,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         self._outdoor_temp_history: list[tuple[str, float]] = []
         self._indoor_temp_history: list[tuple[str, float]] = []
         self._hourly_forecast_temps: list[dict] = []
+        self._last_predicted_indoor: list[dict] = []
         self._thermal_factors: dict | None = None
 
         # Observe-only mode: when disabled, automation still runs but skips actions
@@ -1082,7 +1083,24 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                                     len(samples),
                                 )
 
-            await self.automation_engine.apply_classification(self._current_classification)
+            # Compute and cache ODE prediction for ceiling guard + chart reuse
+            self._last_predicted_indoor = _build_predicted_indoor_future(
+                self._hourly_forecast_temps,
+                self.config,
+                dt_util.now(),
+                current_indoor_temp=self._get_indoor_temp(),
+                thermal_model=self.automation_engine._thermal_model if self.automation_engine else {},
+                occupancy_mode=self._occupancy_mode,
+                classification=self._current_classification,
+            )
+            _LOGGER.debug(
+                "Caching predicted indoor curve: %d points",
+                len(self._last_predicted_indoor),
+            )
+            await self.automation_engine.apply_classification(
+                self._current_classification,
+                predicted_indoor=self._last_predicted_indoor,
+            )
 
             # If the day type changed since the briefing was generated,
             # regenerate the briefing text without re-sending notifications (Issue #78).
@@ -1626,6 +1644,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             bedtime_setback_cool=bedtime_setback_cool,
             adaptive_thermal_active=adaptive_thermal_active,
             occupancy_mode=self._occupancy_mode,
+            predicted_indoor_future=self._last_predicted_indoor or None,
+            predicted_outdoor_future=(
+                _build_future_forecast_outdoor(
+                    self._hourly_forecast_temps,
+                    classification=classification,
+                )
+                or None
+            ),
         )
         return generate_briefing(**briefing_kwargs), generate_briefing(**briefing_kwargs, verbosity="tldr_only")
 
@@ -1665,7 +1691,24 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             thermal_model.get("heating_rate_f_per_hour"),
             thermal_model.get("cooling_rate_f_per_hour"),
         )
-        await self.automation_engine.apply_classification(classification)
+        # Update cached ODE prediction for ceiling guard
+        self._last_predicted_indoor = _build_predicted_indoor_future(
+            self._hourly_forecast_temps,
+            self.config,
+            dt_util.now(),
+            current_indoor_temp=self._get_indoor_temp(),
+            thermal_model=self.automation_engine._thermal_model if self.automation_engine else {},
+            occupancy_mode=self._occupancy_mode,
+            classification=classification,
+        )
+        _LOGGER.debug(
+            "Caching predicted indoor curve (briefing): %d points",
+            len(self._last_predicted_indoor),
+        )
+        await self.automation_engine.apply_classification(
+            classification,
+            predicted_indoor=self._last_predicted_indoor,
+        )
 
         # Initialize today's learning record
         self._today_record = DailyRecord(
@@ -3965,6 +4008,37 @@ def _compute_target_band_schedule(
     return result
 
 
+def _find_ceiling_breach_time(
+    predicted_indoor: list[dict] | None,
+    comfort_cool: float,
+    tolerance: float = 0.0,
+) -> datetime | None:
+    """Return the first timestamp in predicted_indoor where temp > comfort_cool + tolerance.
+
+    Args:
+        predicted_indoor: List of {"ts": ISO-string, "temp": float} dicts from ODE curve.
+        comfort_cool: Upper comfort bound (°F).
+        tolerance: Additional threshold buffer (°F). Use CEILING_BRIDGE_TOLERANCE_F for
+            bridge homes where k_vent_window proxy is less accurate for closed-window phase.
+
+    Returns:
+        datetime of first breach entry, or None if no breach or empty curve.
+    """
+    if not predicted_indoor:
+        return None
+    threshold = comfort_cool + tolerance
+    for entry in predicted_indoor:
+        temp = entry.get("temp")
+        if temp is not None and temp > threshold:
+            ts_str = entry.get("ts")
+            if ts_str:
+                try:
+                    return datetime.fromisoformat(ts_str)
+                except (ValueError, TypeError):
+                    continue
+    return None
+
+
 def _build_predicted_indoor_future(
     hourly_forecast: list[dict] | None,
     config: dict[str, Any],
@@ -4585,15 +4659,17 @@ def _extract_current_hour_forecast_temp(
     hourly_forecast: list[dict] | None,
     now: datetime,
 ) -> float | None:
-    """Return the raw forecast temp for the current local hour, or None.
+    """Return the forecast temp for the entry nearest to now, within ±2 hours.
 
-    Uses the same field names and timezone handling as _build_future_forecast_outdoor
-    so past and future predicted outdoor come from the same data source.
+    HA's hourly forecast returns entries starting at the next full hour, so
+    exact hour matching would never find the current hour. Instead, find the
+    entry with minimum absolute time delta to now.
     """
     if not hourly_forecast:
         return None
-    today = dt_util.as_local(now).date()
-    target_hour = dt_util.as_local(now).hour
+    now_utc = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    best_temp: float | None = None
+    best_delta: float = float("inf")
     for entry in hourly_forecast:
         dt_str = entry.get("datetime") or entry.get("time")
         temp = entry.get("temperature") if entry.get("temperature") is not None else entry.get("temp")
@@ -4601,12 +4677,14 @@ def _extract_current_hour_forecast_temp(
             continue
         try:
             dt_obj = datetime.fromisoformat(dt_str)
-            local_dt = dt_util.as_local(dt_obj) if dt_obj.tzinfo else dt_obj
-            if local_dt.date() == today and local_dt.hour == target_hour:
-                return round(float(temp), 1)
+            entry_utc = dt_obj.replace(tzinfo=UTC) if dt_obj.tzinfo is None else dt_obj.astimezone(UTC)
+            delta = abs((entry_utc - now_utc).total_seconds())
+            if delta < best_delta and delta <= 7200:
+                best_delta = delta
+                best_temp = round(float(temp), 1)
         except (ValueError, TypeError):
             continue
-    return None
+    return best_temp
 
 
 def _ode_single_step(

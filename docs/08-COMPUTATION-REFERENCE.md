@@ -27,6 +27,7 @@ The automation logic table and all threshold constants in this document are expr
 | How does the physics ODE predict future indoor temperature? | `T(t+dt) = T_outdoor + (T − T_outdoor) × exp(k_p × dt) + (Q/k_p) × (exp(k_p × dt) − 1)`, where Q switches between k_active_heat, k_active_cool, and 0 per schedule period. | [§5c. Predicted Temperature Graph — Physics Path](08-COMPUTATION-REFERENCE.md#5c-predicted-temperature-graph--physics-path) |
 | What is the dynamic target band and how does occupancy mode change it? | `_compute_target_band_schedule()` returns `[{ts, lower, upper}]` per forecast hour; away = setback today only, vacation = deep setback all days, home/guest = comfort with sleep/wake ramps. | [§5d. Dynamic Target Band](08-COMPUTATION-REFERENCE.md#5d-dynamic-target-band--_compute_target_band_schedule) |
 | How does comfort score accumulate and what triggers a suggestion? | `comfort_score = 1 − (total_violation_minutes / (days_recorded × 1440))`; more than 5 days with > 30 violation minutes triggers the `comfort_violations` suggestion. | [§Metric Definitions — Comfort Score](05-LEARNING-ENGINE-DESIGN.md#comfort-score-comfort_score) |
+| When does the ODE ceiling guard fire on a warm day and what activates AC? | The guard scans the predicted indoor curve on every 30-min cycle. When outdoor > indoor AND a breach above `comfort_cool` is predicted within the computed lead time (or 120-min fallback), the guard sets HVAC to cool at `comfort_cool`. Guard skips when no calibrated model, occupancy is away/vacation, or nat-vent can keep indoor below the ceiling. | [§6c. Warm-Day ODE Ceiling Guard](08-COMPUTATION-REFERENCE.md#6c-warm-day-ode-ceiling-guard-issue-136) |
 
 ## 1. Day Classification
 
@@ -84,6 +85,7 @@ Pre-conditioning sets the HVAC system up ahead of an expected temperature change
 | Hot day (`day_type == hot`) | `comfort_cool + (-2)` = `comfort_cool - 2` | At classification time (morning) |
 | Moderate cold front (`cooling`, magnitude 5–9°F) | `comfort_heat + 2.0` | Scheduled at 7:00 PM |
 | Significant cold front (`cooling`, magnitude ≥ 10°F) | `comfort_heat + 3.0` | Scheduled at 7:00 PM |
+| ODE ceiling defense (`warm` or `mild` day, model calibrated, breach predicted) | `comfort_cool` | Reactive: evaluated on every 30-min cycle; fires when predicted breach is within computed lead time |
 
 **Hot-day pre-cool detail:** The `pre_condition_target` is stored as `-2.0` (a negative offset). `_set_temperature_for_mode()` applies it as `comfort_cool + pre_condition_target`, so a `comfort_cool` of 75°F yields a pre-cool target of **73°F**.
 
@@ -527,6 +529,99 @@ When `apply_classification()` runs and the day type is `warm` or `hot` with HVAC
 **Event frequency — `warm_day_setback_applied`:** This event fires on every 30-minute coordinator update cycle while the warm-day condition persists — not once per day. Sixty or more firings in 48 hours is expected on a sustained warm day. High event counts for this type are not a loop or a bug.
 
 **Test coverage:** `tests/test_warm_day_comfort_gap.py`
+
+### 6c. Warm-Day ODE Ceiling Guard (Issue #136)
+
+When the day classification is `warm` or `mild` (HVAC mode = `off`) and the thermal model has a calibrated `k_passive`, the automation engine evaluates a **ceiling guard** on every 30-minute coordinator cycle. The guard fires proactively to prevent indoor temperature from breaching `comfort_cool` before natural ventilation can recover.
+
+#### Purpose
+
+The guard closes the "read-render split" gap: `_build_predicted_indoor_future()` feeds the chart every 30 min with an accurate indoor forecast, but prior to Issue #136 that forecast was never routed into `apply_classification()`. The ceiling guard routes it: if the ODE curve predicts a `comfort_cool` breach and outdoor air is already warmer than indoor (nat-vent unavailable), the guard sets HVAC to `cool` at `comfort_cool` before the breach occurs.
+
+#### Guard conditions
+
+| Condition | Action |
+|---|---|
+| `k_passive is None` OR `k_passive >= 0` | Skip — no calibrated passive model |
+| `confidence_k_passive == "none"` AND NOT bridge home | Skip — model not yet trustworthy |
+| Occupancy away or vacation | Skip — handled by upstream occupancy guards (§6a) |
+| `predicted_indoor` is empty or None | Skip — no ODE curve available (fresh install, no physics gate) |
+| Outdoor temp unavailable or missing | Skip |
+| `outdoor <= indoor` | Dormant — nat-vent is eligible; guard does not fire |
+| `_find_ceiling_breach_time()` returns None | Dormant — no breach predicted above threshold |
+| Bridge home (`k_passive_via_bridge=True`) | Apply `+CEILING_BRIDGE_TOLERANCE_F (1.0°F)` tolerance; guard fires at `comfort_cool + 1.0°F` |
+| `k_active_cool` not learned (None) | Guard fires with `CEILING_PRECOOL_FALLBACK_MIN = 120` min lead time |
+| All conditions met | Evaluate lead time; fire if breach is within window |
+
+#### `_find_ceiling_breach_time()` — module-level helper in `coordinator.py`
+
+Scans `predicted_indoor` (a list of `{"ts": ISO-string, "temp": float}` dicts from the ODE curve) for the first entry where `temp > comfort_cool + tolerance`. Returns the `datetime` of that entry, or `None` if no entry exceeds the threshold or the curve is empty.
+
+```
+signature: _find_ceiling_breach_time(predicted_indoor, comfort_cool, tolerance=0.0) → datetime | None
+```
+
+The guard inlines this scan inside `automation.py`'s `apply_classification()` to avoid a circular import between `automation.py` and `coordinator.py`. The standalone function in `coordinator.py` is used by `tests/test_prediction.py` and the morning briefing path.
+
+#### Lead time formula
+
+When the breach timestamp is found, the guard computes how far in advance to start cooling:
+
+```
+if k_active_cool is not None and abs(k_active_cool) > 0:
+    lead_time_min = ((comfort_cool − current_indoor) / abs(k_active_cool)) × 60 × 1.3
+else:
+    lead_time_min = CEILING_PRECOOL_FALLBACK_MIN  # 120 min
+
+lead_time_min = clamp(30, 240)
+```
+
+The `1.3×` safety margin ensures cooling begins early enough even on hotter-than-modeled days. The clamp floor (30 min) prevents firing immediately on a trivially small delta; the clamp ceiling (240 min) prevents over-committing 4+ hours in advance.
+
+**`k_active_cool = None` is the normal case** for any home in its first cooling season (including non-bridge homes that have never recorded a cooling cycle). The 120-minute fallback is the common path, not an edge case.
+
+#### Fire condition
+
+```
+if hours_to_breach <= lead_time_min / 60:
+    → set HVAC to "cool", target = comfort_cool
+    → emit "ceiling_guard_fired" event
+```
+
+HVAC is set to `cool` at `comfort_cool` (not below — this is ceiling defense, not pre-cooling below comfort). The target deliberately avoids the `-2°F` offset used for hot-day pre-conditioning (§4).
+
+#### Weather-change resilience (stateless design)
+
+The guard is fully stateless — no `_ceiling_precool_scheduled` flag. On each 30-min cycle, `apply_classification()` recomputes the ODE curve from fresh forecast data and re-scans for breach. Consequences:
+
+- **Forecast improves** (cold front arrives, outdoor temperature drops): `_find_ceiling_breach_time()` returns `None` → guard goes dormant automatically on the next cycle, no cancellation logic needed.
+- **Forecast worsens** (heat dome arrives): breach crosses into the lead time window → guard fires on the cycle when it first qualifies.
+- **HVAC already cooling** (guard fired on a prior cycle): warm-day classification (`hvac_mode="off"`) will naturally stop cooling on the next cycle once indoor drops below `comfort_cool`, because the comfort-floor guard (§6b) will not re-heat at that point.
+
+#### Bridge home behavior
+
+Bridge homes use `k_vent_window` as a proxy for `k_passive`. The `k_passive_via_bridge=True` flag causes the guard to apply `CEILING_BRIDGE_TOLERANCE_F = 1.0°F` tolerance, requiring the predicted curve to exceed `comfort_cool + 1.0°F` before the breach is recorded. This accounts for the proxy being measured under ventilated conditions, which is less accurate for the closed-window heat-approach phase.
+
+#### Constants
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `CEILING_PRECOOL_FALLBACK_MIN` | `120` | Lead time (minutes) when `k_active_cool` is not learned |
+| `CEILING_BRIDGE_TOLERANCE_F` | `1.0` | Extra °F threshold for bridge homes |
+
+Both are defined in `const.py`.
+
+#### Interaction with §6b comfort-floor guard
+
+The ceiling guard runs **after** the comfort-floor guard in `apply_classification()`. The comfort-floor guard runs inside the `hvac_mode == "off"` branch; the ceiling guard is a separate block also gated by `classification.hvac_mode == "off"`, so it evaluates regardless of whether the floor guard fired.
+
+In practice the two guards do not conflict: if indoor is below `comfort_heat` (floor guard fires), outdoor is typically also cool (early morning), making `outdoor <= indoor` true and the ceiling guard dormant on that cycle. A home simultaneously below the comfort floor and predicted to breach the ceiling is a degenerate condition that resolves naturally — the floor guard heats, the next cycle re-evaluates both guards with updated temperatures.
+
+#### Emitted event
+
+`ceiling_guard_fired` — payload: `{breach_time: ISO, hours_to_breach: float, lead_time_min: int}`. Visible in the Daily Record's event list. Used by the morning briefing to determine pre-cool start time for the warm-day narrative (§Part 2 of the plan).
+
+**Test coverage:** `tests/test_warm_day_comfort_gap.py` — `TestCeilingDefenseActive`, `TestCeilingPreCoolFallback`, `TestCeilingWeatherChange`, `TestCeilingBridgeTolerance`, `TestCeilingDefenseManualOverride`. `tests/test_prediction.py` — `TestFindCeilingBreachTime`.
 
 ---
 

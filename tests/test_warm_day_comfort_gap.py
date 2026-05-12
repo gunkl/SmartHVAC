@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.climate_advisor.automation import AutomationEngine
 from custom_components.climate_advisor.classifier import DayClassification
@@ -267,3 +268,242 @@ class TestWarmDayComfortGap:
         hvac_calls = [call for call in calls if call.args[1] == "set_hvac_mode"]
         assert len(hvac_calls) == 1
         assert hvac_calls[0].args[2]["hvac_mode"] == "heat"
+
+
+# ---------------------------------------------------------------------------
+# Ceiling guard helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_predicted_indoor(
+    start_hour_utc: int,
+    temps: list[float],
+    date: str = "2026-05-11",
+) -> list[dict]:
+    """Build a predicted_indoor curve list."""
+    base = datetime(2026, 5, 11, start_hour_utc, 0, 0, tzinfo=UTC)
+    return [{"ts": (base + timedelta(hours=i)).isoformat(), "temp": t} for i, t in enumerate(temps)]
+
+
+def _set_thermal_model(
+    engine,
+    k_passive: float = -0.05,
+    conf: str = "medium",
+    k_active_cool: float | None = None,
+    bridge: bool = False,
+) -> None:
+    engine._thermal_model = {
+        "k_passive": k_passive,
+        "confidence_k_passive": conf,
+        "k_active_cool": k_active_cool,
+        "k_passive_via_bridge": bridge,
+        "confidence": conf,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Ceiling guard tests
+# ---------------------------------------------------------------------------
+
+
+class TestCeilingGuardFires:
+    """Decision point B: outdoor > indoor, breach within lead_time → set HVAC cool."""
+
+    def test_fires_when_breach_within_120min_and_outdoor_above_indoor(self):
+        """k_active_cool=None → 120-min fallback. Breach 1.5h away → guard fires."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 73.0)
+        engine._last_outdoor_temp = 76.0  # outdoor > indoor
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium", k_active_cool=None)
+
+        # Breach in 1.5 hours (breach at 11:30, now=10:00)
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 74.5, 76.0])  # hour 11 crosses 74.0
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        calls = engine.hass.services.async_call.call_args_list
+        hvac_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+        cool_calls = [c for c in hvac_calls if c.args[2].get("hvac_mode") == "cool"]
+        # Guard must fire at least one cool call and be the last hvac call (overrides prior setback)
+        assert len(cool_calls) == 1
+        assert hvac_calls[-1].args[2]["hvac_mode"] == "cool"
+
+    def test_sets_temperature_to_comfort_cool(self):
+        """When guard fires, target temp is set to comfort_cool."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 73.0)
+        engine._last_outdoor_temp = 76.0
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium", k_active_cool=None)
+
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 74.5])
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        calls = engine.hass.services.async_call.call_args_list
+        temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+        assert any(c.args[2].get("temperature") == 74.0 for c in temp_calls)
+
+    def test_emits_ceiling_guard_fired_event(self):
+        """Guard fires ceiling_guard_fired event with breach_time and hours_to_breach."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 73.0)
+        engine._last_outdoor_temp = 76.0
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium", k_active_cool=None)
+
+        events: list[tuple] = []
+        engine._emit_event_callback = lambda n, d: events.append((n, d))
+
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 74.5])
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        fired = [e for e in events if e[0] == "ceiling_guard_fired"]
+        assert len(fired) == 1
+
+
+class TestCeilingGuardSkips:
+    """Guard should skip when guard conditions are not met."""
+
+    def test_skips_when_no_predicted_indoor(self):
+        """No predicted_indoor passed → guard skips, setback still applied."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 75.0)  # above comfort_heat, comfort_gap guard doesn't fire
+        engine._last_outdoor_temp = 78.0
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium")
+
+        asyncio.run(engine.apply_classification(_make_warm_off_classification()))
+        # Should not set hvac_mode=cool
+        calls = engine.hass.services.async_call.call_args_list
+        hvac_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+        cool_calls = [c for c in hvac_calls if c.args[2].get("hvac_mode") == "cool"]
+        assert len(cool_calls) == 0
+
+    def test_skips_when_no_model(self):
+        """No calibrated model (k_passive=None) → guard skips."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 75.0)
+        engine._last_outdoor_temp = 78.0
+        engine._thermal_model = {}  # no model
+
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 74.5, 76.0])
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        calls = engine.hass.services.async_call.call_args_list
+        hvac_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+        assert not any(c.args[2].get("hvac_mode") == "cool" for c in hvac_calls)
+
+    def test_skips_when_outdoor_below_indoor(self):
+        """Outdoor <= indoor → nat-vent available → guard dormant."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 76.0)
+        engine._last_outdoor_temp = 72.0  # outdoor < indoor → nat-vent available
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium")
+
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[76.0, 77.0, 78.0])
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        calls = engine.hass.services.async_call.call_args_list
+        cool_calls = [c for c in calls if c.args[1] == "set_hvac_mode" and c.args[2].get("hvac_mode") == "cool"]
+        assert len(cool_calls) == 0
+
+    def test_skips_when_no_breach_in_curve(self):
+        """All predicted temps below comfort_cool → guard dormant."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 73.0)
+        engine._last_outdoor_temp = 76.0
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium")
+
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 73.5, 73.8])  # never exceeds 74.0
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        calls = engine.hass.services.async_call.call_args_list
+        cool_calls = [c for c in calls if c.args[1] == "set_hvac_mode" and c.args[2].get("hvac_mode") == "cool"]
+        assert len(cool_calls) == 0
+
+    def test_skips_when_breach_too_far_away(self):
+        """Breach predicted far in future (> lead_time). Guard stands by."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 71.0)
+        engine._last_outdoor_temp = 76.0
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium", k_active_cool=None)
+
+        # now=10:00, breach at 14:00 (4h away). Fallback lead_time=120min=2h. 4h > 2h → stand by.
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        # breach at index 4 = 14:00 (4h from now)
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[71.0, 71.5, 72.0, 72.5, 74.5])
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        calls = engine.hass.services.async_call.call_args_list
+        cool_calls = [c for c in calls if c.args[1] == "set_hvac_mode" and c.args[2].get("hvac_mode") == "cool"]
+        assert len(cool_calls) == 0
+
+    def test_bridge_tolerance_suppresses_near_miss(self):
+        """Bridge home: breach at comfort_cool+0.5 (below bridge threshold of +1.0) → guard skips."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 73.0)
+        engine._last_outdoor_temp = 76.0
+        _set_thermal_model(engine, k_passive=-0.05, conf="none", bridge=True)  # bridge: conf="none" but bridge=True
+
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        # breach at 74.4°F = comfort_cool(74) + 0.4; bridge threshold = 74 + 1.0 = 75.0 → no breach
+        curve = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 74.4])
+
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve))
+
+        calls = engine.hass.services.async_call.call_args_list
+        cool_calls = [c for c in calls if c.args[1] == "set_hvac_mode" and c.args[2].get("hvac_mode") == "cool"]
+        assert len(cool_calls) == 0
+
+    def test_weather_change_guard_dormant_when_no_breach_on_second_call(self):
+        """Two consecutive calls: first has breach, second has no breach. Guard dormant on second."""
+        engine = _make_engine(config_overrides={"comfort_cool": 74.0})
+        _set_indoor_temp_via_climate(engine, 73.0)
+        engine._last_outdoor_temp = 76.0
+        _set_thermal_model(engine, k_passive=-0.05, conf="medium", k_active_cool=None)
+
+        now = datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)
+        curve_breach = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 74.5])  # breach in 1h
+        curve_no_breach = _make_predicted_indoor(start_hour_utc=10, temps=[73.0, 73.8])  # no breach
+
+        # First call: breach → HVAC cool
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve_breach))
+
+        engine.hass.services.async_call.reset_mock()
+
+        # Second call (30 min later, new forecast shows no breach): guard dormant
+        now2 = datetime(2026, 5, 11, 10, 30, 0, tzinfo=UTC)
+        with patch("custom_components.climate_advisor.automation.dt_util") as mock_dt:
+            mock_dt.now.return_value = now2
+            asyncio.run(engine.apply_classification(_make_warm_off_classification(), predicted_indoor=curve_no_breach))
+
+        calls2 = engine.hass.services.async_call.call_args_list
+        cool_calls = [c for c in calls2 if c.args[1] == "set_hvac_mode" and c.args[2].get("hvac_mode") == "cool"]
+        assert len(cool_calls) == 0
