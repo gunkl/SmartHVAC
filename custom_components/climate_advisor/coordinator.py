@@ -1083,6 +1083,20 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                                     len(samples),
                                 )
 
+            # Refresh the thermal model on every 30-min cycle, not just at the daily
+            # briefing. get_thermal_model() is a pure computation (no I/O), so calling it
+            # 48×/day is negligible. Refreshing here:
+            #   1. Restores the model after HA restart (daily briefing is the only other
+            #      writer, so _thermal_model is {} for the rest of the day after a restart)
+            #   2. Keeps thermal_equilibrium_f current as outdoor_temp and solar_factor
+            #      change through the day (6 AM conditions are wrong by afternoon)
+            #   3. Applies mid-day observation commits to same-day automation decisions
+            if self.config.get("learning_enabled", True) and self.automation_engine:
+                self.automation_engine._thermal_model = self.learning.get_thermal_model(
+                    outdoor_temp_f=self._last_outdoor_temp,
+                    solar_factor=_solar_factor(dt_util.now().hour),
+                )
+
             # Compute and cache ODE prediction for ceiling guard + chart reuse
             self._last_predicted_indoor = _build_predicted_indoor_future(
                 self._hourly_forecast_temps,
@@ -1690,13 +1704,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             thermal_model.get("heating_rate_f_per_hour"),
             thermal_model.get("cooling_rate_f_per_hour"),
         )
-        # Update cached ODE prediction for ceiling guard
+        # Update cached ODE prediction for ceiling guard.
+        # thermal_model is already computed from self.learning.get_thermal_model() above.
         self._last_predicted_indoor = _build_predicted_indoor_future(
             self._hourly_forecast_temps,
             self.config,
             dt_util.now(),
             current_indoor_temp=self._get_indoor_temp(),
-            thermal_model=self.automation_engine._thermal_model if self.automation_engine else {},
+            thermal_model=thermal_model,
             occupancy_mode=self._occupancy_mode,
             classification=classification,
         )

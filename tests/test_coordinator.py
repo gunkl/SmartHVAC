@@ -1248,6 +1248,120 @@ class TestChartLogWindowFields:
 
 
 # ---------------------------------------------------------------------------
+# Tests: ODE thermal model gate — empty {} is falsy, skips physics entirely
+# (Issue #137 re-investigation: restart clears automation_engine._thermal_model)
+# ---------------------------------------------------------------------------
+
+
+def _build_future_forecast(now_dt, outdoor_temp: float = 56.0, count: int = 24) -> list[dict]:
+    """Build a list of hourly forecast entries starting from now_dt+1h."""
+    entries = []
+    for i in range(1, count + 1):
+        ts = now_dt.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=i)
+        entries.append({"datetime": ts.isoformat(), "temperature": outdoor_temp})
+    return entries
+
+
+class TestOdeThermalModelGate:
+    """After HA restart, automation_engine._thermal_model is {} (falsy).
+
+    The old coordinator code passed automation_engine._thermal_model to
+    _build_predicted_indoor_future.  An empty dict is falsy, so the physics gate
+    at `if thermal_model and current_indoor_temp is not None:` is never entered.
+    The fallback 'off-day' path then writes `_t_current` (= current_indoor_temp)
+    for every future entry without ever updating it, so all pred_indoor values
+    equal current_indoor_temp and delta = 0.0 in the chart_log.
+
+    Fix: use self.learning.get_thermal_model() (persisted, survives restart) not
+    automation_engine._thermal_model (in-memory, reset to {} on restart).
+    """
+
+    def test_empty_thermal_model_is_falsy(self):
+        """Confirm {} thermal_model is falsy — physics gate skipped, causing constant fallback.
+
+        This documents the root cause: automation_engine._thermal_model = {} after restart
+        causes the gate `if thermal_model and ...` to skip physics entirely.
+        """
+        assert not {}, "Empty dict must be falsy — if thermal_model: is the physics gate"
+
+    def test_empty_thermal_model_produces_constant_fallback(self):
+        """_build_predicted_indoor_future with {} model returns all entries = current_indoor_temp.
+
+        Demonstrates the post-restart regression: pred_indoor = indoor for all entries.
+        Uses outdoor=72°F so day high >= 60°F → mode="off" (the actual regression scenario:
+        warm/mild day, HVAC off, fallback anchors to current_indoor_temp without updating).
+        """
+        from custom_components.climate_advisor.coordinator import _build_predicted_indoor_future
+
+        now = datetime.datetime(2026, 5, 13, 7, 37, 0)
+        # 72°F outdoor → day high=72°F ≥ 60°F → mode="off" → off-day constant fallback
+        forecast = _build_future_forecast(now, outdoor_temp=72.0)
+        config = {
+            "comfort_heat": 68,
+            "comfort_cool": 75,
+            "setback_heat": 60,
+            "setback_cool": 80,
+            "wake_time": "06:30",
+            "sleep_time": "22:30",
+        }
+        result = _build_predicted_indoor_future(
+            hourly_forecast=forecast,
+            config=config,
+            now=now,
+            current_indoor_temp=69.0,
+            thermal_model={},  # post-restart empty — falsy, skips physics gate
+        )
+        assert result, "Expected non-empty result"
+        temps = [e["temp"] for e in result]
+        # Off-day fallback anchors to current_indoor_temp (69.0) without updating _t_current
+        assert all(t == 69.0 for t in temps), (
+            f"Expected constant 69.0 from off-day fallback, got varied temps: {set(temps)}. "
+            "This test documents the regression: empty thermal_model = pred_indoor always equals actual_indoor."
+        )
+
+    def test_physics_thermal_model_diverges_from_current(self):
+        """_build_predicted_indoor_future with a real model produces varying predictions.
+
+        With outdoor=72°F, indoor=69°F, k_passive=-0.05 (mild decay toward outdoor), the
+        ODE tracks the home's actual trajectory rather than staying pinned at current_indoor_temp.
+        """
+        from custom_components.climate_advisor.coordinator import _build_predicted_indoor_future
+
+        now = datetime.datetime(2026, 5, 13, 7, 37, 0)
+        forecast = _build_future_forecast(now, outdoor_temp=72.0)
+        config = {
+            "comfort_heat": 68,
+            "comfort_cool": 75,
+            "setback_heat": 60,
+            "setback_cool": 80,
+            "wake_time": "06:30",
+            "sleep_time": "22:30",
+        }
+        physics_model = {
+            "confidence": "solid",
+            "confidence_k_passive": "solid",
+            "k_passive": -0.05,
+            "k_active_heat": 6.8,
+            "k_active_cool": -3.5,
+        }
+        result = _build_predicted_indoor_future(
+            hourly_forecast=forecast,
+            config=config,
+            now=now,
+            current_indoor_temp=69.0,
+            thermal_model=physics_model,
+        )
+        assert result, "Expected non-empty result"
+        temps = [e["temp"] for e in result]
+        # With k_passive=-0.05 and outdoor=56°F, indoor decays toward outdoor+equilibrium.
+        # Predictions should NOT all be 69.0.
+        assert not all(t == 69.0 for t in temps), (
+            "Expected ODE-varying predictions with real thermal model, got all=69.0. "
+            "Fix: coordinator must use self.learning.get_thermal_model() not automation_engine._thermal_model."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Tests: chart_log pred_indoor source — must use _last_predicted_indoor cache
 # (Issue #136 follow-on / pred_indoor ODE trajectory fix)
 # ---------------------------------------------------------------------------
