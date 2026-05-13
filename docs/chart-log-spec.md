@@ -12,7 +12,7 @@
 | What downsampling tier applies for each `range_str` value? | `6h`/`12h`/`24h`/`3d` → raw entries. `7d`/`30d` → hourly averages. `1y` → daily summaries. An unrecognised range string defaults to `24h` (1-day raw). | [Downsampling Rules](#downsampling-rules) |
 | What fields does a raw entry always carry, and which are optional? | Nine core fields always present: `ts`, `hvac`, `fan`, `indoor`, `outdoor`, `windows_open`, `windows_recommended`, `pred_outdoor`, `pred_indoor`. The `event` field is only present when the marker argument is non-None. | [Entry Schema](#entry-schema) |
 | How is `pred_outdoor` populated in each chart log entry? | Raw hourly forecast temperature for the current local hour, extracted by `_extract_current_hour_forecast_temp()` — no normalisation. `null` when hourly forecast has no entry for the current hour. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
-| How is `pred_indoor` populated in each chart log entry? | One physics ODE step from current indoor temperature and the raw `pred_outdoor` value, computed by `_ode_single_step()`. Only written when `pred_outdoor` is non-null. `null` if indoor temp is unavailable or `pred_outdoor` is null. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
+| How is `pred_indoor` populated in each chart log entry? | Read from `_last_predicted_indoor[0]["temp"]` — the first future entry from the cached ODE curve built earlier in the same 30-min update cycle by `_build_predicted_indoor_future()`. Only written when the cache is non-empty and `pred_outdoor` is non-null. `null` if indoor temp is unavailable, `pred_outdoor` is null, or the cache is empty (e.g., immediately after HA restart before the first full ODE run). | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
 | What fallback does `_build_future_forecast_outdoor()` use when hourly forecast is empty? | When hourly forecast is empty or yields no future entries and a `classification` is provided, generates a cosine curve using `classification.today_high`/`classification.today_low`. Returns `[]` only if no classification is provided. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
 | What fallback does `_build_predicted_indoor_future()` use when hourly forecast is empty? | When `classification` is provided, synthesises a cosine-based hourly list from `classification.today_high`/`classification.today_low` and proceeds normally. Returns `[]` only if no classification is provided. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
 | What happens when `load()` finds a missing, corrupt, or structurally wrong file? | Any of these three error paths resets `_entries` to `[]` and logs a WARNING. The coordinator continues with an empty log; no exception propagates to the caller. | [Load Contract](#load-contract) |
@@ -121,7 +121,7 @@ Entries with unparseable `ts` fields are treated differently in the two prune co
 | `windows_open` | `bool` | Always | Whether any window/door sensor reports open |
 | `windows_recommended` | `bool` | Always | Whether natural ventilation was recommended at this tick |
 | `pred_outdoor` | `float \| null` | Always | Raw hourly forecast temperature for the current local hour, extracted by `_extract_current_hour_forecast_temp()`. No normalisation is applied. `null` when the hourly forecast has no entry matching the current hour, or when hourly forecast is unavailable. (Fixed in Issue #132: previously stored a normalised value from `_build_outdoor_curve()`, which caused spikes at classification boundaries.) |
-| `pred_indoor` | `float \| null` | Always | Predicted indoor temperature: one ODE step from current indoor temp and the raw `pred_outdoor` value, computed by `_ode_single_step()`. Only written when `pred_outdoor` is non-null and indoor temp is available; otherwise `null`. |
+| `pred_indoor` | `float \| null` | Always | Predicted indoor temperature: read from `_last_predicted_indoor[0]["temp"]` — the first future entry of the full ODE curve pre-built by `_build_predicted_indoor_future()` earlier in the same 30-min update cycle (~1 hour ahead). Includes HVAC Q + solar + passive decay terms. Only written when the cache is non-empty and `pred_outdoor` is non-null; otherwise `null`. See [Why not `_ode_single_step`?](#why-not-_ode_single_step-regression-history). |
 | `event` | `str` | Optional | Event marker label (e.g., `"hvac_mode_changed"`, `"windows_opened"`). Present only when `event` argument was non-None. |
 
 **Invariant:** `ts` is always present and always a string. Monotonic non-decrease of `ts` values is the caller's responsibility — the class does not enforce it.
@@ -296,7 +296,7 @@ In all error paths `load()` returns `None` and does not raise. The coordinator r
 
 This section covers the coordinator-side logic that computes `pred_outdoor` and `pred_indoor` before calling `ChartStateLog.append()`, and the helper functions used for the future predicted lines in `get_chart_data()`.
 
-**Covered functions:** `_extract_current_hour_forecast_temp`, `_ode_single_step`, `_build_future_forecast_outdoor`, `_build_predicted_indoor_future` — all in `coordinator.py`.
+**Covered functions:** `_extract_current_hour_forecast_temp`, `_build_future_forecast_outdoor`, `_build_predicted_indoor_future` — all in `coordinator.py`.
 
 ### `pred_outdoor` and `pred_indoor` at append time
 
@@ -313,19 +313,60 @@ _pred_outdoor_val = _extract_current_hour_forecast_temp(self._hourly_forecast_te
 - Returns `None` if hourly forecast is absent or has no entry for the current hour.
 - Uses the same field name and timezone handling as `_build_future_forecast_outdoor()` so past and future predicted outdoor values come from the same data source.
 
-**`pred_indoor`** is one ODE step forward from the current indoor temperature:
+**`pred_indoor`** is read from `_last_predicted_indoor` — a cache of the full ODE curve built earlier in the same 30-min update cycle:
 
 ```python
-_pred_indoor_val = _ode_single_step(indoor_temp, _pred_outdoor_val, thermal_model=...)
+_pred_indoor_val = self._last_predicted_indoor[0]["temp"] if self._last_predicted_indoor else None
 ```
 
-- Only computed when `_pred_outdoor_val` is non-None.
-- `_ode_single_step(t_in, t_out, thermal_model, dt_hours=0.5)`: computes `T_in + k_passive * (T_out - T_in) * dt`.
-- Uses `thermal_model["k_passive"]` if present and negative; falls back to `k_passive = -0.05` (conservative default).
-- Returns a `float`; result is rounded to 2 decimal places.
-- Both `_pred_outdoor_val` and `_pred_indoor_val` are written as `None` if indoor temp is unavailable (`self._current_classification` gate also applies).
+- `_last_predicted_indoor` is populated by `_build_predicted_indoor_future()` during the same coordinator tick, before the append call.
+- The first entry (`[0]`) is the nearest future forecast point (~1 hour ahead of now).
+- Includes HVAC Q + solar + passive decay terms — the same full ODE used for the chart's future predicted curve.
+- Written as `None` if the cache is empty (e.g., after HA restart before the first full cycle) or if `_pred_outdoor_val` is `None`.
 
 **Guard:** the entire block is wrapped in `contextlib.suppress(Exception)` — any failure silently writes `null` for both fields rather than crashing the coordinator tick.
+
+### Why not `_ode_single_step`? (Regression History)
+
+Prior to Issue #137, `pred_indoor` was computed by a single-step Euler approximation via `_ode_single_step(t_in, t_out, thermal_model, dt_hours=0.5)`, which applied only the `k_passive` decay term over a half-hour window. In practice this produced `pred_indoor ≈ actual_indoor` with a delta of ~0.38°F — imperceptibly small at chart scale and invisible during steady-state. The function was removed in Issue #137. The cached full-ODE approach diverges meaningfully during transitions: with an HVAC heating contribution of ~+6.8°F/hr, a 1-hour lookahead produces a clearly visible separation between predicted and actual, which is precisely when the chart is most diagnostic.
+
+### Thermal Model Refresh
+
+Added in Issues #137/#138. On every 30-min coordinator cycle, `automation_engine._thermal_model` is refreshed before the chart log append:
+
+```python
+self.automation_engine._thermal_model = self._learning.get_thermal_model(
+    outdoor_temp_f=outdoor_temp_f, solar_factor=solar_factor
+)
+```
+
+- `get_thermal_model()` is pure computation — no I/O, no disk access. Calling it 48×/day is negligible cost.
+- Before this fix: an HA restart left `_thermal_model = {}`, which made the physics gate falsy (`k_passive` absent), and the predicted curve fell back to ramp interpolation producing delta=0.0 for up to 18+ hours (until the next manual restart or observation commit).
+- After this fix: any `_thermal_model = {}` state is repaired on the next 30-min cycle.
+- Log line emitted on each refresh: `"thermal model refreshed (30-min cycle): confidence=X"`. Use this to confirm the physics gate is open.
+
+### Regression Decision Tree
+
+Use this tree when `pred_indoor ≈ actual_indoor` (delta ≈ 0) on the chart:
+
+```
+pred_indoor ≈ actual (delta ≈ 0)?
+├── Check HA restart time vs. when delta went to 0
+├── Check log: "thermal model refreshed (30-min cycle): confidence=X"
+│     → If confidence=none → thermal model empty (fresh install or no observations yet)
+├── Check log: "_build_predicted_indoor_future: using fallback" or similar
+├── Check log: "chart_log pred_indoor=X indoor=Y delta=+0.0 (none)"
+│     → "(none)" means _last_predicted_indoor was empty
+└── Commands:
+      python tools/ha_logs.py --filter "chart_log pred_indoor"
+      python tools/ha_logs.py --filter "thermal model refreshed"
+```
+
+**Root causes:**
+1. **Thermal model empty after restart** — delta=+0.0 with `(none)` tag. Auto-resolves within 30 minutes after #137 fix. Verify via `--filter "thermal model refreshed"` → should show `confidence=solid` or `confidence=moderate`.
+2. **Fresh install / no observations** — `confidence=none` in refresh log. No thermal data collected yet. Resolves after 1–2 days of `k_passive` observations.
+3. **Fallback ramp active** — `_build_predicted_indoor_future` log shows "using fallback". Thermal model has data but indoor temp is unavailable. Resolve the underlying sensor issue.
+4. **Off-day mode, outdoor near indoor** — When `day_type="off"` and outdoor ≈ indoor, physics produces near-zero delta naturally. Not a bug.
 
 ### `_build_future_forecast_outdoor(hourly_forecast, classification=None)`
 

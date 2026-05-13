@@ -1096,6 +1096,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     outdoor_temp_f=self._last_outdoor_temp,
                     solar_factor=_solar_factor(dt_util.now().hour),
                 )
+                _LOGGER.debug(
+                    "thermal model refreshed (30-min cycle): confidence=%s k_passive=%s",
+                    self.automation_engine._thermal_model.get("confidence", "none"),
+                    self.automation_engine._thermal_model.get("k_passive"),
+                )
 
             # Compute and cache ODE prediction for ceiling guard + chart reuse
             self._last_predicted_indoor = _build_predicted_indoor_future(
@@ -1108,8 +1113,9 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 classification=self._current_classification,
             )
             _LOGGER.debug(
-                "Caching predicted indoor curve: %d points",
+                "Caching predicted indoor curve: %d points, [0]=%s",
                 len(self._last_predicted_indoor),
+                f"{self._last_predicted_indoor[0]['temp']:.1f}°F" if self._last_predicted_indoor else "none",
             )
             await self.automation_engine.apply_classification(
                 self._current_classification,
@@ -1342,6 +1348,15 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                 pred_indoor=_pred_indoor_val,
             )
             self._chart_log.save()
+            _LOGGER.debug(
+                "chart_log pred_indoor=%.1f indoor=%.1f delta=%+.1f (%s)",
+                _pred_indoor_val if _pred_indoor_val is not None else float("nan"),
+                indoor_temp if indoor_temp is not None else float("nan"),
+                (_pred_indoor_val - indoor_temp)
+                if (_pred_indoor_val is not None and indoor_temp is not None)
+                else float("nan"),
+                "ode" if self._last_predicted_indoor else "none",
+            )
 
         with contextlib.suppress(Exception):
             self._thermal_factors = _compute_thermal_factors(self._chart_log.get_entries("7d"))
