@@ -1301,15 +1301,14 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
                     "chart log: indoor_temp unavailable — skipping pred_indoor write"
                     " (thermostat may be unknown/unavailable)"
                 )
-            if self._current_classification and indoor_temp is not None:
-                _now_dt = dt_util.now()
-                _pred_outdoor_val = _extract_current_hour_forecast_temp(self._hourly_forecast_temps, _now_dt)
-                if _pred_outdoor_val is not None:
-                    _pred_indoor_val = _ode_single_step(
-                        indoor_temp,
-                        _pred_outdoor_val,
-                        thermal_model=getattr(self.automation_engine, "_thermal_model", None),
-                    )
+            _now_dt = dt_util.now()
+            _pred_outdoor_val = _extract_current_hour_forecast_temp(self._hourly_forecast_temps, _now_dt)
+            # Use the cached full ODE curve for a meaningful 1h-ahead prediction.
+            # _ode_single_step(actual, outdoor, dt=0.5h) gave pred≈actual (0.38°F delta,
+            # invisible at chart scale). _last_predicted_indoor[0] includes HVAC Q +
+            # solar and diverges meaningfully during temperature transitions.
+            if self._last_predicted_indoor:
+                _pred_indoor_val = self._last_predicted_indoor[0].get("temp")
             _chart_hvac_poll = self._read_chart_hvac_action()
             _LOGGER.debug(
                 "chart_log append: event=30min_poll hvac=%r fan=%s",
@@ -4685,26 +4684,6 @@ def _extract_current_hour_forecast_temp(
         except (ValueError, TypeError):
             continue
     return best_temp
-
-
-def _ode_single_step(
-    t_in: float,
-    t_out: float,
-    thermal_model: dict | None,
-    dt_hours: float = 0.5,
-) -> float:
-    """One physics ODE step: T_in_next = T_in + k_passive*(T_in - T_out)*dt.
-
-    Matches the per-step logic in _build_predicted_indoor_future.
-    Falls back to a conservative k_passive=-0.05 if thermal model is not trained.
-    k_passive is always negative: indoor decays toward outdoor.
-    """
-    k_passive = (thermal_model or {}).get("k_passive")
-    if k_passive is not None and k_passive < 0:
-        delta = k_passive * (t_in - t_out) * dt_hours
-    else:
-        delta = -0.05 * (t_in - t_out) * dt_hours
-    return round(t_in + delta, 2)
 
 
 def _parse_time(time_str: str) -> time:
