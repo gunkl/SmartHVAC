@@ -276,6 +276,7 @@ Assembles seven numbered context blocks. Each block is wrapped in its own `try/e
 
 **Appended after the seven blocks (not try/except guarded separately):**
 - Version/release notes: last 5 entries from `RELEASE_NOTES` in `const.py`
+- Behavioral invariant registry: all entries from `KNOWN_FIXES` in `const.py`, formatted with `[COVERED]` / `[NOT COVERED]` scope markers (Issue #144). The investigator system prompt instructs the AI to cross-check anomalies against this registry before hedging "could not verify."
 - GitHub issues: fetched live from the GitHub API via `async_build_github_context()`; silently omitted (returns `""`) on any network error
 
 **Optional focus:** `kwargs.get("focus", "")` is prepended as `=== INVESTIGATION FOCUS (USER-DIRECTED) ===` if non-empty.

@@ -26,6 +26,8 @@ You are helping David build, iterate on, and improve **Climate Advisor**, a cust
 | How does unit conversion work between °F and °C? | `from_fahrenheit()` for absolute temps (subtracts 32, ×5/9); `convert_delta()` for deltas and rates (×5/9 only, no offset). | [Temperature Conversion Brief](temperature-conversion.md) |
 | What are all the automation gate conditions and HVAC decision rules? | Full logic table with test coverage map: warm-day guard, grace expiry, manual override, occupancy setback, natural vent exit conditions. | [Computation Reference](08-COMPUTATION-REFERENCE.md) |
 | What are the automation decision flowcharts — gate conditions, pause flow, override detection? | Visual Mermaid diagrams for main 30-min loop, door/window pause, manual override, natural vent, and occupancy state machine. | [Automation Flowchart](07-AUTOMATION-FLOWCHART.md) |
+| How does `_get_forecast()` work — datetime format, timezone strategy, why UTC midnight causes date-shift? | Date-keyed dict approach (v0.3.44+). UTC midnight datetimes shift to previous local day via `dt_util.as_local()`. Fallback removed; missing dates fall through to `current_outdoor`. | [Forecast Pipeline Spec](forecast-pipeline-spec.md) |
+| How does the briefing compute today/tomorrow dates, what data does it consume from the coordinator? | Uses `dt_util.now().date()` as calendar today — not anchored to wake_time or classification cycle. Receives pre-processed `today_high/low`, `tomorrow_high/low` from `_get_forecast()`. | [Briefing Spec](briefing-spec.md) |
 
 ## Context
 

@@ -1577,8 +1577,11 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         forecast = await self._get_forecast_data()
 
         # Extract today and tomorrow from forecast by matching dates.
-        # HA daily forecasts shift forward as the day progresses, so
-        # forecast[0] may be tonight or tomorrow — never assume index == day.
+        # HA daily forecasts vary by provider: some include today, some start
+        # from tomorrow. Some use UTC midnight datetimes (e.g.
+        # 2026-05-16T00:00:00+00:00 = 2026-05-15 17:00 PDT), which
+        # dt_util.as_local() shifts to the previous local day. Build a
+        # date-keyed dict so we never assume array position == calendar day.
         today_high = current_outdoor
         today_low = current_outdoor
         tomorrow_high = current_outdoor
@@ -1589,25 +1592,34 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         if forecast:
             now_date = dt_util.now().date()
             tomorrow_date = now_date + timedelta(days=1)
+            _LOGGER.debug(
+                "_get_forecast raw datetimes (first 5): %s",
+                [e.get("datetime") for e in forecast[:5]],
+            )
+            forecast_by_date: dict = {}
             for entry in forecast:
                 fc_dt = entry.get("datetime", "")
                 try:
                     fc_obj = datetime.fromisoformat(fc_dt)
                     fc_date = dt_util.as_local(fc_obj).date() if fc_obj.tzinfo else fc_obj.date()
+                    forecast_by_date.setdefault(fc_date, entry)
                 except (ValueError, TypeError):
                     continue
-                if fc_date == now_date and today_fc is None:
-                    today_fc = entry
-                elif fc_date == tomorrow_date and tomorrow_fc is None:
-                    tomorrow_fc = entry
-
-            # If today's entry is missing (late evening), use first entry
-            # as a fallback for "today" so we still have some data.
-            if today_fc is None and tomorrow_fc is None and len(forecast) >= 2:
-                today_fc = forecast[0]
-                tomorrow_fc = forecast[1]
-            elif today_fc is None and tomorrow_fc is not None and len(forecast) >= 1:
-                today_fc = forecast[0]
+            today_fc = forecast_by_date.get(now_date)
+            tomorrow_fc = forecast_by_date.get(tomorrow_date)
+            available_dates = sorted(forecast_by_date.keys())
+            if today_fc is None and available_dates:
+                _LOGGER.debug(
+                    "_get_forecast: no entry for today (%s); available dates: %s",
+                    now_date,
+                    available_dates,
+                )
+            if tomorrow_fc is None and available_dates:
+                _LOGGER.debug(
+                    "_get_forecast: no entry for tomorrow (%s); available dates: %s",
+                    tomorrow_date,
+                    available_dates,
+                )
 
         if today_fc:
             today_high = today_fc.get("temperature", today_fc.get("tempHigh", current_outdoor))
