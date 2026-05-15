@@ -69,12 +69,17 @@ RELEASE_NOTES: dict[str, list[str]] = {
 KNOWN_FIXES: dict[int, dict] = {
     143: {
         "version_fixed": "0.3.44",
-        "title": "_get_forecast() blind-index fallback replaced with date-keyed dict",
+        "title": "_get_forecast() blind-index fallback replaced with UTC-date-keyed dict",
         "scope_covered": [
-            "coordinator._get_forecast() — date matching loop + fallback block replaced with dict approach",
-            "briefing tomorrow-high — reads date-verified tomorrow_fc instead of blind forecast[0]",
+            "coordinator._get_forecast() — date matching uses UTC calendar date (not local date)",
+            "UTC midnight datetimes (e.g. 2026-05-16T00:00:00+00:00) now correctly match"
+            " their UTC calendar day instead of being shifted to the previous local day",
+            "briefing tomorrow-high — reads date-verified tomorrow_fc for correct calendar day",
         ],
-        "scope_not_covered": [],
+        "scope_not_covered": [
+            "_get_hourly_forecast_data() datetime handling — hourly entries use per-hour"
+            " local timestamps and were not affected by this bug",
+        ],
     },
     141: {
         "version_fixed": "0.3.43",

@@ -34,15 +34,16 @@ date-keyed dict approach (see below) handles all variants correctly.
 ## Date-Keyed Matching
 
 `_get_forecast()` builds a `forecast_by_date: dict` using `setdefault()` — the first entry
-for each local date wins — then looks up today and tomorrow by date:
+for each UTC date wins — then looks up today and tomorrow by UTC calendar date:
 
 ```python
 today_fc = forecast_by_date.get(now_date)
 tomorrow_fc = forecast_by_date.get(tomorrow_date)
 ```
 
-`now_date = dt_util.now().date()` (local calendar date).
+`now_date = dt_util.utcnow().date()` (UTC calendar date).
 `tomorrow_date = now_date + timedelta(days=1)`.
+Each entry's key: `fc_obj.astimezone(UTC).date()`.
 
 If either lookup returns `None`, the corresponding temperature defaults to `current_outdoor`
 (the value obtained from the live thermostat reading). The existing `if today_fc:` / `if
@@ -52,11 +53,10 @@ No blind-index fallback exists. Array position carries no semantic meaning.
 
 ## Missing Today Handling
 
-When `today_fc is None` after the dict build, a DEBUG log records the available forecast
-dates:
+When `today_fc is None` after the dict build, a WARNING log records the available UTC dates:
 
 ```
-_get_forecast: no entry for today (2026-05-15); available dates: [2026-05-16, 2026-05-17, ...]
+_get_forecast: no entry for today (2026-05-15 UTC); available dates: [2026-05-16, 2026-05-17, ...]
 ```
 
 This is normal for weather providers that exclude the current day from the daily forecast
@@ -64,13 +64,19 @@ once it is in progress. `today_high` / `today_low` fall back to `current_outdoor
 the `_outdoor_temp_history` override below can correct them once observed temperatures
 accumulate during the day.
 
-A raw datetime snapshot (first 5 entries) is also logged at DEBUG:
+An INFO log also records the raw matched temperatures each cycle:
+
+```
+_get_forecast matched: today=2026-05-15 raw_temp=72, tomorrow=2026-05-16 raw_temp=79
+```
+
+A raw datetime snapshot (first 5 entries) is logged at DEBUG:
 
 ```
 _get_forecast raw datetimes (first 5): ['2026-05-16T00:00:00+00:00', ...]
 ```
 
-These two log lines are the primary diagnostic for any future date-matching problems.
+These three log lines are the primary diagnostic for any future date-matching problems.
 
 ## Bias Correction
 
@@ -87,23 +93,32 @@ observed temperature history guard (`_outdoor_temp_history` max/min override).
 
 ## Timezone Strategy
 
-All date comparisons use local time:
+All date comparisons use **UTC calendar date**, not local date:
 
-- `dt_util.now().date()` — local calendar today
-- `dt_util.as_local(fc_obj).date()` — forecast entry converted to local date before comparison
-- UTC dates are never used for day-boundary decisions
+- `dt_util.utcnow().date()` — UTC calendar today
+- `fc_obj.astimezone(UTC).date()` — forecast entry converted to UTC date before comparison
+- Local timezone is never used for day-boundary decisions in the forecast dict
 
-This strategy was established in Fix #107 (v0.3.22) which changed the forecast key from
-`'time'` to `'datetime'` and added timezone-aware parsing. The subsequent Fix #143 (v0.3.44)
-removed the fallback block that could still produce wrong results even with correct timezone
-parsing.
+**Why UTC, not local?** HA weather integrations frequently timestamp daily forecast entries
+at UTC midnight (e.g., `2026-05-16T00:00:00+00:00`). In a UTC-7 timezone (PDT), converting
+that to local time gives `2026-05-15T17:00-07:00` — local date 2026-05-15 (yesterday). The
+entry the API intends as "tomorrow" (2026-05-16) would be bucketed as "today," causing a
+one-day off-by-one across the entire forecast. UTC date matching avoids this entirely: the
+UTC midnight entry for 2026-05-16 has UTC date 2026-05-16 and correctly maps to tomorrow.
+
+This applies regardless of the user's local timezone. An API entry for calendar day N
+will always have a UTC timestamp that falls on UTC date N (midnight, noon, or any intra-day
+time), making UTC the stable matching key.
+
+This strategy was confirmed as correct by production diagnosis in v0.3.44 — the preceding
+`dt_util.as_local()` approach (Fix #107, v0.3.22) introduced this shift for UTC midnight APIs.
 
 ## Known History
 
 | Version | Change |
 |---|---|
 | v0.3.22 (Fix #107) | Changed forecast key from `'time'` to `'datetime'`; added `dt_util.as_local()` for timezone-aware parsing. Blind-index fallback retained. |
-| v0.3.44 (Fix #143) | Replaced loop + fallback block with date-keyed dict. Removed all blind index assumptions. Added DEBUG logging of available dates and raw datetimes. |
+| v0.3.44 (Fix #143) | Replaced loop + fallback block with UTC-date-keyed dict. Removed all blind index assumptions. Switched from `dt_util.as_local()` to `astimezone(UTC)` for entry date extraction — fixes one-day off-by-one for UTC midnight forecast timestamps. Added WARNING logging for missing dates and INFO for matched raw temps. |
 
 ### Why the fallback was wrong (Fix #143)
 

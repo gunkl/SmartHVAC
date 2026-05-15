@@ -5,6 +5,8 @@ Covers:
 2. Normal full forecast — both today and tomorrow present
 3. Core regression guard — today_high != tomorrow_high when API starts from tomorrow
 4. Empty forecast — all temperatures fall back to current_outdoor
+5. UTC midnight datetimes — entries timestamped at UTC midnight are matched by UTC
+   calendar date, not shifted to the previous local day (the production root cause)
 """
 
 from __future__ import annotations
@@ -29,11 +31,22 @@ _TODAY = date(2026, 5, 15)
 _TOMORROW = _TODAY + timedelta(days=1)
 _CURRENT_OUTDOOR = 65.0
 
+# dt_util.utcnow() mock — 06:00 UTC on today (= 11pm PDT prev day, but UTC date = today)
+_NOW_UTC = datetime(2026, 5, 15, 13, 0, 0, tzinfo=UTC)  # 1pm UTC = 6am PDT
 
-def _make_entry(d: date, temp: float) -> dict:
-    """Forecast entry with local-noon datetime for the given date."""
+
+def _make_entry(d: date, temp: float, *, utc_midnight: bool = False) -> dict:
+    """Forecast entry for the given date.
+
+    utc_midnight=True: timestamps at UTC midnight (e.g. 2026-05-16T00:00:00+00:00).
+    In PDT (UTC-7) this shifts to 5pm the previous local day — the production case.
+
+    utc_midnight=False (default): timestamps at local noon with -07:00 offset.
+    UTC date == local date in this case.
+    """
+    dt_str = f"{d.isoformat()}T00:00:00+00:00" if utc_midnight else f"{d.isoformat()}T12:00:00-07:00"
     return {
-        "datetime": f"{d.isoformat()}T12:00:00-07:00",
+        "datetime": dt_str,
         "temperature": temp,
         "templow": temp - 15,
     }
@@ -82,6 +95,19 @@ def _make_coordinator_stub(forecast_data: list) -> MagicMock:
     return coord
 
 
+def _run_get_forecast(coord) -> object:
+    """Run _get_forecast() with dt_util.utcnow patched to _NOW_UTC."""
+
+    async def run():
+        with patch(
+            "custom_components.climate_advisor.coordinator.dt_util.utcnow",
+            return_value=_NOW_UTC,
+        ):
+            return await coord._get_forecast()
+
+    return asyncio.run(run())
+
+
 class TestForecastDateMatching:
     """Tests for the date-keyed dict matching in _get_forecast()."""
 
@@ -92,21 +118,7 @@ class TestForecastDateMatching:
             _make_entry(_TOMORROW + timedelta(days=1), 68.0),
         ]
         coord = _make_coordinator_stub(forecast)
-
-        async def run():
-            with (
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.now",
-                    return_value=datetime(2026, 5, 15, 6, 0, 0, tzinfo=UTC),
-                ),
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.as_local",
-                    side_effect=lambda x: x,
-                ),
-            ):
-                return await coord._get_forecast()
-
-        result = asyncio.run(run())
+        result = _run_get_forecast(coord)
 
         assert result is not None
         # Today has no forecast entry — falls back to current_outdoor
@@ -122,21 +134,7 @@ class TestForecastDateMatching:
             _make_entry(_TOMORROW + timedelta(days=1), 68.0),
         ]
         coord = _make_coordinator_stub(forecast)
-
-        async def run():
-            with (
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.now",
-                    return_value=datetime(2026, 5, 15, 6, 0, 0, tzinfo=UTC),
-                ),
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.as_local",
-                    side_effect=lambda x: x,
-                ),
-            ):
-                return await coord._get_forecast()
-
-        result = asyncio.run(run())
+        result = _run_get_forecast(coord)
 
         assert result is not None
         assert result.today_high == pytest.approx(78.0)
@@ -151,24 +149,9 @@ class TestForecastDateMatching:
             _make_entry(_TOMORROW + timedelta(days=1), 65.0),
         ]
         coord = _make_coordinator_stub(forecast)
-
-        async def run():
-            with (
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.now",
-                    return_value=datetime(2026, 5, 15, 6, 0, 0, tzinfo=UTC),
-                ),
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.as_local",
-                    side_effect=lambda x: x,
-                ),
-            ):
-                return await coord._get_forecast()
-
-        result = asyncio.run(run())
+        result = _run_get_forecast(coord)
 
         assert result is not None
-        # The critical invariant: today_high must NOT be 72.0 (tomorrow's value).
         assert result.today_high != pytest.approx(72.0), (
             "REGRESSION: today_high equals tomorrow's forecast value — blind-index fallback collision not fixed"
         )
@@ -178,22 +161,39 @@ class TestForecastDateMatching:
     def test_empty_forecast_returns_current_outdoor(self, tmp_path: Path):
         """Empty forecast array — all temperatures fall back to current_outdoor."""
         coord = _make_coordinator_stub([])
-
-        async def run():
-            with (
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.now",
-                    return_value=datetime(2026, 5, 15, 6, 0, 0, tzinfo=UTC),
-                ),
-                patch(
-                    "custom_components.climate_advisor.coordinator.dt_util.as_local",
-                    side_effect=lambda x: x,
-                ),
-            ):
-                return await coord._get_forecast()
-
-        result = asyncio.run(run())
+        result = _run_get_forecast(coord)
 
         assert result is not None
         assert result.today_high == pytest.approx(_CURRENT_OUTDOOR)
         assert result.tomorrow_high == pytest.approx(_CURRENT_OUTDOOR)
+
+    def test_utc_midnight_entries_matched_by_utc_calendar_date(self, tmp_path: Path):
+        """UTC midnight timestamps must match by UTC date, not local date.
+
+        Production root cause: weather APIs like Open-Meteo and some HA integrations
+        return daily forecast entries timestamped at UTC midnight. In PDT (UTC-7),
+        2026-05-16T00:00:00+00:00 converts to 2026-05-15T17:00-07:00 (local), which
+        has local date 2026-05-15 (TODAY). Using local date would bucket tomorrow's
+        entry as today and day+2 as tomorrow — same off-by-one as the original bug.
+
+        Using UTC date: 2026-05-16T00:00:00+00:00 has UTC date 2026-05-16 → tomorrow. ✓
+        """
+        # Entries timestamped at UTC midnight — the production problematic format.
+        # _TODAY = 2026-05-15, _TOMORROW = 2026-05-16
+        # UTC midnight for _TODAY  → UTC date 2026-05-15 → should be today_fc
+        # UTC midnight for _TOMORROW → UTC date 2026-05-16 → should be tomorrow_fc
+        forecast = [
+            _make_entry(_TODAY, 72.0, utc_midnight=True),
+            _make_entry(_TOMORROW, 79.0, utc_midnight=True),
+            _make_entry(_TOMORROW + timedelta(days=1), 68.0, utc_midnight=True),
+        ]
+        coord = _make_coordinator_stub(forecast)
+        result = _run_get_forecast(coord)
+
+        assert result is not None
+        assert result.today_high == pytest.approx(72.0), (
+            "UTC midnight today entry must match today, not be shifted to yesterday"
+        )
+        assert result.tomorrow_high == pytest.approx(79.0), (
+            "UTC midnight tomorrow entry must match tomorrow, not be shifted to today"
+        )
