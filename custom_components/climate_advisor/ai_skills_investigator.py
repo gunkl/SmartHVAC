@@ -69,6 +69,13 @@ INVESTIGATION PROCEDURE
 6. For every cited data value use the format: [source: <data_key>, value: <X>]
 7. Where data is missing or unavailable, state explicitly: "Could not verify <X> — data not\
  present."
+8. CROSS-CHECK AGAINST KNOWN-FIXED ISSUES: When an anomaly matches a pattern in the\
+ KNOWN-FIXED ISSUES section, check whether the observed code path has a [COVERED] or\
+ [NOT COVERED] marker. If [COVERED]: state "Issue #X fixed this path in vX.Y — treat as\
+ resolved unless current data directly contradicts." If [NOT COVERED]: state "Issue #X\
+ was scoped to path A; path B was explicitly not covered — candidate gap or incomplete fix."\
+ When scope metadata is available, do not write "could not verify" — name the path and its\
+ coverage status.
 
 OUTPUT FORMAT
 Return your investigation using these exact section headers (## prefix, exact capitalisation):
@@ -117,6 +124,28 @@ def _build_version_context(coordinator) -> str:
         lines.append(f"\n### v{ver}")
         for note in notes:
             lines.append(f"- {note}")
+    return "\n".join(lines)
+
+
+def _build_known_fixes_context(coordinator) -> str:
+    """Inject KNOWN_FIXES behavioral invariant registry into investigator context.
+
+    Provides scope boundaries so the analyzer can state '[COVERED] — resolved'
+    or '[NOT COVERED] — potential gap' rather than hedging 'could not verify.'
+    """
+    from .const import KNOWN_FIXES  # noqa: PLC0415
+
+    if not KNOWN_FIXES:
+        return ""
+    lines = ["## KNOWN-FIXED ISSUES (scope-bounded — use for cross-check, step 8)"]
+    for issue_num in sorted(KNOWN_FIXES.keys(), reverse=True):
+        fix = KNOWN_FIXES[issue_num]
+        lines.append(f"\nIssue #{issue_num} — fixed in v{fix['version_fixed']}: {fix['title']}")
+        for covered in fix.get("scope_covered", []):
+            lines.append(f"  [COVERED] {covered}")
+        for gap in fix.get("scope_not_covered", []):
+            lines.append(f"  [NOT COVERED] {gap}")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -525,6 +554,9 @@ async def async_build_investigator_context(
 
     # Version and release notes (Issue #105)
     lines.append(_build_version_context(coordinator))
+
+    # Behavioral invariant registry — scope-bounded fix history (Issue #144)
+    lines.append(_build_known_fixes_context(coordinator))
 
     # GitHub issues context (Issue #105)
     github_ctx = await async_build_github_context(coordinator.hass)

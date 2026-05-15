@@ -4,9 +4,16 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.43"
+VERSION = "0.3.44"
 
 RELEASE_NOTES: dict[str, list[str]] = {
+    "0.3.44": [
+        "Fix #143: _get_forecast() date-keyed dict replaces blind-index fallback"
+        " — briefing tomorrow-high now always reads the correct forecast entry"
+        " regardless of whether the API includes today or starts from tomorrow",
+        "Fix #144: Investigative analyzer gains KNOWN_FIXES behavioral invariant registry"
+        " — scope-bounded [COVERED]/[NOT COVERED] markers replace 'could not verify' hedging",
+    ],
     "0.3.37": [
         "Fix #135: Chart log pred_indoor/pred_outdoor now non-null —"
         " hourly forecast nearest-entry lookup replaces exact-hour match"
@@ -52,6 +59,113 @@ RELEASE_NOTES: dict[str, list[str]] = {
         "Fixed #102: Chart captures short cycles; fan+heat shown as heating; thermostat swing detection added",
         "Fixed #99: Natural ventilation exits when indoor reaches comfort_heat floor",
     ],
+}
+
+# Behavioral invariant registry for the investigative analyzer.
+# Each entry documents which code paths a fix covered and which it explicitly
+# did NOT cover, so the analyzer can say "[COVERED] — resolved" or
+# "[NOT COVERED] — potential gap" instead of "could not verify."
+# Add an entry here as part of the definition of done when closing any issue.
+KNOWN_FIXES: dict[int, dict] = {
+    143: {
+        "version_fixed": "0.3.44",
+        "title": "_get_forecast() blind-index fallback replaced with UTC-date-keyed dict",
+        "scope_covered": [
+            "coordinator._get_forecast() — date matching uses UTC calendar date (not local date)",
+            "UTC midnight datetimes (e.g. 2026-05-16T00:00:00+00:00) now correctly match"
+            " their UTC calendar day instead of being shifted to the previous local day",
+            "briefing tomorrow-high — reads date-verified tomorrow_fc for correct calendar day",
+        ],
+        "scope_not_covered": [
+            "_get_hourly_forecast_data() datetime handling — hourly entries use per-hour"
+            " local timestamps and were not affected by this bug",
+        ],
+    },
+    141: {
+        "version_fixed": "0.3.43",
+        "title": "chart_log endpoint estimator replaces passive_decay OLS",
+        "scope_covered": [
+            "chart_log endpoint — estimator uses chart_log data for R² calculation",
+        ],
+        "scope_not_covered": [],
+    },
+    139: {
+        "version_fixed": "0.3.42",
+        "title": "Persist pred_archive across restarts + UTC key rounding",
+        "scope_covered": [
+            "coordinator._pred_archive — persisted across HA restarts",
+            "chart_log timestamp keys — UTC rounding applied consistently",
+        ],
+        "scope_not_covered": [],
+    },
+    135: {
+        "version_fixed": "0.3.37",
+        "title": "Chart log pred_indoor/pred_outdoor nearest-entry lookup",
+        "scope_covered": [
+            "chart_log endpoint — hourly forecast lookup uses nearest-entry not exact-hour match",
+            "pred_indoor/pred_outdoor — non-null after this fix",
+        ],
+        "scope_not_covered": [
+            "_get_forecast() fallback branch — not addressed in this fix; fixed separately in Issue #143",
+        ],
+    },
+    134: {
+        "version_fixed": "0.3.37",
+        "title": "Nat-vent fan preserved through HVAC-off classification; grace period nat-vent re-entry",
+        "scope_covered": [
+            "automation._apply_classification() — nat-vent fan preserved when classification sets HVAC off",
+            "automation._resume_from_grace() — nat-vent re-entry allowed when indoor exceeds comfort_cool",
+        ],
+        "scope_not_covered": [],
+    },
+    121: {
+        "version_fixed": "0.3.31",
+        "title": "Thermal model v3 — parallel multi-type observation collection",
+        "scope_covered": [
+            "coordinator._pending_observations — single PendingThermalEvent replaced with parallel dict",
+            "PassiveDecay, FanOnlyDecay, VentilatedDecay, SolarGain observation types",
+            "k_passive observable without HVAC cycles",
+            "HVAC plateau guard reduced from 1.0°F to 0.3°F",
+            "ODE extended with k_vent and k_solar terms",
+            "investigator — fixed 6th fan_status state, warm_day event frequency, window compliance scope",
+        ],
+        "scope_not_covered": [],
+    },
+    119: {
+        "version_fixed": "0.3.29",
+        "title": "Dynamic Target Band — chart band tracks actual system targets",
+        "scope_covered": [
+            "coordinator._compute_target_band_schedule() — comfort/sleep/setback/vacation setpoints used",
+            "prediction — away/vacation modes use setback setpoints in physics simulation",
+            "vacation mode — deep setback applied across all forecast days",
+            "night-owl schedules — midnight wraparound normalization",
+            "chart band — setback_modifier reflected",
+            "adaptive sleep temps — compute_bedtime_setback() used in chart and prediction",
+        ],
+        "scope_not_covered": [],
+    },
+    108: {
+        "version_fixed": "0.3.22",
+        "title": "Sleep temp config no longer enforces ordering vs comfort/setback",
+        "scope_covered": [
+            "config_flow — sleep_heat/sleep_cool ordering validation removed",
+        ],
+        "scope_not_covered": [],
+    },
+    107: {
+        "version_fixed": "0.3.22",
+        "title": "UTC/local confusion — forecast key, overnight setpoints, predicted schedule, AI report timestamps",
+        "scope_covered": [
+            "coordinator._get_forecast() — forecast key changed from 'time' to 'datetime'",
+            "coordinator._get_forecast() — datetime parsing now timezone-aware via dt_util.as_local()",
+            "prediction — predicted indoor schedule uses local time not UTC hour",
+            "overnight setpoints — sleep_heat/sleep_cool used instead of setback floor",
+            "ai_skills_investigator — activity report timestamps use local time",
+        ],
+        "scope_not_covered": [
+            "_get_forecast() fallback branch — fallback block not addressed in this fix; fixed in Issue #143",
+        ],
+    },
 }
 
 GITHUB_REPO = "gunkl/ClimateAdvisor"

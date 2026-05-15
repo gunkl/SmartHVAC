@@ -1,0 +1,199 @@
+"""Tests for _get_forecast() date-keyed dict matching (Issue #143).
+
+Covers:
+1. API starts from tomorrow — forecast array has no today entry
+2. Normal full forecast — both today and tomorrow present
+3. Core regression guard — today_high != tomorrow_high when API starts from tomorrow
+4. Empty forecast — all temperatures fall back to current_outdoor
+5. UTC midnight datetimes — entries timestamped at UTC midnight are matched by UTC
+   calendar date, not shifted to the previous local day (the production root cause)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import types
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+# ── HA module stubs ──────────────────────────────────────────────────────────
+if "homeassistant" not in sys.modules:
+    from conftest import _install_ha_stubs
+
+    _install_ha_stubs()
+
+
+_TODAY = date(2026, 5, 15)
+_TOMORROW = _TODAY + timedelta(days=1)
+_CURRENT_OUTDOOR = 65.0
+
+# dt_util.utcnow() mock — 06:00 UTC on today (= 11pm PDT prev day, but UTC date = today)
+_NOW_UTC = datetime(2026, 5, 15, 13, 0, 0, tzinfo=UTC)  # 1pm UTC = 6am PDT
+
+
+def _make_entry(d: date, temp: float, *, utc_midnight: bool = False) -> dict:
+    """Forecast entry for the given date.
+
+    utc_midnight=True: timestamps at UTC midnight (e.g. 2026-05-16T00:00:00+00:00).
+    In PDT (UTC-7) this shifts to 5pm the previous local day — the production case.
+
+    utc_midnight=False (default): timestamps at local noon with -07:00 offset.
+    UTC date == local date in this case.
+    """
+    dt_str = f"{d.isoformat()}T00:00:00+00:00" if utc_midnight else f"{d.isoformat()}T12:00:00-07:00"
+    return {
+        "datetime": dt_str,
+        "temperature": temp,
+        "templow": temp - 15,
+    }
+
+
+def _make_coordinator_stub(forecast_data: list) -> MagicMock:
+    """Build a minimal coordinator-like stub for testing _get_forecast().
+
+    Uses the types.MethodType pattern consistent with test_coordinator.py.
+    """
+    from custom_components.climate_advisor.coordinator import ClimateAdvisorCoordinator
+
+    coord = MagicMock()
+    coord.hass = MagicMock()
+
+    # Weather state: available with a temperature attribute
+    weather_state = MagicMock()
+    weather_state.state = "sunny"
+    weather_state.attributes = {
+        "temperature": _CURRENT_OUTDOOR,
+        "temperature_unit": "°F",
+    }
+    coord.hass.states.get = MagicMock(return_value=weather_state)
+
+    coord.config = {
+        "climate_entity": "climate.test",
+        "weather_entity": "weather.test",
+        "temp_unit": "fahrenheit",
+        "learning_enabled": False,  # skip bias correction
+    }
+
+    coord._outdoor_temp_history = []
+
+    # Bind the real _get_forecast method so we test the actual code
+    coord._get_forecast = types.MethodType(ClimateAdvisorCoordinator._get_forecast, coord)
+    coord._get_forecast_data = AsyncMock(return_value=forecast_data)
+
+    # Stub helpers that _get_forecast delegates to
+    coord._get_outdoor_temp = MagicMock(return_value=_CURRENT_OUTDOOR)
+    coord._get_indoor_temp = MagicMock(return_value=72.0)
+
+    # learning stub for bias check
+    coord.learning = MagicMock()
+    coord.learning.get_weather_bias = MagicMock(return_value={"confidence": "none"})
+
+    return coord
+
+
+def _run_get_forecast(coord) -> object:
+    """Run _get_forecast() with dt_util.utcnow patched to _NOW_UTC."""
+
+    async def run():
+        with patch(
+            "custom_components.climate_advisor.coordinator.dt_util.utcnow",
+            return_value=_NOW_UTC,
+        ):
+            return await coord._get_forecast()
+
+    return asyncio.run(run())
+
+
+class TestForecastDateMatching:
+    """Tests for the date-keyed dict matching in _get_forecast()."""
+
+    def test_api_starts_from_tomorrow_returns_correct_tomorrow(self, tmp_path: Path):
+        """When API omits today, tomorrow_high comes from tomorrow's entry not today's."""
+        forecast = [
+            _make_entry(_TOMORROW, 72.0),
+            _make_entry(_TOMORROW + timedelta(days=1), 68.0),
+        ]
+        coord = _make_coordinator_stub(forecast)
+        result = _run_get_forecast(coord)
+
+        assert result is not None
+        # Today has no forecast entry — falls back to current_outdoor
+        assert result.today_high == pytest.approx(_CURRENT_OUTDOOR)
+        # Tomorrow correctly reads from its own entry, NOT from forecast[0] via blind fallback
+        assert result.tomorrow_high == pytest.approx(72.0)
+
+    def test_normal_forecast_both_days_found(self, tmp_path: Path):
+        """Normal forecast with both today and tomorrow entries — both correctly extracted."""
+        forecast = [
+            _make_entry(_TODAY, 78.0),
+            _make_entry(_TOMORROW, 72.0),
+            _make_entry(_TOMORROW + timedelta(days=1), 68.0),
+        ]
+        coord = _make_coordinator_stub(forecast)
+        result = _run_get_forecast(coord)
+
+        assert result is not None
+        assert result.today_high == pytest.approx(78.0)
+        assert result.tomorrow_high == pytest.approx(72.0)
+
+    def test_no_fallback_collision_when_api_starts_from_tomorrow(self, tmp_path: Path):
+        """Core regression: today_high must NOT equal tomorrow_high when API starts from tomorrow."""
+        # Pre-fix: both today_fc and tomorrow_fc pointed to forecast[0] (72.0 each).
+        # Post-fix: today_fc = None → current_outdoor (65.0); tomorrow_fc = forecast[0] (72.0).
+        forecast = [
+            _make_entry(_TOMORROW, 72.0),
+            _make_entry(_TOMORROW + timedelta(days=1), 65.0),
+        ]
+        coord = _make_coordinator_stub(forecast)
+        result = _run_get_forecast(coord)
+
+        assert result is not None
+        assert result.today_high != pytest.approx(72.0), (
+            "REGRESSION: today_high equals tomorrow's forecast value — blind-index fallback collision not fixed"
+        )
+        assert result.tomorrow_high == pytest.approx(72.0)
+        assert result.today_high == pytest.approx(_CURRENT_OUTDOOR)
+
+    def test_empty_forecast_returns_current_outdoor(self, tmp_path: Path):
+        """Empty forecast array — all temperatures fall back to current_outdoor."""
+        coord = _make_coordinator_stub([])
+        result = _run_get_forecast(coord)
+
+        assert result is not None
+        assert result.today_high == pytest.approx(_CURRENT_OUTDOOR)
+        assert result.tomorrow_high == pytest.approx(_CURRENT_OUTDOOR)
+
+    def test_utc_midnight_entries_matched_by_utc_calendar_date(self, tmp_path: Path):
+        """UTC midnight timestamps must match by UTC date, not local date.
+
+        Production root cause: weather APIs like Open-Meteo and some HA integrations
+        return daily forecast entries timestamped at UTC midnight. In PDT (UTC-7),
+        2026-05-16T00:00:00+00:00 converts to 2026-05-15T17:00-07:00 (local), which
+        has local date 2026-05-15 (TODAY). Using local date would bucket tomorrow's
+        entry as today and day+2 as tomorrow — same off-by-one as the original bug.
+
+        Using UTC date: 2026-05-16T00:00:00+00:00 has UTC date 2026-05-16 → tomorrow. ✓
+        """
+        # Entries timestamped at UTC midnight — the production problematic format.
+        # _TODAY = 2026-05-15, _TOMORROW = 2026-05-16
+        # UTC midnight for _TODAY  → UTC date 2026-05-15 → should be today_fc
+        # UTC midnight for _TOMORROW → UTC date 2026-05-16 → should be tomorrow_fc
+        forecast = [
+            _make_entry(_TODAY, 72.0, utc_midnight=True),
+            _make_entry(_TOMORROW, 79.0, utc_midnight=True),
+            _make_entry(_TOMORROW + timedelta(days=1), 68.0, utc_midnight=True),
+        ]
+        coord = _make_coordinator_stub(forecast)
+        result = _run_get_forecast(coord)
+
+        assert result is not None
+        assert result.today_high == pytest.approx(72.0), (
+            "UTC midnight today entry must match today, not be shifted to yesterday"
+        )
+        assert result.tomorrow_high == pytest.approx(79.0), (
+            "UTC midnight tomorrow entry must match tomorrow, not be shifted to today"
+        )
