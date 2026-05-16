@@ -1627,6 +1627,7 @@
   if (tm.k_vent != null) envParamRows.push({ label: 'Air exchange', value: `${Math.abs(tm.k_vent).toFixed(2)} /hr` });
   if (tm.k_vent_window != null) envParamRows.push({ label: 'Ventilated loss rate', value: `${Math.abs(tm.k_vent_window).toFixed(2)} /hr (windows open)` });
   if (tm.k_solar != null) envParamRows.push({ label: 'Solar gain', value: `${tm.k_solar.toFixed(2)} ${unitLabel}/hr·sun` });
+  if (tm.solar_phase_offset_h != null) envParamRows.push({ label: 'Solar peak lag', value: `${tm.solar_phase_offset_h.toFixed(1)}h (peak at ${13 + Math.round(tm.solar_phase_offset_h)}:00)` });
   if (tm.avg_r_squared_passive != null && envConf !== 'none') {
     envParamRows.push({ label: 'Avg fit quality', value: `${Math.round(tm.avg_r_squared_passive * 100)}%` });
   }
