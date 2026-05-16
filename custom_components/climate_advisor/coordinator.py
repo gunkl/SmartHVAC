@@ -174,7 +174,7 @@ from .const import (
     VACATION_SETBACK_EXTRA,
     VERSION,
 )
-from .learning import DailyRecord, LearningEngine
+from .learning import DailyRecord, LearningEngine, compute_k_passive_blocks
 from .state import StatePersistence
 from .temperature import convert_delta, format_temp, from_fahrenheit, to_fahrenheit
 
@@ -3053,7 +3053,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         for window in target_windows:
             result_a = self._passive_endpoint_estimate(window)
-            b_raw = self.learning.compute_k_passive_blocks(window)
+            b_raw = compute_k_passive_blocks(window)
             result_b = (
                 {"k": b_raw[0], "r_squared": b_raw[1], "source": "block_ols", "grade": "low"}
                 if b_raw is not None and b_raw[0] is not None
@@ -3251,7 +3251,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
 
         for window in target_windows:
             result_a = self._ventilated_endpoint_estimate(window)
-            b_raw = self.learning.compute_k_passive_blocks(window)
+            b_raw = compute_k_passive_blocks(window)
             result_b = (
                 {"k": b_raw[0], "r_squared": b_raw[1], "source": "block_ols", "grade": "low"}
                 if b_raw is not None and b_raw[0] is not None
