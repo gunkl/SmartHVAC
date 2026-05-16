@@ -13,14 +13,15 @@
 | What invariant must hold for every committed observation's `k_passive`? | `k_passive < 0` for all non-bridge envelope modes; `k_solar ≥ 0` for all committed solar observations. The bridge proxy (`k_vent_window`) may equal 0.0 exactly (perfectly inert home) but never > 0. | [§Invariants](#invariants) |
 | How does `ventilated_decay` commit path choose between 1-param and 2-param OLS? | When solar factor range across samples ≥ 0.30, the 2-param path fires first and — if bounds pass — commits both `k_env` and `k_solar`, bypassing 1-param entirely. If 2-param fails bounds/R², the 1-param path runs as fallback. | [§OLS Functions — compute\_k\_env\_solar](#compute_k_env_solar) |
 | What is the EWMA alpha for each confidence grade and which observation types write `k_passive`? | Alpha: high = 0.30, medium = 0.15, low = 0.05. Only `passive`, `heat`, and `cool` modes write `k_passive`; `fan_only` writes `k_vent`; `ventilated` writes `k_vent_window`; `solar` writes `k_solar`. | [§EWMA Update](#ewma-update-_update_thermal_model_cache) |
+| How does the dual-estimator framework select between endpoint and block-averaged OLS per overnight window? | Both estimators always run; an 8-row decision table selects based on R²_B and 30% relative agreement. On disagreement, Estimator A (endpoint) wins. On R²_B ≥ 0.50 and agreement, B wins with medium grade (α=0.15). | [§Dual Estimator Framework](#dual-estimator-framework) |
 
 ---
 
 ## Scope
 
 **Files:**
-- `learning.py` — OLS functions (`compute_k_passive`, `compute_k_env_solar`, `compute_k_active`, `compute_k_active_single_point`), commit routing (`_commit_event_from_dict`), EWMA update (`_update_thermal_model_cache`), model output (`get_thermal_model`, `record_thermal_observation`)
-- `coordinator.py` — observation orchestration (`_sample_all_observations`, `_start_hvac_observation`, `_start_decay_observation`, `_end_hvac_active_phase`, `_check_hvac_stabilization`, `_evaluate_rolling_window`, `_commit_rolling_window_obs`, `_commit_observation_if_sufficient`, `_abandon_observation`, `_commit_observation`), ODE prediction (`_build_predicted_indoor_future`, `_simulate_indoor_physics`, `_simulate_indoor_physics_v3`)
+- `learning.py` — OLS functions (`compute_k_passive`, `compute_k_passive_blocks`, `compute_k_env_solar`, `compute_k_active`, `compute_k_active_single_point`), commit routing (`_commit_event_from_dict`), EWMA update (`_update_thermal_model_cache`), model output (`get_thermal_model`, `record_thermal_observation`)
+- `coordinator.py` — observation orchestration (`_sample_all_observations`, `_start_hvac_observation`, `_start_decay_observation`, `_end_hvac_active_phase`, `_check_hvac_stabilization`, `_evaluate_rolling_window`, `_commit_rolling_window_obs`, `_commit_observation_if_sufficient`, `_abandon_observation`, `_commit_observation`), ODE prediction (`_build_predicted_indoor_future`, `_simulate_indoor_physics`, `_simulate_indoor_physics_v3`), dual-estimator chart_log fit (`_is_solar_hour`, `_select_estimator`, `_extract_passive_windows`, `_passive_endpoint_estimate`, `_run_passive_chart_log_fit`, `_extract_ventilated_windows`, `_ventilated_endpoint_estimate`, `_run_ventilated_chart_log_fit`)
 
 **Line ranges (verified against source):**
 
@@ -170,6 +171,36 @@ R² is clamped to [0.0, ∞).
 | `REJECT_OLS_BAD_FIT` | `R² < THERMAL_MIN_R_SQUARED (0.20)` |
 
 **Post-condition:** Returns `(k_passive, r_squared, rejection_code)`. Exactly one of `k_passive` or `rejection_code` is non-None. On success: `k_passive < 0`, `rejection_code = None`. On failure: `k_passive = None`, `rejection_code` is one of the `REJECT_*` constants, `r_squared` is the computed value (may be 0.0 if OLS never ran).
+
+---
+
+### compute_k_passive_blocks()
+
+**Signature:** `compute_k_passive_blocks(window_entries, block_minutes=60, min_blocks=6) -> tuple[float | None, float, str | None]`
+
+**Input:** `window_entries` — list of chart_log entry dicts with fields `ts` (ISO-8601 string), `indoor` (float, °F), `outdoor` (float, °F). These are raw chart_log entries at ~30-minute cadence, not 5-min thermostat samples.
+
+**Purpose:** Block-averaged OLS for k_passive using the nightly chart_log window. Averaging 30-min entries into 60-min blocks reduces quantization noise via CLT: from ±1°F raw to ±0.71°F per block (√(1/2) × 1°F). This produces R² of 0.5–0.8 on clean nights vs. ≈0.02 for raw 5-min consecutive-pair OLS.
+
+**Algorithm:**
+1. Compute elapsed minutes per entry from the first entry's `ts`.
+2. Group entries into 60-min blocks by `floor(elapsed_min / block_minutes)`. Skip any block with fewer than 2 entries.
+3. Per usable block: compute mean `indoor`, mean `outdoor`, mean elapsed_min.
+4. If usable blocks < `min_blocks` (6): return `(None, 0.0, REJECT_TOO_FEW_BLOCKS)`.
+5. Build synthetic sample dicts `{"indoor_temp_f": ..., "outdoor_temp_f": ..., "elapsed_minutes": ...}` from block means.
+6. Call `compute_k_passive(synthetic_samples, min_samples=min_blocks - 1)` and return its result directly.
+
+**Rejection codes:**
+
+| Code | Condition |
+|---|---|
+| `REJECT_TOO_FEW_BLOCKS` | Usable blocks (≥2 entries each) < `min_blocks` (6) |
+| `REJECT_TOO_FEW_SAMPLES` | Delegated from `compute_k_passive` on the synthetic samples |
+| `REJECT_OLS_WRONG_SIGN` | Delegated from `compute_k_passive` |
+| `REJECT_OLS_BOUNDS` | Delegated from `compute_k_passive` |
+| `REJECT_OLS_BAD_FIT` | Delegated from `compute_k_passive` (R² < 0.20) |
+
+**Post-condition:** Same as `compute_k_passive`: `(k_passive, r_squared, rejection_code)`. Exactly one of `k_passive` or `rejection_code` is non-None.
 
 ---
 
@@ -376,6 +407,81 @@ When the guard applies, ramp interpolation is used for that hour. When windows a
 | 1–2 (`< THERMAL_SWING_CONF_MEDIUM = 3`) | `"low"` |
 | 3–9 (`< THERMAL_SWING_CONF_HIGH = 10`) | `"medium"` |
 | 10+ | `"high"` |
+
+---
+
+## Dual Estimator Framework
+
+*Added in v0.3.45 (Issue #146). Applies to both `_run_passive_chart_log_fit` and `_run_ventilated_chart_log_fit`.*
+
+### Motivation
+
+The in-memory consecutive-pair OLS on 5-min thermostat samples structurally fails for 1°F thermostat resolution: overnight drift of ≈0.25°F/hr produces 0.021°F per 5-min interval, well below the 1°F quantization floor. Nearly all pairs show rate=0; rare pairs show ±12°F/hr spikes. R² ≈ 0.02; almost all windows are rejected. The v0.3.43 chart_log endpoint backfill committed 8 windows at α=0.05, yielding only 33% convergence ((0.95)^8 = 0.663 weight on prior). Both k_passive and k_vent_window were ≈3–5× too large, causing the overnight predicted indoor temperature to dip 8–10°F below actual.
+
+The dual-estimator framework runs both estimators on every overnight chart_log window and selects per-night based on data quality. Backfill v2 reprocesses 30 days, accumulating enough EWMA iterations for convergence.
+
+### Estimator A — Endpoint
+
+`k = ln((T_end − T_out_avg) / (T_start − T_out_avg)) / Δt_hours`
+
+- Uses only the bookend readings of the window; immune to mid-window sensor blips that corrupt interior samples
+- Natural regime filter: ratio in (0, 1) rejects solar and HVAC contamination before OLS runs
+- No R² (returns `r_squared=None`); grade always `"low"`
+- Source label: `"endpoint"`
+
+### Estimator B — Block-Averaged OLS
+
+`compute_k_passive_blocks()` on the window's chart_log entries (see [§OLS Functions — compute\_k\_passive\_blocks](#compute_k_passive_blocks)).
+
+- 60-min blocks, minimum 6 blocks (≥6h window)
+- Produces a meaningful R² (typically 0.5–0.8 on clean overnight windows)
+- Source label: `"block_ols"`
+
+### Solar Guard
+
+Both extractors (`_extract_passive_windows`, `_extract_ventilated_windows`) accept only windows where both the start **and** end timestamps fall within local hours 20:00–08:00 (i.e., neither end is in the 08:00–19:59 daytime band). `_is_solar_hour(ts_str)` returns `True` when local hour is 8–19. Any window touching a solar hour is dropped.
+
+This prevents solar-heated afternoon samples from contaminating the passive decay estimate for both estimators simultaneously.
+
+### Per-Night Selection (`_select_estimator`)
+
+`_select_estimator(result_a, result_b) -> dict | None`
+
+Both A and B always run. The decision table selects one result and sets the final `grade`:
+
+| A-valid | B-valid | R²_B | Agree (≤30% rel diff)? | Selection | Grade |
+|---|---|---|---|---|---|
+| no | no | — | — | `None` | — |
+| yes | no | — | — | A | `low` |
+| no | yes | < 0.20 | — | `None` | — |
+| no | yes | 0.20–0.49 | — | B | `low` |
+| no | yes | ≥ 0.50 | — | B | `medium` |
+| yes | yes | < 0.20 | — | A | `low` |
+| yes | yes | 0.20–0.49 | yes | B | `low` |
+| yes | yes | 0.20–0.49 | no | A | `low` |
+| yes | yes | ≥ 0.50 | yes | B | `medium` |
+| yes | yes | ≥ 0.50 | no | A | `low` |
+
+Agreement is defined as `abs(k_A − k_B) / max(abs(k_A), abs(k_B)) <= THERMAL_DUAL_AGREE_REL (0.30)`.
+
+Thresholds: `THERMAL_DUAL_OLS_GOOD = 0.50` (medium grade boundary), `THERMAL_DUAL_OLS_OK = 0.20` (B-valid floor).
+
+When both estimators are valid, `_select_estimator` logs an INFO line:
+```
+chart_log dual_estimator passive: k_A=−0.021 k_B=−0.019 R²_B=0.63 agree=True source=block_ols grade=medium
+```
+
+`observation_count_passive` increments by 1 per committed window regardless of which estimator won.
+
+### Backfill v2
+
+New flags `_passive_k_backfill_v2` and `_vent_k_backfill_v2` (distinct from the v1 `_passive_k_backfill` flag). Persisted in `_build_state_dict`, restored in `async_restore_state`.
+
+On startup, if `_passive_k_backfill_v2` is `False`, `_run_passive_chart_log_fit(backfill=True)` processes the last 30 days of chart_log entries through the full dual-estimator pipeline. Each selected window commits one EWMA update. At medium grade (α=0.15), 30 updates converge to ≈99% of the true value: `1 − (0.85)^30 ≈ 0.990`. Same for `_vent_k_backfill_v2` via `_run_ventilated_chart_log_fit(backfill=True)`.
+
+### Symmetric Application
+
+`_run_ventilated_chart_log_fit` follows the same structure: extract windows with solar guard → per-window run A + B + `_select_estimator` → `record_thermal_observation`. The ventilated path writes to `k_vent_window` rather than `k_passive`, but the estimator machinery (`compute_k_passive_blocks`, `_passive_endpoint_estimate`, `_select_estimator`) is reused unchanged.
 
 ---
 

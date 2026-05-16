@@ -12,7 +12,7 @@ import os
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -29,7 +29,10 @@ from .const import (
     REJECT_OLS_BOUNDS,
     REJECT_OLS_WRONG_SIGN,
     REJECT_SMALL_DELTA,
+    REJECT_TOO_FEW_BLOCKS,
     REJECT_TOO_FEW_SAMPLES,
+    THERMAL_BLOCK_OLS_BLOCK_MINUTES,
+    THERMAL_BLOCK_OLS_MIN_BLOCKS,
     THERMAL_HVAC_MIN_SIGNAL_F,
     THERMAL_K_ACTIVE_COOL_MAX,
     THERMAL_K_ACTIVE_COOL_MIN,
@@ -277,6 +280,91 @@ def compute_k_passive(
         return None, r_squared, REJECT_OLS_BAD_FIT
 
     return k_p, r_squared, None
+
+
+def compute_k_passive_blocks(
+    window_entries: list[dict],
+    block_minutes: int = THERMAL_BLOCK_OLS_BLOCK_MINUTES,
+    min_blocks: int = THERMAL_BLOCK_OLS_MIN_BLOCKS,
+) -> tuple[float | None, float, str | None]:
+    """Block-averaged 1-param OLS estimator for k_passive using chart_log window data.
+
+    Aggregates chart_log entries into block_minutes-wide blocks, averages indoor/outdoor
+    temp within each block, then runs compute_k_passive on the block averages. This
+    reduces 1°F thermostat quantization noise via CLT before OLS, giving a meaningful R².
+
+    Args:
+        window_entries: List of chart_log entry dicts with keys "ts" (ISO string),
+            "indoor" (°F float), and "outdoor" (°F float).
+        block_minutes: Width of each averaging block in minutes (default 60).
+        min_blocks: Minimum number of blocks required (default 6, i.e. ≥6h window).
+
+    Returns:
+        Tuple of (k_passive, r_squared, reason_code) — same shape as compute_k_passive.
+        reason_code is REJECT_TOO_FEW_BLOCKS when fewer than min_blocks remain after
+        aggregation, or a downstream REJECT_* code if compute_k_passive itself rejects.
+    """
+    if not window_entries:
+        return None, 0.0, REJECT_TOO_FEW_SAMPLES
+
+    # Parse t0 from the first entry's ISO timestamp
+    try:
+        t0_str = window_entries[0]["ts"]
+        t0 = datetime.fromisoformat(t0_str)
+        if t0.tzinfo is None:
+            t0 = t0.replace(tzinfo=UTC)
+        t0_epoch = t0.timestamp()
+    except (ValueError, KeyError, TypeError):
+        return None, 0.0, REJECT_TOO_FEW_SAMPLES
+
+    # Group entries into block_minutes-wide blocks
+    blocks: dict[int, list[dict]] = {}
+    for entry in window_entries:
+        try:
+            ts_str = entry["ts"]
+            ts = datetime.fromisoformat(ts_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            elapsed_s = ts.timestamp() - t0_epoch
+            block_idx = int((elapsed_s / 60.0) // block_minutes)
+            blocks.setdefault(block_idx, []).append(entry)
+        except (ValueError, KeyError, TypeError):
+            continue
+
+    # Build synthetic samples from block averages
+    synthetic_samples: list[dict] = []
+    for block_idx in sorted(blocks.keys()):
+        block_entries = blocks[block_idx]
+        if len(block_entries) < 2:
+            continue
+        mean_indoor = sum(float(e["indoor"]) for e in block_entries) / len(block_entries)
+        mean_outdoor = sum(float(e["outdoor"]) for e in block_entries) / len(block_entries)
+        mean_elapsed = sum(
+            (
+                datetime.fromisoformat(e["ts"])
+                .replace(
+                    tzinfo=UTC
+                    if datetime.fromisoformat(e["ts"]).tzinfo is None
+                    else datetime.fromisoformat(e["ts"]).tzinfo
+                )
+                .timestamp()
+                - t0_epoch
+            )
+            / 60.0
+            for e in block_entries
+        ) / len(block_entries)
+        synthetic_samples.append(
+            {
+                "indoor_temp_f": mean_indoor,
+                "outdoor_temp_f": mean_outdoor,
+                "elapsed_minutes": mean_elapsed,
+            }
+        )
+
+    if len(synthetic_samples) < min_blocks:
+        return None, 0.0, REJECT_TOO_FEW_BLOCKS
+
+    return compute_k_passive(synthetic_samples, min_samples=min_blocks - 1)
 
 
 def compute_k_env_solar(

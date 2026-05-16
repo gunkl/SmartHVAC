@@ -4,7 +4,7 @@ DOMAIN = "climate_advisor"
 
 # Integration version — MUST match manifest.json "version" field.
 # A test in tests/test_version_sync.py enforces this.
-VERSION = "0.3.44"
+VERSION = "0.3.45"
 
 RELEASE_NOTES: dict[str, list[str]] = {
     "0.3.44": [
@@ -67,6 +67,21 @@ RELEASE_NOTES: dict[str, list[str]] = {
 # "[NOT COVERED] — potential gap" instead of "could not verify."
 # Add an entry here as part of the definition of done when closing any issue.
 KNOWN_FIXES: dict[int, dict] = {
+    146: {
+        "version_fixed": "0.3.45",
+        "title": "Dual-estimator framework: block-averaged OLS + endpoint estimator with per-night dynamic selection",
+        "scope_covered": [
+            "k_passive: block-averaged OLS (60-min blocks) alongside endpoint estimator each overnight window",
+            "k_vent_window: same dual-estimator framework applied symmetrically",
+            "Dynamic per-night selection via decision table — no one-way door",
+            "Backfill v2: 30-day chart_log reprocessed, EWMA converges vs stale v1 values",
+            "Daytime solar guard: passive windows restricted to 20:00–08:00",
+        ],
+        "scope_not_covered": [
+            "Thermal mass / phase lag — ODE is still first-order, solar peak timing not addressed",
+            "In-memory consecutive-pair OLS on 5-min samples — still structurally limited by 1°F quantization",
+        ],
+    },
     143: {
         "version_fixed": "0.3.44",
         "title": "_get_forecast() blind-index fallback replaced with UTC-date-keyed dict",
@@ -941,6 +956,7 @@ REJECT_OLS_BAD_FIT = "ols_bad_fit"
 REJECT_OLS_WRONG_SIGN = "ols_wrong_sign"
 REJECT_OLS_BOUNDS = "ols_bounds"
 REJECT_ABANDONED = "abandoned"
+REJECT_TOO_FEW_BLOCKS = "too_few_blocks"
 
 # Reduced plateau guard (was THERMAL_MIN_DECAY_F = 1.0)
 THERMAL_HVAC_MIN_DECAY_F = 0.3
@@ -959,6 +975,13 @@ THERMAL_SWING_CONF_HIGH: int = 10
 THERMAL_PASSIVE_MIN_SAMPLES = 30
 THERMAL_PASSIVE_MIN_DELTA_F = 3.0
 THERMAL_PASSIVE_MIN_SIGNAL_F = 0.5
+
+# Block-averaged OLS estimator for k_passive (dual-estimator framework, Issue #146)
+THERMAL_BLOCK_OLS_BLOCK_MINUTES = 60  # width of each averaging block (minutes)
+THERMAL_BLOCK_OLS_MIN_BLOCKS = 6  # minimum blocks required for OLS (≥6 → ≥6h window)
+THERMAL_DUAL_AGREE_REL = 0.30  # max relative disagreement for endpoint+block to "agree"
+THERMAL_DUAL_OLS_GOOD = 0.50  # block-OLS R² threshold for "good" quality
+THERMAL_DUAL_OLS_OK = 0.20  # block-OLS R² threshold for "ok" quality
 
 # Chart_log endpoint estimator thresholds (replaces passive_decay consecutive-pair OLS)
 # Min window duration and temperature drop for passive-only and overnight ventilated windows.
