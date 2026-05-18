@@ -79,7 +79,7 @@ Contains today_high, today_low, tomorrow_high, tomorrow_low, current_outdoor_tem
 Produced by `classify_day()`. Contains day_type, trend_direction, trend_magnitude, and computed recommendations: hvac_mode, pre_condition, windows_recommended, window_open/close times, setback_modifier.
 
 ### DailyRecord (learning.py)
-One day's tracked data: what was recommended, what actually happened, outcomes (runtime, overrides, comfort violations). Stored as JSON, rolling 90-day window.
+One day's tracked data: what was recommended, what actually happened, outcomes (runtime, overrides, comfort violations). Stored as JSON, rolling 90-day window. v0.3.48 adds five setback-visibility fields: `setback_heat_applied_f`, `setback_cool_applied_f`, `setback_depth_f`, `setback_was_adaptive`, `setback_skipped_reason`. See [§6a DailyRecord setback fields](08-COMPUTATION-REFERENCE.md#6a-occupancy-aware-automation-guards-issue-85).
 
 ## Coordinator Scheduled Events
 
@@ -131,6 +131,15 @@ Pure module-level functions called by `get_chart_data()` to build the dashboard 
 | `_build_future_forecast_outdoor(hourly_forecast)` | Returns `[{ts, temp}]` — raw hourly outdoor forecast temperatures. |
 | `_simulate_indoor_physics(t_current, t_outdoor, q, k_passive, dt_hours)` | Single ODE time step for the physics path. |
 | `_compute_ramp_hours(temp_delta, rate)` | Computes ramp duration for the legacy fallback path. |
+
+`get_chart_data()` also returns two setpoint arrays added in v0.3.48 (Issue #151):
+
+| Response key | Content |
+|---|---|
+| `historical_setpoint` | `[{ts, temp}]` — actual thermostat `target_temperature` captured at each 30-min poll; `null` entries when HVAC mode is off |
+| `predicted_setpoint` | `[{ts, temp}]` — future setpoint derived from target band (lower bound in heat mode, upper bound in cool mode, null in off mode) |
+
+Both are rendered in the dashboard as a stepped purple/magenta line: solid past, dashed future, faint-dotted forward-fill during off-mode periods. Toggle via the "Thermostat Setpoint" overlay checkbox (hidden by default).
 
 ## Sensors Exposed
 

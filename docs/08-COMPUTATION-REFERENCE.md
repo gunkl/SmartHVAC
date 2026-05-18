@@ -521,7 +521,19 @@ The `_set_temperature_for_mode()` safety net catches all indirect callers (door/
 
 Fire paths emit `bedtime_setback` with `{mode, target_f, depth_f, adaptive, modifier}`. Both event types are visible in the AI investigator's structured event log.
 
-**Test coverage:** `tests/test_occupancy_automation.py` — 18 tests covering all cells above.
+**DailyRecord setback fields (Issue #151):** `handle_bedtime()` writes the following fields to `DailyRecord` on every bedtime pass — fire or skip:
+
+| Field | Type | Set when | Value |
+|---|---|---|---|
+| `setback_heat_applied_f` | `float \| None` | Fire path, heat mode | Applied heat setback setpoint (°F) |
+| `setback_cool_applied_f` | `float \| None` | Fire path, cool mode | Applied cool setback setpoint (°F) |
+| `setback_depth_f` | `float \| None` | Fire path | Depth of setback from comfort setpoint (°F) |
+| `setback_was_adaptive` | `bool \| None` | Fire path | `True` when thermal model drove the depth; `False` for default |
+| `setback_skipped_reason` | `str \| None` | Skip path | One of `"occupancy"`, `"hvac_off"`, `"no_classification"` |
+
+All five fields default to `None` at record creation. On a fire night, `setback_skipped_reason` stays `None`; on a skip night, all applied-value fields stay `None`. Accessible via `learning_db.py --daily` (see §Diagnostic Tools).
+
+**Test coverage:** `tests/test_occupancy_automation.py` — 18 tests covering all cells above; `tests/test_bedtime_setback.py` — full fire/skip/field coverage.
 
 ### 6b. Warm-Day Comfort-Floor Guard
 

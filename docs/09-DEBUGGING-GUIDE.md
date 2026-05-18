@@ -238,6 +238,13 @@ python3 tools/learning_db.py
 ```
 Shows model summary, all committed observations, and rejection log in one report.
 
+**Step 6 — Check nightly setback history (v0.3.48+):**
+```bash
+python3 tools/learning_db.py --daily        # last 30 nights
+python3 tools/learning_db.py --daily 60     # last 60 nights
+```
+Prints one row per night: date, day type, HVAC mode, applied setpoint (°F), setback depth (°F), adaptive flag, and skip reason. Use this to diagnose whether `handle_bedtime()` has been firing, applying static or adaptive depth, or silently skipping on warm/mild nights (`hvac_off`) or away nights (`occupancy`). Skip nights show `setback_skipped_reason` in the last column; fire nights show `depth_f` and `adaptive=True/False`.
+
 ### "Predicted temperature curve looks wrong"
 
 The physics path activates when `confidence != "none"` and `k_passive < 0`. Before that threshold is reached, the legacy ramp interpolation runs.
