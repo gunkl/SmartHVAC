@@ -4307,7 +4307,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "expected_low": c.tomorrow_low,
         }
 
-    def get_chart_data(self, range_str: str = "24h") -> dict[str, Any]:
+    def get_chart_data(self, range_str: str = "24h", before_ts: float | None = None) -> dict[str, Any]:
         """Build chart data for the dashboard panel.
 
         Returns a dict with four series: predicted outdoor, predicted indoor,
@@ -4315,9 +4315,23 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         plus a rolling state log filtered/downsampled to the requested range.
 
         range_str: one of "6h", "12h", "24h", "3d", "7d", "30d", "1y"
+        before_ts: optional Unix epoch *seconds* upper-bound anchor.  When
+            provided the chart log is queried for [anchor - range, anchor)
+            instead of [now - range, now).  Forecast and prediction series are
+            suppressed for historical views (more than 1 h before now).
         """
         now = dt_util.now()
         current_hour = now.hour + now.minute / 60.0
+
+        # Resolve the optional historical anchor.
+        # Use UTC for the anchor datetime — chart log entries are stored in UTC
+        # (or UTC-offset ISO strings), so UTC comparison is always correct.
+        anchor_dt: datetime | None = None
+        is_historical = False
+        if before_ts is not None:
+            anchor_dt = datetime.fromtimestamp(before_ts, tz=UTC)
+            # View is "historical" when the anchor is more than 1 hour before now
+            is_historical = (now - anchor_dt).total_seconds() > 3600
 
         thermal_model = (
             self.learning.get_thermal_model(learning_health=self._build_learning_health()) if self.learning else {}
@@ -4334,7 +4348,7 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             thermal_model.get("observation_count_heat", 0),
             thermal_model.get("observation_count_cool", 0),
         )
-        log_entries = self._chart_log.get_entries(range_str)
+        log_entries = self._chart_log.get_entries(range_str, before=anchor_dt)
         actual_outdoor = []
         actual_indoor = []
         for _e in log_entries:
@@ -4355,18 +4369,32 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
         actual_outdoor = [{"time": p["time"], "temp": _conv(p["temp"])} for p in actual_outdoor]
         actual_indoor = [{"time": p["time"], "temp": _conv(p["temp"])} for p in actual_indoor]
 
-        predicted_indoor = [
-            {"ts": p["ts"], "temp": _conv(p["temp"])}
-            for p in _build_predicted_indoor_future(
-                self._hourly_forecast_temps,
-                self.config,
-                now,
-                current_indoor_temp=self._get_indoor_temp(),
-                thermal_model=thermal_model,
-                occupancy_mode=self._occupancy_mode,
-                classification=self._current_classification,
-            )
-        ]
+        # Historical views suppress forward-looking series (prediction + forecast).
+        # They are meaningless for a window anchored in the past and would confuse
+        # the chart by overlaying future data on a historical viewport.
+        if is_historical:
+            predicted_indoor = []
+            forecast_outdoor = []
+        else:
+            predicted_indoor = [
+                {"ts": p["ts"], "temp": _conv(p["temp"])}
+                for p in _build_predicted_indoor_future(
+                    self._hourly_forecast_temps,
+                    self.config,
+                    now,
+                    current_indoor_temp=self._get_indoor_temp(),
+                    thermal_model=thermal_model,
+                    occupancy_mode=self._occupancy_mode,
+                    classification=self._current_classification,
+                )
+            ]
+            forecast_outdoor = [
+                {"ts": p["ts"], "temp": _conv(p["temp"])}
+                for p in _build_future_forecast_outdoor(
+                    self._hourly_forecast_temps,
+                    classification=self._current_classification,
+                )
+            ]
 
         def _conv_log_entry(e: dict) -> dict:
             e = dict(e)
@@ -4376,14 +4404,6 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             return e
 
         log_entries = [_conv_log_entry(e) for e in log_entries]
-
-        forecast_outdoor = [
-            {"ts": p["ts"], "temp": _conv(p["temp"])}
-            for p in _build_future_forecast_outdoor(
-                self._hourly_forecast_temps,
-                classification=self._current_classification,
-            )
-        ]
 
         # Build timestamp list for _compute_target_band_schedule — same parse pattern
         # as _build_predicted_indoor_future.
@@ -4467,13 +4487,17 @@ class ClimateAdvisorCoordinator(DataUpdateCoordinator):
             "historical_setpoint": [
                 {"ts": e["ts"], "setpoint": _conv(e["setpoint"])} for e in _extract_historical_setpoint(log_entries)
             ],
-            "defense_lines": _compute_defense_lines(_conv_band),
-            "predicted_activity": _compute_predicted_activity(
-                _conv_band,
-                forecast_outdoor,
-                predicted_indoor,
-                self._current_classification,
-                self.config,
+            "defense_lines": [] if is_historical else _compute_defense_lines(_conv_band),
+            "predicted_activity": (
+                []
+                if is_historical
+                else _compute_predicted_activity(
+                    _conv_band,
+                    forecast_outdoor,
+                    predicted_indoor,
+                    self._current_classification,
+                    self.config,
+                )
             ),
             "unit": unit,
         }

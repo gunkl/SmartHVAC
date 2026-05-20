@@ -9,6 +9,7 @@
 | Is retention time-based or count-based, and what is the cap? | Time-based: entries older than `max_days` (default 365) are evicted. At ~30-minute cadence that is ~17,520 entries. There is no separate count cap. | [Retention Model](#retention-model) |
 | What does `append()` guarantee about entry ordering and eviction timing? | Entries are appended in call order; timestamps are NOT re-sorted. Pruning runs at most once per hour — the buffer may transiently exceed the window between prune passes. | [Append Contract](#append-contract) |
 | What does `get_entries()` return when the log is empty or the range produces no matches? | An empty list `[]`. No error is raised. Downsampling buckets that receive zero entries simply produce no output rows. | [Query Contract](#query-contract) |
+| How does `get_entries()` support historical navigation? | Pass `before: datetime` to anchor the query window to that point in time instead of the current clock. The window is then `[before − range_days, before)`. Used by `get_chart_data(before_ts=...)` to serve past data windows. | [Query Contract](#query-contract) |
 | What downsampling tier applies for each `range_str` value? | `6h`/`12h`/`24h`/`3d` → raw entries. `7d`/`30d` → hourly averages. `1y` → daily summaries. An unrecognised range string defaults to `24h` (1-day raw). | [Downsampling Rules](#downsampling-rules) |
 | What fields does a raw entry always carry, and which are optional? | Nine core fields always present: `ts`, `hvac`, `fan`, `indoor`, `outdoor`, `windows_open`, `windows_recommended`, `pred_outdoor`, `pred_indoor`. The `event` field is only present when the marker argument is non-None. | [Entry Schema](#entry-schema) |
 | How is `pred_outdoor` populated in each chart log entry? | Raw hourly forecast temperature for the current local hour, extracted by `_extract_current_hour_forecast_temp()` — no normalisation. `null` when hourly forecast has no entry for the current hour. | [Coordinator Chart Log Wiring](#coordinator-chart-log-wiring) |
@@ -56,6 +57,7 @@ This spec covers the `ChartStateLog` class in its entirety: construction, `load(
 ### For `get_entries()`
 1. `load()` has been called at least once since construction.
 2. `range_str` is one of the seven documented values, or an arbitrary string (which maps to the `24h` default).
+3. `before`, if supplied, is a timezone-aware `datetime`. When `None`, the window anchor defaults to `datetime.now(UTC)`.
 
 ## Post-conditions
 
@@ -83,6 +85,7 @@ This spec covers the `ChartStateLog` class in its entirety: construction, `load(
 2. All returned entries have a `ts` field.
 3. If the log is empty or no entries fall within the requested range: returns `[]`.
 4. Returned entries never contain data outside the requested time window.
+5. When `before` is supplied, no returned entry has `ts ≥ before`; the window is `[before − range_days, before)` exactly.
 
 ## Invariants
 
@@ -154,7 +157,11 @@ def append(
 
 ## Query Contract
 
-`get_entries(range_str: str = "24h") -> list[dict[str, Any]]`
+`get_entries(range_str: str = "24h", before: datetime | None = None) -> list[dict[str, Any]]`
+
+The optional `before` parameter anchors the query window to a past point in time. When supplied, the returned range is `[before − range_days, before)` instead of `[now − range_days, now)`. When `None` (default), the window ends at the current clock time.
+
+This parameter is the building block for chart historical navigation: `get_chart_data(before_ts=...)` passes a `datetime` derived from `before_ts` straight through to `get_entries(before=...)`.
 
 ### Recognised `range_str` values
 

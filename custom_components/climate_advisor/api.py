@@ -191,7 +191,16 @@ class ClimateAdvisorChartDataView(HomeAssistantView):
         if range_str not in valid_ranges:
             range_str = "24h"
 
-        return self.json(coordinator.get_chart_data(range_str=range_str))
+        before_ts_str = request.rel_url.query.get("before_ts")
+        before_ts: float | None = None
+        if before_ts_str:
+            try:
+                # Frontend sends milliseconds; coordinator expects seconds
+                before_ts = float(before_ts_str) / 1000.0
+            except (ValueError, TypeError):
+                before_ts = None
+
+        return self.json(coordinator.get_chart_data(range_str=range_str, before_ts=before_ts))
 
 
 class ClimateAdvisorAutomationStateView(HomeAssistantView):

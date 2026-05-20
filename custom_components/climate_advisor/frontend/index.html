@@ -915,6 +915,8 @@
   let _lastChartData = null;      // cache for overlay toggles
   let _chartZoomed = false;       // track zoom state
   let _windowOffset = 0;          // ms pan offset from now-centered position
+  let _dataWindowStart = null;    // earliest ts (ms) of currently loaded chart data
+  let _dataWindowEnd   = null;    // latest ts (ms) of currently loaded chart data
   let _touchStartX = 0;           // touch start x for swipe navigation
 
   // Colour palette (matches the dark theme screenshot)
@@ -971,9 +973,53 @@
     return { min: center - hours * 3600000, max: center + _rangeStep(range) };
   }
 
-  // Shift the chart window by direction (±1) × step, redrawing from cached data (no API refetch)
+  // Return the earliest timestamp (ms) found across state_log, actual_indoor, actual_outdoor
+  function _getDataMinTs(data) {
+    const sources = [data.state_log, data.actual_indoor, data.actual_outdoor].filter(Boolean);
+    let min = null;
+    for (const arr of sources) {
+      for (const e of arr) {
+        const t = new Date(e.ts || e.time).getTime();
+        if (!isNaN(t) && (min === null || t < min)) min = t;
+      }
+    }
+    return min;
+  }
+
+  // Return the latest timestamp (ms) found across state_log, actual_indoor, actual_outdoor
+  function _getDataMaxTs(data) {
+    const sources = [data.state_log, data.actual_indoor, data.actual_outdoor].filter(Boolean);
+    let max = null;
+    for (const arr of sources) {
+      for (const e of arr) {
+        const t = new Date(e.ts || e.time).getTime();
+        if (!isNaN(t) && (max === null || t > max)) max = t;
+      }
+    }
+    return max;
+  }
+
+  // Shift the chart window by direction (±1) × step.
+  // When the viewport drifts before the loaded data window, re-fetches anchored
+  // to the viewport right edge.  When navigating back to the present, drops the
+  // anchor and re-fetches without before_ts.
   function shiftChartWindow(direction) {
-    _windowOffset += direction * _rangeStep(_chartRange);
+    const step = _rangeStep(_chartRange);
+    _windowOffset += direction * step;
+    // Clamp forward: don't navigate past now
+    if (_windowOffset > 0) _windowOffset = 0;
+    const { min: vpStart, max: vpEnd } = _rangeToWindow(_chartRange);
+    // If viewport has drifted before the loaded data window, re-fetch anchored to vpEnd
+    if (_dataWindowStart !== null && vpStart < _dataWindowStart) {
+      loadChart(vpEnd);
+      return;
+    }
+    // If we've navigated back to present, drop the anchor and re-fetch live data
+    if (_windowOffset >= -step / 2 && _dataWindowEnd !== null) {
+      _windowOffset = 0;
+      loadChart();
+      return;
+    }
     if (_lastChartData) drawChart(_lastChartData);
   }
 
@@ -1779,9 +1825,14 @@
     healthHtml;
   }
 
-  async function loadChart() {
+  async function loadChart(beforeTs = null) {
     try {
-      const data = await apiFetch(`chart_data?range=${_chartRange}`);
+      let url = `chart_data?range=${_chartRange}`;
+      if (beforeTs) url += `&before_ts=${Math.round(beforeTs)}`;
+      const data = await apiFetch(url);
+      _dataWindowStart = _getDataMinTs(data);
+      _dataWindowEnd   = _getDataMaxTs(data);
+      _lastChartData   = data;
       drawChart(data);
       updateThermalPanel(data.thermal_model || null);
     } catch (e) {

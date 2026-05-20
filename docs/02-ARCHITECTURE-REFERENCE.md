@@ -132,6 +132,10 @@ Pure module-level functions called by `get_chart_data()` to build the dashboard 
 | `_simulate_indoor_physics(t_current, t_outdoor, q, k_passive, dt_hours)` | Single ODE time step for the physics path. |
 | `_compute_ramp_hours(temp_delta, rate)` | Computes ramp duration for the legacy fallback path. |
 
+`get_chart_data(range_str: str = "24h", before_ts: float | None = None)` — the `before_ts` parameter (Unix milliseconds, Issue #160) enables historical navigation. When supplied, the data window is anchored at that timestamp instead of the current clock: `get_entries(range_str, before=datetime.fromtimestamp(before_ts/1000, UTC))`. The frontend passes `before_ts` to scroll the chart to any past window without losing the current live view.
+
+**Data window vs viewport:** `before_ts` shifts the *data window* (what the API fetches from the chart log). The frontend *viewport* is a separate concern — range preset buttons and drag-to-zoom control the display without necessarily changing `before_ts`. When `before_ts` is absent, the window ends at now (live mode).
+
 `get_chart_data()` also returns two setpoint arrays added in v0.3.48 (Issue #151):
 
 | Response key | Content |
