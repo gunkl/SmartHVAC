@@ -917,6 +917,7 @@
   let _windowOffset = 0;          // ms pan offset from now-centered position
   let _dataWindowStart = null;    // earliest ts (ms) of currently loaded chart data
   let _dataWindowEnd   = null;    // latest ts (ms) of currently loaded chart data
+  let _isHistoricalView = false;  // true when _lastChartData came from a before_ts fetch
   let _touchStartX = 0;           // touch start x for swipe navigation
 
   // Colour palette (matches the dark theme screenshot)
@@ -1009,12 +1010,22 @@
     // Clamp forward: don't navigate past now
     if (_windowOffset > 0) _windowOffset = 0;
     const { min: vpStart, max: vpEnd } = _rangeToWindow(_chartRange);
-    // If viewport has drifted before the loaded data window, re-fetch anchored to vpEnd
+    // Backward: viewport start before data window — re-fetch past
     if (_dataWindowStart !== null && vpStart < _dataWindowStart) {
       loadChart(vpEnd);
       return;
     }
-    // If we've navigated back to present, drop the anchor and re-fetch live data
+    // Forward: viewport end past historical data window — re-fetch newer window or snap live
+    if (_isHistoricalView && _dataWindowEnd !== null && vpEnd > _dataWindowEnd) {
+      if (vpEnd >= Date.now() - step) {
+        _windowOffset = 0;
+        loadChart();  // snap to live
+      } else {
+        loadChart(vpEnd);  // load next historical window
+      }
+      return;
+    }
+    // Snap to live when close enough to now (handles live-mode forward clamp)
     if (_windowOffset >= -step / 2 && _dataWindowEnd !== null) {
       _windowOffset = 0;
       loadChart();
@@ -1832,6 +1843,7 @@
       const data = await apiFetch(url);
       _dataWindowStart = _getDataMinTs(data);
       _dataWindowEnd   = _getDataMaxTs(data);
+      _isHistoricalView = (beforeTs !== null);
       _lastChartData   = data;
       drawChart(data);
       updateThermalPanel(data.thermal_model || null);
