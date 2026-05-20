@@ -41,7 +41,7 @@ All 19 view classes set `requires_auth = True`. HA handles token validation befo
 |---|---|---|
 | `/api/climate_advisor/status` | Current system snapshot | `day_type`, `hvac_mode`, `hvac_action`, `indoor_temp`, `unit`, `automation_status`, `occupancy_mode`, `fan_status`, `contact_status`, `manual_override_active`, `next_action`, `compliance_score` |
 | `/api/climate_advisor/briefing` | Today's daily briefing text | `briefing`, `briefing_sent_today`, `verbosity` |
-| `/api/climate_advisor/chart_data` | Temperature forecast chart data | Delegated to `coordinator.get_chart_data(range_str=...)` — includes `target_band` time-series array; also `historical_setpoint` and `predicted_setpoint` arrays (v0.3.48, Issue #151) |
+| `/api/climate_advisor/chart_data` | Temperature forecast chart data | Delegated to `coordinator.get_chart_data(range_str=..., before_ts=...)`. Query params: `range` (string, default `24h`) and `before_ts` (Unix ms, optional). When `before_ts` is absent the window ends at now (live mode); when present the window is anchored at that point for historical navigation. Response includes `target_band` time-series array, `historical_setpoint`, and `predicted_setpoint` arrays (Issue #151, #160). |
 | `/api/climate_advisor/automation_state` | Full automation engine debug state | Delegated to `coordinator.get_debug_state()` |
 | `/api/climate_advisor/learning` | Learning engine summary | `today_record`, `yesterday_record`, `tomorrow_plan`, `suggestions`, `compliance`, `comfort_range_low`, `comfort_range_high`, `unit` |
 | `/api/climate_advisor/config` | Integration configuration | `settings` list of `{key, value, label, description, category}` — sensitive values redacted |

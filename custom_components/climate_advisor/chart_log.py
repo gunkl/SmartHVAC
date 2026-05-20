@@ -175,10 +175,17 @@ class ChartStateLog:
         if removed:
             _LOGGER.debug("chart_log: pruned %d old entries on append", removed)
 
-    def get_entries(self, range_str: str = "24h") -> list[dict[str, Any]]:
+    def get_entries(self, range_str: str = "24h", before: datetime | None = None) -> list[dict[str, Any]]:
         """Return entries filtered to the requested range, with downsampling.
 
         range_str values: "6h", "12h", "24h", "3d", "7d", "30d", "1y"
+
+        before: optional upper-bound anchor (timezone-aware datetime).  When
+            provided, the window is [anchor - range_days, anchor) instead of
+            [now - range_days, now).  Entries at or after *before* are excluded.
+            This supports historical navigation: pass the right edge of the
+            desired viewport as *before* to retrieve the corresponding data
+            window from the past.
 
         Downsampling rules:
         - <= 3 days (6h/12h/24h/3d): return raw entries
@@ -186,9 +193,15 @@ class ChartStateLog:
         - > 30 days (1y): daily summaries
         """
         range_days = self._range_str_to_days(range_str)
-        cutoff = datetime.now(UTC) - timedelta(days=range_days)
+        anchor = before if before is not None else datetime.now(UTC)
+        cutoff = anchor - timedelta(days=range_days)
 
         filtered = [e for e in self._entries if self._entry_after(e, cutoff)]
+
+        # When a before anchor is supplied, exclude entries at or after it so
+        # the caller receives only the [cutoff, anchor) window.
+        if before is not None:
+            filtered = [e for e in filtered if not self._entry_after(e, before)]
 
         if range_days <= _RAW_THRESHOLD_DAYS:
             return filtered

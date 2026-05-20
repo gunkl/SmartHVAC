@@ -290,7 +290,7 @@ def _make_chart_data_coord(
     chart_log = MagicMock()
     entries_map = chart_log_entries_by_range or {}
 
-    def _get_entries(range_str="24h"):
+    def _get_entries(range_str="24h", before=None):
         return entries_map.get(range_str, [])
 
     chart_log.get_entries = MagicMock(side_effect=_get_entries)
