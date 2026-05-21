@@ -12,6 +12,7 @@
 | When a grace timer fires, what are the three possible outcomes? | (1) Within planned window period → clear grace silently. (2) A sensor is still open → clear grace flags, then schedule `_re_pause_for_open_sensor()`. (3) All sensors closed → clear grace flags, optionally send notification. | [§ Timer Lifecycle — Expiry Callback](#timer-lifecycle) |
 | Is grace state persisted across HA restarts? | No. `restore_state()` explicitly sets `_grace_active = False` and `_last_resume_source = None`. Pause state (`_paused_by_door`, `_pre_pause_mode`) IS persisted. | [§ Pre-Pause Mode Storage — HA Restart](#pre-pause-mode-storage) |
 | What happens to an active grace period when occupancy changes? | The engine has no explicit occupancy-triggered grace cancellation. Grace timers run to expiry regardless of occupancy transitions; occupancy handlers (`handle_occupancy_away`, `handle_occupancy_home`) do not call `_cancel_grace_timers()`. | [§ Occupancy Interaction](#occupancy-interaction) |
+| What is the override confirmation delay — how does it work and what does it gate? | A debounce window (default 600 s) between detecting a thermostat mode change and formally accepting it as a manual override. While pending, `apply_classification()` returns early, blocking all HVAC commands. If the mode self-corrects within the window (transient glitch), the event is discarded — no grace period starts. | [§ Override Confirmation Delay](#override-confirmation-delay) |
 
 ---
 
@@ -42,7 +43,6 @@
 
 **Out of scope for this spec:**
 - Natural ventilation internal logic (see `check_natural_vent_conditions()`, `_re_evaluate_nat_vent()`)
-- Manual override confirmation window (`_override_confirm_pending`, `CONF_OVERRIDE_CONFIRM_PERIOD`)
 - Fan min-runtime cycles (separate lifecycle from grace)
 - Occupancy setback calculations
 
@@ -237,3 +237,106 @@ On close: `handle_all_doors_windows_closed()` is only called when ALL monitored 
 ### Pre-Pause Mode Is None When Sensor Opens
 
 If `hass.states.get(self.climate_entity)` returns `None` (thermostat entity unavailable), `_pre_pause_mode` stays `None`. The guard at L1168 (`if self._pre_pause_mode and self._pre_pause_mode != "off"`) evaluates to `False`. `_paused_by_door` is NOT set and HVAC is not touched. No notification is sent. The sensor opening is effectively silently ignored in this case.
+
+---
+
+## Override Confirmation Delay
+
+### Purpose
+
+The override confirmation delay is a debounce window between detecting a thermostat HVAC mode change and formally accepting it as a manual override. Its purpose is to discard transient glitches — thermostat restarts, HA restart HVAC echoes, fan cycling — that look identical to intentional user overrides but resolve on their own within a few minutes. Without this window, each transient would trigger a 30-minute manual grace period and prevent the system from responding to weather changes.
+
+### Configuration
+
+| Constant | Config key | Default | Label |
+|---|---|---|---|
+| `CONF_OVERRIDE_CONFIRM_PERIOD` | `"override_confirm_seconds"` | `600` s (10 min) | "Override Confirmation Delay (minutes)" |
+
+Set `override_confirm_seconds = 0` to confirm overrides immediately — the `_confirm_override()` path is taken synchronously with no pending window.
+
+### Trigger
+
+Detected in `coordinator.py` `_async_thermostat_changed()`. Conditions for triggering:
+1. The HVAC mode changed to something other than `"off"`
+2. The new mode differs from `classification.hvac_mode` (what the system expects)
+3. The change is NOT flagged as automation-initiated (i.e., not a CA service call)
+
+When all three hold, the coordinator dispatches to `automation_engine.handle_manual_override(mode)`, which calls `start_override_confirmation()`.
+
+### State
+
+Three instance variables track the pending confirmation window:
+
+| Variable | Type | Meaning |
+|---|---|---|
+| `_override_confirm_pending` | `bool` | `True` while a detection is awaiting confirmation |
+| `_override_confirm_mode` | `str \| None` | The detected HVAC mode string (e.g., `"cool"`) |
+| `_override_confirm_time` | `datetime \| None` | UTC timestamp of when detection occurred |
+
+A cancel callable (`_override_confirm_cancel`) holds the timer handle, like the grace cancel handles.
+
+### Gate on `apply_classification()`
+
+While `_override_confirm_pending` is `True`, `apply_classification()` returns early:
+
+```python
+if _override_confirm_pending:
+    # "Override confirmation pending (detected=X at T) — skipping HVAC mode change"
+    return
+```
+
+This blocks ALL downstream classification effects: HVAC mode changes, temperature setpoint commands, occupancy guards, fan logic, window open/close recommendations. The system is effectively paused at the classification boundary while the window runs.
+
+### State Machine
+
+```
+[DETECTION] coordinator._async_thermostat_changed()
+  Mode ≠ classification.hvac_mode AND not automation-initiated
+  └─ handle_manual_override(mode)
+       ↓
+[PENDING] start_override_confirmation()
+  _override_confirm_pending = True
+  Event: "override_detected" (dupe-gated 5-min window)
+  Timer: CONF_OVERRIDE_CONFIRM_PERIOD (default 600 s)
+       ↓ timer fires → _confirm_override_expired()
+       ├─ [PATH A: state still divergent from classification]
+       │   └─ _confirm_override(current_mode)
+       │       _manual_override_active = True
+       │       Event: "override_confirmed"
+       │       _start_grace_period("manual")      ← see Grace Period Types § Manual Grace
+       │       apply_classification() remains blocked for CONF_MANUAL_GRACE_PERIOD (30 min)
+       │
+       └─ [PATH B: state returned to classification]
+           _override_confirm_pending = False
+           Event: "override_self_resolved"
+           apply_classification() unblocked immediately
+           No grace period started
+```
+
+**Total blocking time if confirmed:** up to `CONF_OVERRIDE_CONFIRM_PERIOD + CONF_MANUAL_GRACE_PERIOD` = 10 + 30 = **40 minutes** (both configurable).
+
+### Events Emitted
+
+| Event | When | Key Payload Fields |
+|---|---|---|
+| `override_detected` | Detection occurs (dupe-gated 5-min) | `detected_mode`, `source` |
+| `override_confirmed` | PATH A: timer expires, state still divergent | `mode`, `confirm_delay_seconds` |
+| `override_self_resolved` | PATH B: timer expires, state resolved | `detected_mode`, `current_mode` |
+
+### Interaction with `clear_manual_override()`
+
+`clear_manual_override()` handles both the pending and active override states:
+
+```python
+if _override_confirm_pending:
+    _override_confirm_cancel()   # cancels the pending timer
+    _override_confirm_pending = False
+    _override_confirm_time = None
+    _override_confirm_mode = None
+```
+
+This means an occupancy transition, a fan override, or a dashboard cancel that calls `clear_manual_override()` will also cancel an in-progress confirmation window. The override is discarded without ever reaching PATH A or PATH B.
+
+### Persistence
+
+`_override_confirm_pending` and its companion variables are **not persisted** across HA restarts. `restore_state()` does not restore them. On restart, any in-flight confirmation window is silently abandoned and the flags reset to `False`. This is intentional — an HA restart is itself a transient event, and the mode state that triggered the confirmation may no longer reflect user intent after restart.

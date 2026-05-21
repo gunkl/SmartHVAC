@@ -945,6 +945,7 @@ Complete list of all constants from `const.py` that affect runtime behavior.
 | `DEFAULT_SENSOR_DEBOUNCE_SECONDS` | `300` | seconds (5 min) | Door/window must stay open this long before HVAC pauses |
 | `DEFAULT_MANUAL_GRACE_SECONDS` | `1800` | seconds (30 min) | Duration of manual grace period after user override |
 | `DEFAULT_AUTOMATION_GRACE_SECONDS` | `300` | seconds (5 min) | Duration of automation grace period after HVAC resumes |
+| `DEFAULT_OVERRIDE_CONFIRM_SECONDS` | `600` | seconds (10 min) | Debounce window between detecting a thermostat mode change and formally accepting it as a manual override. During this window `apply_classification()` is blocked. Transient glitches (thermostat restart, HA echo) that resolve within the window are discarded without starting a grace period. Set to 0 to confirm overrides immediately. See [Grace Periods Spec — Override Confirmation Delay](grace-periods-spec.md#override-confirmation-delay). |
 | `ECONOMIZER_TEMP_DELTA` | `3` | °F | Outdoor temp must be within this delta of comfort_cool for economizer eligibility |
 | `ECONOMIZER_MORNING_START_HOUR` | `6` | hour (24h) | Economizer morning window start |
 | `ECONOMIZER_MORNING_END_HOUR` | `9` | hour (24h) | Economizer morning window end |
